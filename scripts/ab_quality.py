@@ -80,15 +80,39 @@ def wait_batch(batch_id, timeout=3600):
 
 
 def start_vram_logger():
-    runpod_ctl.ssh("pkill -f 'nvidia-smi --query-gpu=timestamp' || true; "
-                   "rm -f %s; nohup nvidia-smi "
-                   "--query-gpu=timestamp,memory.used,utilization.gpu "
-                   "--format=csv,noheader,nounits -l 1 > %s 2>/dev/null & echo started"
-                   % (VRAM_LOG, VRAM_LOG), timeout=90)
+    """Sample VRAM on the Pod, stamping each line with epoch seconds.
+
+    nvidia-smi's own timestamp is local wall clock, which does not survive being
+    compared against Mac epoch times, and the first attempt at this recorded
+    zero usable samples. A shell loop emitting `date +%s` sidesteps both the
+    timezone and the parsing.
+    """
+    script = (
+        "pkill -f h3_vram_sampler || true; rm -f {log}; "
+        "cat > /workspace/h3_vram_sampler.sh <<'EOS'\n"
+        "#!/bin/sh\n"
+        "while true; do\n"
+        "  echo \"$(date +%s),$(nvidia-smi --query-gpu=memory.used,utilization.gpu "
+        "--format=csv,noheader,nounits | head -1)\" >> {log}\n"
+        "  sleep 1\n"
+        "done\n"
+        "EOS\n"
+        "chmod +x /workspace/h3_vram_sampler.sh; "
+        "setsid nohup /workspace/h3_vram_sampler.sh >/dev/null 2>&1 < /dev/null & "
+        "sleep 3; wc -l < {log}"
+    ).format(log=VRAM_LOG)
+    rc, out, err = runpod_ctl.ssh(script, timeout=120)
+    lines = (out or "").strip().splitlines()
+    started = lines[-1].strip() if lines else "0"
+    print("  vram sampler: %s lines after 3s" % started, flush=True)
+    if started in ("0", ""):
+        print("  WARNING: the VRAM sampler produced nothing; peaks will be missing",
+              flush=True)
+    return started not in ("0", "")
 
 
 def stop_vram_logger():
-    runpod_ctl.ssh("pkill -f 'nvidia-smi --query-gpu=timestamp' || true", timeout=60)
+    runpod_ctl.ssh("pkill -f h3_vram_sampler || true", timeout=60)
 
 
 def fetch_vram_samples():
@@ -102,9 +126,7 @@ def fetch_vram_samples():
         if len(parts) < 2:
             continue
         try:
-            # nvidia-smi timestamp: "2026/09/06 12:34:56.789"
-            stamp = time.strptime(parts[0].split(".")[0], "%Y/%m/%d %H:%M:%S")
-            samples.append((time.mktime(stamp), int(parts[1])))
+            samples.append((float(parts[0]), int(parts[1])))
         except (ValueError, IndexError):
             continue
     return samples
@@ -121,13 +143,27 @@ def run_condition(cond, pass_name, seed):
         "variations": 1, "duration": FIXED["duration"],
         "aspect_ratio": FIXED["aspect_ratio"], "image": FIXED["image"],
         "turbo": cond["turbo"], "seeds": [seed],
+        # A measurement must fail rather than quietly become a different config.
+        "strict_turbo": cond["turbo"],
     }
     print("  %s/%s  %s ..." % (cond["id"], pass_name, cond["label"]), flush=True)
     batch = api("/api/generate", payload)
     done = wait_batch(batch["id"])
     g = done["generations"][0]
+    phases = g.get("phase_seconds") or {}
+    suspicious = None
+    if g["status"] == "done" and not phases.get("sampling"):
+        # ComfyUI returns a cached result instantly when the graph and inputs
+        # are identical to something it already ran. That is not a measurement.
+        suspicious = ("no sampling phase recorded -- ComfyUI probably served its "
+                      "execution cache, so this is not a real generation")
+    if cond["turbo"] and not g["params"].get("turbo"):
+        suspicious = "Turbo was requested but not applied"
+    if suspicious:
+        print("    !! %s" % suspicious, flush=True)
     return {
         "condition": cond["id"], "label": cond["label"], "pass": pass_name,
+        "suspicious": suspicious,
         "status": g["status"], "error": g.get("error"), "seed": g["seed"],
         "cache_result": g["cache_result"], "seconds": g["seconds"],
         "steps": g["params"]["steps"], "megapixels": g["params"]["megapixels"],
@@ -194,12 +230,19 @@ def main():
         json.dump(report, f, indent=2, ensure_ascii=False)
 
     print("\n=== results ===")
-    print("%-3s %-24s %-5s %-5s %8s %8s %6s" %
-          ("id", "condition", "pass", "cache", "seconds", "VRAM MiB", "steps"))
+    print("%-3s %-24s %-5s %-5s %8s %9s %6s %6s" %
+          ("id", "condition", "pass", "cache", "seconds", "VRAM MiB", "steps", "turbo"))
     for r in report["results"]:
-        print("%-3s %-24s %-5s %-5s %8s %8s %6s" %
+        flag = "  !! " + r["suspicious"] if r.get("suspicious") else ""
+        print("%-3s %-24s %-5s %-5s %8s %9s %6s %6s%s" %
               (r["condition"], r["label"], r["pass"], r["cache_result"],
-               r["seconds"], r.get("peak_vram_mib"), r["steps"]))
+               r["seconds"], r.get("peak_vram_mib"), r["steps"], r["turbo"], flag))
+    bad = [r for r in report["results"] if r.get("suspicious")]
+    if bad:
+        print("\n!! %d of %d rows are not valid measurements -- see the flags above"
+              % (len(bad), len(report["results"])))
+    if not samples:
+        print("!! no VRAM samples were collected; peaks are missing")
     print("\nreport: %s" % os.path.relpath(path, ROOT))
 
     if not args.keep_up:

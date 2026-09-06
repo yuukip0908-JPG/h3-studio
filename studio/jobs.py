@@ -172,6 +172,7 @@ class JobManager:
         with self.lock:
             self.client = comfy_client.ComfyClient(base_url)
             self._ref_node_available = None
+            self._turbo_available = None
         if self._listener:
             self._listener.stop()
         self._listener = comfy_client.ProgressListener(
@@ -254,17 +255,22 @@ class JobManager:
         list /prompt validates lora_name against, so a True here means the node
         will not be rejected -- checking the filesystem would not prove that.
         """
-        if self._turbo_available is None:
-            if not self.client.is_alive():
-                return None
-            try:
-                info = self.client.object_info(graph.TURBO_LORA_NODE) or {}
-            except comfy_client.ComfyError:
-                return None
-            spec = (info.get(graph.TURBO_LORA_NODE) or {}).get("input", {}).get("required", {})
-            options = (spec.get("lora_name") or [[]])[0]
-            wanted = graph.TURBO_LORAS["fl2va"]["file"]
-            self._turbo_available = bool(options) and wanted in options
+        # Only a positive answer is cached. A negative one goes stale the moment
+        # the LoRA is installed, and caching it made an A/B run silently fall
+        # back to standard for every Turbo condition -- the file had been
+        # downloaded and verified minutes earlier, but this still said False.
+        if self._turbo_available:
+            return True
+        if not self.client.is_alive():
+            return None
+        try:
+            info = self.client.object_info(graph.TURBO_LORA_NODE) or {}
+        except comfy_client.ComfyError:
+            return None
+        spec = (info.get(graph.TURBO_LORA_NODE) or {}).get("input", {}).get("required", {})
+        options = (spec.get("lora_name") or [[]])[0]
+        wanted = graph.TURBO_LORAS["fl2va"]["file"]
+        self._turbo_available = bool(options) and wanted in options
         return self._turbo_available
 
     def upload_source_image(self, local_path):
@@ -310,7 +316,7 @@ class JobManager:
                      aspect_ratio, image=None, image_source=None, reference_strength=None,
                      seeds=None, parent_generation=None, kind=None,
                      source_video=None, source_video_meta=None, ref_image_size="match",
-                     turbo=False, quality_overrides=None):
+                     turbo=False, quality_overrides=None, strict_turbo=False):
         kind = kind or ("final" if quality != "draft" else "draft")
         # Fail fast and once. Without this every variation is submitted, fails
         # on its own, and the operator gets four identical error cards instead
@@ -329,6 +335,13 @@ class JobManager:
                 turbo = False
                 self.notice("warn", "Turbo LoRA が Pod にないため、通常設定で生成します。"
                                     "（scripts/download_models_v2.sh で導入できます）")
+                # A measurement run must not silently record a different
+                # configuration than the one it asked for.
+                if strict_turbo:
+                    raise comfy_client.ComfyError(
+                        "Turbo was requested but ComfyUI cannot load %s; refusing to "
+                        "run it as a standard generation."
+                        % graph.TURBO_LORAS["fl2va"]["file"])
         batch_id = _short_id("b")
         seeds = list(seeds) if seeds else [int.from_bytes(os.urandom(4), "big") for _ in range(variations)]
         variations = len(seeds)

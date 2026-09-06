@@ -414,6 +414,7 @@ class Handler(BaseHTTPRequestHandler):
             source_video_meta=data.get("source_video_meta"),
             ref_image_size=data.get("ref_image_size", "match"),
             turbo=bool(data.get("turbo")),
+            strict_turbo=bool(data.get("strict_turbo")),
             quality_overrides=data.get("quality_overrides"),
             # Explicit seeds exist for A/B work: holding the seed fixed is what
             # makes two runs comparable. Normal UI generations omit it.

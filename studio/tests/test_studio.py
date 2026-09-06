@@ -379,6 +379,37 @@ class TurboSafetyTests(StudioTestCase):
         m._turbo_available = None
         self.assertTrue(m.turbo_available())
 
+    def test_a_negative_answer_is_not_cached(self):
+        """Installing the LoRA mid-session must take effect.
+
+        Caching False made a whole measurement run fall back to standard: the
+        file had been downloaded and sha256-verified minutes earlier and this
+        still said unavailable, so every Turbo condition silently became a
+        duplicate of the non-Turbo one.
+        """
+        m = self.make_manager()
+        self.assertFalse(m.turbo_available())
+        mock_comfy.STATE.loras = [mock_comfy.TURBO_LORA]
+        self.assertTrue(m.turbo_available(), "must re-probe after a negative")
+
+    def test_a_positive_answer_is_cached(self):
+        m = self.make_manager()
+        mock_comfy.STATE.loras = [mock_comfy.TURBO_LORA]
+        self.assertTrue(m.turbo_available())
+        mock_comfy.STATE.loras = []          # ComfyUI would now say no
+        self.assertTrue(m.turbo_available(), "a confirmed LoRA stays confirmed")
+
+    def test_strict_turbo_refuses_to_silently_downgrade(self):
+        """A measurement run must fail rather than record a different config."""
+        m = self.make_manager()
+        with self.assertRaises(comfy_client.ComfyError) as cm:
+            m.submit_batch(mode=graph.MODE_IMAGE_TRACE, prompt_text="strict",
+                           quality="draft", variations=1, duration=2.0,
+                           aspect_ratio=graph.ASPECT_RATIOS[0], image="a.png",
+                           turbo=True, strict_turbo=True)
+        self.assertIn("refusing", str(cm.exception).lower())
+        self.assertEqual(m.recent_batches(), [])
+
     def test_unreachable_comfyui_reports_unknown_not_unavailable(self):
         m = self.make_manager()
         self.server.shutdown()
