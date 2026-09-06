@@ -172,6 +172,23 @@ if [[ "$DRY" == "1" ]]; then
   exit 0
 fi
 
+# Push the workflow every time. The Pod's checkout carries the baseline
+# workflows, not the v2 api graphs -- the Studio builds those on the Mac and
+# POSTs them, so nothing ever put them on the Pod, and all three comparisons
+# died on FileNotFoundError seconds after the GPU started billing. Uploading
+# unconditionally also guarantees the graph measured is the graph on this Mac.
+pod "mkdir -p '$REMOTE_PROJ/workflows'"
+bash "$DIR/scripts/pod_ssh.sh" "cat > '$REMOTE_PROJ/workflows/$WF_NAME'" < "$WF_LOCAL"
+wf_want=$(wc -c < "$WF_LOCAL" | tr -d ' ')
+wf_have=$(pod "stat -c %s '$REMOTE_PROJ/workflows/$WF_NAME' 2>/dev/null || echo 0" | tr -d '\r')
+[[ "$wf_have" == "$wf_want" ]] || die "workflow upload landed $wf_have bytes, expected $wf_want"
+echo "pushed $WF_NAME ($wf_want bytes)"
+
+# One cheap remote check before the first generation, so a dead ComfyUI is one
+# clear line instead of six tracebacks.
+code=$(pod "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8188/object_info" | tr -d '\r')
+[[ "$code" == "200" ]] || die "ComfyUI on the Pod answered '$code' for /object_info, not 200"
+
 # Upload the references, idempotently: the Pod keeps ComfyUI's input dir on the
 # network volume, so this is usually a no-op after the first run.
 if [[ ${#UPLOADS[@]} -gt 0 ]]; then

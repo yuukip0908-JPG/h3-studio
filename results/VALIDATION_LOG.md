@@ -596,3 +596,28 @@ core 検証は 2秒 / 16:9 の1点だけだったが、通常運用で2点追加
 
 テスト 103件 PASS（`python3 -m unittest discover -s studio/tests -t .`）。
 Pod `u3j83y0qfrdc56` は EXITED のまま。GPU課金なし。baseline 無変更。
+
+### 2026-09-07 GPU 1回目 — 3本とも即失敗（GPU使用 約2分）
+
+新Pod `ttgvtu9fb864k4`（RTX 6000 Ada 48GB / US-WA-1 / $0.84時、**nvidia-smi で実測確認**）。
+既存Pod `u3j83y0qfrdc56` の restart は例によって host full で拒否され、
+`pod_migrate.sh --create` が別ホストを確保した。Pod側 `doctor.sh` FAIL=0。
+
+**3本とも arm A で `FileNotFoundError`。**
+`/workspace/H3_CLOUD_REPRO/workflows/IMAGE_TRACE_DRAFT.api.json` が Pod に無い。
+
+理由: v2 の `*.api.json` は **Mac 側の `graph.py` が組んで POST する**もので、
+Studio も `ab_quality.py` も Pod 上のファイルを読まない。Pod 上のファイルを読むのは
+`ab_test.sh` だけで、それが一度も成功していなかったので**誰も気付いていなかった**。
+Pod のリポジトリが古いのではなく、**最初から置かれていない**。
+
+対策（Mac側の状態だけで完結させる）:
+- ワークフローを毎回 Pod へ push する（無条件。「Macにあるグラフ＝測ったグラフ」を保証）
+- 生成前に `/object_info` を1回叩き、ComfyUI が死んでいれば**1行で落とす**
+  （トレースバック6本より読める）
+
+オフラインの dry-run ゲートでは Pod 側の欠落は原理的に検出できない。
+**Pod 側の状態に依存しない**のが正しい直し方であり、ゲートを増やすことではない。
+
+損失: GPU 約2分（約 $0.03）と Pod が1つ増えたこと（`ttgvtu9fb864k4`、EXITED）。
+baseline・Network Volume・既存Podは無変更。
