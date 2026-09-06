@@ -1,0 +1,323 @@
+{
+  "started": "20260906T150042Z",
+  "fixed": {
+    "mode": "image_trace",
+    "prompt": "a woman in a linen shirt turns slowly toward the camera and smiles, natural window light, shallow depth of field",
+    "duration": 2.0,
+    "aspect_ratio": "16:9 (Widescreen)",
+    "image": "transparent_rgb_gaming_mouse.png",
+    "seeds": {
+      "miss": 424242,
+      "hit1": 424243,
+      "hit2": 424244
+    }
+  },
+  "nonce": "ab-20260906T150042Z",
+  "prompt": "a woman in a linen shirt turns slowly toward the camera and smiles, natural window light, shallow depth of field -- ab-20260906T150042Z",
+  "results": [
+    {
+      "condition": "A",
+      "label": "0.40MP standard 12step",
+      "pass": "miss",
+      "suspicious": null,
+      "status": "done",
+      "error": null,
+      "seed": 424242,
+      "cache_result": "MISS",
+      "seconds": 157.8,
+      "steps": 12,
+      "megapixels": 0.4,
+      "rendered": {
+        "width": 864,
+        "height": 480,
+        "megapixels": 0.415
+      },
+      "turbo": false,
+      "turbo_lora": null,
+      "lora_strength": null,
+      "phase_seconds": {
+        "encode": 71.61,
+        "transfer": 0.14,
+        "sampling": 64.44,
+        "decode": 17.05,
+        "save": 3.22
+      },
+      "started_at": 1788706851.727934,
+      "finished_at": 1788707009.495193,
+      "generation_id": "g_69f43d0c16",
+      "output_url": "/api/video/g_69f43d0c16",
+      "batch_id": "b_4090403b5d",
+      "peak_vram_mib": 27754
+    },
+    {
+      "condition": "A",
+      "label": "0.40MP standard 12step",
+      "pass": "hit1",
+      "suspicious": "no sampling phase -- ComfyUI served its execution cache",
+      "status": "done",
+      "error": null,
+      "seed": 424243,
+      "cache_result": "HIT",
+      "seconds": 31.3,
+      "steps": 12,
+      "megapixels": 0.4,
+      "rendered": {
+        "width": 864,
+        "height": 480,
+        "megapixels": 0.415
+      },
+      "turbo": false,
+      "turbo_lora": null,
+      "lora_strength": null,
+      "phase_seconds": {
+        "decode": 5.47,
+        "save": 4.84
+      },
+      "started_at": 1788707012.955074,
+      "finished_at": 1788707044.23041,
+      "generation_id": "g_4ef4e2d0a9",
+      "output_url": "/api/video/g_4ef4e2d0a9",
+      "batch_id": "b_eaff5107d2",
+      "peak_vram_mib": 27098
+    },
+    {
+      "condition": "A",
+      "label": "0.40MP standard 12step",
+      "pass": "hit2",
+      "suspicious": null,
+      "status": "done",
+      "error": null,
+      "seed": 424244,
+      "cache_result": "HIT",
+      "seconds": 28.7,
+      "steps": 12,
+      "megapixels": 0.4,
+      "rendered": {
+        "width": 864,
+        "height": 480,
+        "megapixels": 0.415
+      },
+      "turbo": false,
+      "turbo_lora": null,
+      "lora_strength": null,
+      "phase_seconds": {
+        "sampling": 20.43,
+        "decode": 5.48,
+        "save": 2.76
+      },
+      "started_at": 1788707049.8361568,
+      "finished_at": 1788707078.5146399,
+      "generation_id": "g_ad1bd777f2",
+      "output_url": "/api/video/g_ad1bd777f2",
+      "batch_id": "b_8287420a80",
+      "peak_vram_mib": 27098
+    },
+    {
+      "condition": "B",
+      "label": "1.00MP standard 12step",
+      "pass": "miss",
+      "suspicious": null,
+      "status": "done",
+      "error": null,
+      "seed": 424242,
+      "cache_result": "MISS",
+      "seconds": 155.5,
+      "steps": 12,
+      "megapixels": 1.0,
+      "rendered": {
+        "width": 1376,
+        "height": 768,
+        "megapixels": 1.057
+      },
+      "turbo": false,
+      "turbo_lora": null,
+      "lora_strength": null,
+      "phase_seconds": {
+        "encode": 55.33,
+        "sampling": 83.86,
+        "decode": 10.59,
+        "save": 4.95
+      },
+      "started_at": 1788707080.075548,
+      "finished_at": 1788707235.5621278,
+      "generation_id": "g_bcb0143b86",
+      "output_url": "/api/video/g_bcb0143b86",
+      "batch_id": "b_817931eb4c",
+      "peak_vram_mib": 47562
+    },
+    {
+      "condition": "B",
+      "label": "1.00MP standard 12step",
+      "pass": "hit1",
+      "suspicious": null,
+      "status": "done",
+      "error": null,
+      "seed": 424243,
+      "cache_result": "HIT",
+      "seconds": 100.3,
+      "steps": 12,
+      "megapixels": 1.0,
+      "rendered": {
+        "width": 1376,
+        "height": 768,
+        "megapixels": 1.057
+      },
+      "turbo": false,
+      "turbo_lora": null,
+      "lora_strength": null,
+      "phase_seconds": {
+        "sampling": 85.37,
+        "decode": 10.56,
+        "save": 4.34
+      },
+      "started_at": 1788707238.048487,
+      "finished_at": 1788707338.3366468,
+      "generation_id": "g_5115bacd07",
+      "output_url": "/api/video/g_5115bacd07",
+      "batch_id": "b_feb0e93609",
+      "peak_vram_mib": 28602
+    },
+    {
+      "condition": "B",
+      "label": "1.00MP standard 12step",
+      "pass": "hit2",
+      "suspicious": null,
+      "status": "done",
+      "error": null,
+      "seed": 424244,
+      "cache_result": "HIT",
+      "seconds": 100.0,
+      "steps": 12,
+      "megapixels": 1.0,
+      "rendered": {
+        "width": 1376,
+        "height": 768,
+        "megapixels": 1.057
+      },
+      "turbo": false,
+      "turbo_lora": null,
+      "lora_strength": null,
+      "phase_seconds": {
+        "sampling": 84.68,
+        "decode": 10.63,
+        "save": 3.78
+      },
+      "started_at": 1788707343.487495,
+      "finished_at": 1788707443.451582,
+      "generation_id": "g_a908e56462",
+      "output_url": "/api/video/g_a908e56462",
+      "batch_id": "b_bf59eab6a7",
+      "peak_vram_mib": 28670
+    },
+    {
+      "condition": "C",
+      "label": "1.00MP turbo 8step",
+      "pass": "miss",
+      "suspicious": "the MISS pass hit the cache -- MISS peak is not measured",
+      "status": "done",
+      "error": null,
+      "seed": 424242,
+      "cache_result": "HIT",
+      "seconds": 72.0,
+      "steps": 8,
+      "megapixels": 1.0,
+      "rendered": {
+        "width": 1376,
+        "height": 768,
+        "megapixels": 1.057
+      },
+      "turbo": true,
+      "turbo_lora": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+      "lora_strength": 1.0,
+      "phase_seconds": {
+        "encode": 0.05,
+        "sampling": 57.63,
+        "decode": 10.58,
+        "save": 3.68
+      },
+      "started_at": 1788707445.299723,
+      "finished_at": 1788707517.265999,
+      "generation_id": "g_8e47029ae5",
+      "output_url": "/api/video/g_8e47029ae5",
+      "batch_id": "b_8edc1ccedc",
+      "peak_vram_mib": 28704
+    },
+    {
+      "condition": "C",
+      "label": "1.00MP turbo 8step",
+      "pass": "hit1",
+      "suspicious": null,
+      "status": "done",
+      "error": null,
+      "seed": 424243,
+      "cache_result": "HIT",
+      "seconds": 71.0,
+      "steps": 8,
+      "megapixels": 1.0,
+      "rendered": {
+        "width": 1376,
+        "height": 768,
+        "megapixels": 1.057
+      },
+      "turbo": true,
+      "turbo_lora": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+      "lora_strength": 1.0,
+      "phase_seconds": {
+        "sampling": 56.52,
+        "decode": 10.47,
+        "save": 3.31
+      },
+      "started_at": 1788707520.6659489,
+      "finished_at": 1788707591.7044868,
+      "generation_id": "g_8fea8b1079",
+      "output_url": "/api/video/g_8fea8b1079",
+      "batch_id": "b_641467ec36",
+      "peak_vram_mib": 28604
+    },
+    {
+      "condition": "C",
+      "label": "1.00MP turbo 8step",
+      "pass": "hit2",
+      "suspicious": "no sampling phase -- ComfyUI served its execution cache",
+      "status": "done",
+      "error": null,
+      "seed": 424244,
+      "cache_result": "HIT",
+      "seconds": 72.1,
+      "steps": 8,
+      "megapixels": 1.0,
+      "rendered": {
+        "width": 1376,
+        "height": 768,
+        "megapixels": 1.057
+      },
+      "turbo": true,
+      "turbo_lora": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+      "lora_strength": 1.0,
+      "phase_seconds": {
+        "decode": 10.39,
+        "save": 3.82
+      },
+      "started_at": 1788707596.747117,
+      "finished_at": 1788707668.8182888,
+      "generation_id": "g_7652e4b94b",
+      "output_url": "/api/video/g_7652e4b94b",
+      "batch_id": "b_bc8893949d",
+      "peak_vram_mib": 28604
+    }
+  ],
+  "gpu": {
+    "actual": {
+      "name": "NVIDIA RTX 6000 Ada Generation",
+      "memory_total": "49140 MiB"
+    },
+    "cost_per_hr": 0.84,
+    "pod_id": "u3j83y0qfrdc56",
+    "data_center": "US-WA-1",
+    "recorded_at_creation": "NVIDIA RTX 6000 Ada Generation",
+    "is_baseline_card": true
+  },
+  "vram_samples": 1020,
+  "idle_vram_mib": 0,
+  "elapsed_seconds": 827.0
+}

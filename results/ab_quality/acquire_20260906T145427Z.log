@@ -1,0 +1,175 @@
+stopped pid 25682
+NOTE: the RunPod Pod is unaffected. Check billing with: bash scripts/runpod_status.sh
+H3 Studio READY -> http://127.0.0.1:8010/  (pid 26398, log /Users/user/Downloads/H3_CLOUD_REPRO/results/logs/studio.log)
+[14:54:31Z] studio: restarted
+[14:54:33Z] attempt 1: restart refused (host full)
+=== new Pod request ===
+{
+  "name": "h3-clipcached-baseline-3",
+  "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
+  "gpuTypeIds": [
+    "NVIDIA RTX 6000 Ada Generation",
+    "NVIDIA L40S",
+    "NVIDIA L40",
+    "NVIDIA RTX A6000",
+    "NVIDIA A40",
+    "NVIDIA RTX PRO 5000 Blackwell",
+    "NVIDIA A100-SXM4-80GB",
+    "NVIDIA A100 80GB PCIe",
+    "NVIDIA H100 PCIe",
+    "NVIDIA H100 80GB HBM3",
+    "NVIDIA H100 NVL",
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+  ],
+  "gpuTypePriority": "availability",
+  "gpuCount": 1,
+  "dataCenterIds": [
+    "US-WA-1"
+  ],
+  "cloudType": "SECURE",
+  "networkVolumeId": "olmj77x4pc",
+  "volumeMountPath": "/workspace",
+  "containerDiskInGb": 60,
+  "ports": [
+    "8188/http",
+    "22/tcp"
+  ]
+}
+
+=== old Pod 3lbxf2rnkjsqte ===
+  desiredStatus : EXITED (must stay EXITED, never deleted)
+  networkVolume : olmj77x4pc
+
+attempt 1/13 with gpuTypeIds=['NVIDIA RTX 6000 Ada Generation']
+creating the Pod (billing starts once it is RUNNING) ...
+  new Pod id    : u3j83y0qfrdc56
+  desiredStatus : RUNNING
+  gpu           : NVIDIA RTX 6000 Ada Generation
+  cost/hr       : 0.84
+  volume        : olmj77x4pc -> /workspace
+  ssh           : 195.26.233.66 35819
+  comfyUrl      : https://u3j83y0qfrdc56-8188.proxy.runpod.net
+
+results/runpod_state.json now points at u3j83y0qfrdc56
+previous Pod kept as: jqj722x4jkwcan (EXITED, untouched)
+[14:57:15Z] attempt 1: created a new Pod on an available host
+{"ok": true, "steps": ["Pod already RUNNING", "starting ComfyUI over SSH", "start_h3.sh exit=0", "ComfyUI healthy"], "comfy_url": "https://u3j83y0qfrdc56-8188.proxy.runpod.net"}[14:58:10Z] === GPU acquired via new-pod ===
+  pod=u3j83y0qfrdc56 gpu=NVIDIA RTX 6000 Ada Generation (49140 MiB) cost/hr=0.84 dc=US-WA-1
+[14:58:14Z] === downloading the Turbo LoRA ===
+== minimax_h3_ref2va_pruned_int8_convrot.safetensors ==
+  present with the expected size (20970379616 bytes)
+  verifying sha256 (reads 19 GB) ...
+  PASS sha256 9255f52b6677845ad238f20dfaafa94727053694127ab7f255c048f0f9365779
+== minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors ==
+  downloading (1 GB) ...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+saved /workspace/ComfyUI/models/loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors 1956193000
+  verifying sha256 (reads 1 GB) ...
+  PASS sha256 2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e
+handled 2 of 2 manifest files
+
+restarting ComfyUI so UNETLoader lists the new checkpoint
+stopping pid 150 (SIGTERM)
+process 150 stopped
+port 8188 released
+started pid=551
+log=/workspace/H3_CLOUD_REPRO/results/logs/comfyui.log
+HEALTHY after 35s (http://127.0.0.1:8188/system_stats)
+Local URL: http://127.0.0.1:8188
+done. Motion Trace is ready once /object_info/UNETLoader lists the ref2va file.
+[15:00:33Z] LoRA present and sha256 verified
+[15:00:33Z] === baseline doctor on the Pod ===
+== H3 doctor 2026-09-06 15:00:35 ==
+project=/workspace/H3_CLOUD_REPRO
+workspace=/workspace comfyui=/workspace/ComfyUI
+PASS  GPU: NVIDIA RTX 6000 Ada Generation, 49140 MiB, 580.159.04;
+PASS  venv python: /workspace/ComfyUI/.venv/bin/python (Python 3.12.3)
+PASS  torch 2.14.0+cu130 cuda=13.0 available on NVIDIA RTX 6000 Ada Generation
+PASS  ComfyUI present: version=0.34.2 commit=169fcf3 ref=v0.34.2
+PASS  model diffusion: minimax_h3_fl2va_pruned_int8_convrot.safetensors size OK (20970379616 bytes)
+PASS  model encoder: qwen3vl_32b_minimax_h3_int8_convrot.safetensors size OK (27141342152 bytes)
+PASS  model video_vae: minimax_h3_video_vae_fp16.safetensors size OK (5207808496 bytes)
+PASS  model audio_vae: minimax_h3_audio_vae_fp32.safetensors size OK (605254808 bytes)
+PASS  CLIPCached present: commit=f17ba8f369740a02a2138031517f853eb67b9d43 branch=HEAD
+PASS  cache dir: /workspace/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache (12 entries, 325M) writable=yes
+PASS  free disk on /workspace: 160660 GiB
+PASS  workflow: /workspace/H3_CLOUD_REPRO/workflows/READY_TO_USE_H3_CLIPCACHED.json
+PASS  ComfyUI process running (pid 551)
+PASS  port 8188 listening (pid '551')
+PASS  HTTP health OK: http://127.0.0.1:8188/system_stats
+PASS  node registered: MiniMaxH3ImageToVideo
+PASS  node registered: MiniMaxH3CLIPCachedFL2VA
+== summary: FAIL=0 WARN=0 ==
+[15:00:41Z] doctor: FAIL=0
+[15:00:41Z] === running the A/B ===
+=== conditions ===
+  A  0.40MP standard 12step   0.40 MP  12 steps  turbo=False
+  B  1.00MP standard 12step   1.00 MP  12 steps  turbo=False
+  C  1.00MP turbo 8step       1.00 MP   8 steps  turbo=True
+
+=== held fixed ===
+  mode           image_trace
+  prompt         a woman in a linen shirt turns slowly toward the camera and smiles, natural window light, shallow depth of field
+  duration       2.0
+  aspect_ratio   16:9 (Widescreen)
+  image          transparent_rgb_gaming_mouse.png
+  seeds          {'miss': 424242, 'hit1': 424243, 'hit2': 424244}
+  nonce          ab-20260906T150042Z
+
+each condition runs miss, hit1, hit2
+
+=== gates (no GPU) ===
+  studio is current      OK
+  turbo graph differs    OK
+
+starting GPU ...
+   {"ok": true, "steps": ["Pod already RUNNING", "ComfyUI already healthy"], "comfy_url": "https://u3j83y0qfrdc56-8188.proxy.runpod.net"}
+  GPU: NVIDIA RTX 6000 Ada Generation (49140 MiB) $0.84/hr
+  turbo loadable        OK
+  vram sampler write failed rc=255 
+  A/miss 0.40MP standard 12step ...
+  A/hit1 0.40MP standard 12step ...
+    !! no sampling phase -- ComfyUI served its execution cache
+  A/hit2 0.40MP standard 12step ...
+  B/miss 1.00MP standard 12step ...
+  B/hit1 1.00MP standard 12step ...
+  B/hit2 1.00MP standard 12step ...
+  C/miss 1.00MP turbo 8step ...
+    !! the MISS pass hit the cache -- MISS peak is not measured
+  C/hit1 1.00MP turbo 8step ...
+  C/hit2 1.00MP turbo 8step ...
+    !! no sampling phase -- ComfyUI served its execution cache
+
+=== results ===
+id  condition                pass  cache  seconds  sampling  VRAM MiB  steps  turbo     rendered
+A   0.40MP standard 12step   miss  MISS     157.8     64.44     27754     12  False      864x480
+A   0.40MP standard 12step   hit1  HIT       31.3      None     27098     12  False      864x480  !! no sampling phase -- ComfyUI served its execution cache
+A   0.40MP standard 12step   hit2  HIT       28.7     20.43     27098     12  False      864x480
+B   1.00MP standard 12step   miss  MISS     155.5     83.86     47562     12  False     1376x768
+B   1.00MP standard 12step   hit1  HIT      100.3     85.37     28602     12  False     1376x768
+B   1.00MP standard 12step   hit2  HIT      100.0     84.68     28670     12  False     1376x768
+C   1.00MP turbo 8step       miss  HIT       72.0     57.63     28704      8   True     1376x768  !! the MISS pass hit the cache -- MISS peak is not measured
+C   1.00MP turbo 8step       hit1  HIT       71.0     56.52     28604      8   True     1376x768
+C   1.00MP turbo 8step       hit2  HIT       72.1      None     28604      8   True     1376x768  !! no sampling phase -- ComfyUI served its execution cache
+
+!! 3 of 9 rows are not valid measurements -- see the flags above
+
+report: results/ab_quality/run_20260906T150042Z.json
+
+stopping GPU ...
+   {"ok": true, "steps": ["stop_h3.sh exit=0", "Pod desiredStatus=EXITED"], "network_volume_preserved": true, "network_volume": "olmj77x4pc"}
+   u3j83y0qfrdc56   h3-clipcached-baseline-3       EXITED
+   jqj722x4jkwcan   h3-clipcached-baseline-3       EXITED
+   otyu05x8yh2v96   h3-clipcached-baseline-3       EXITED
+   sgiaeck1hh0m1l   h3-clipcached-baseline-3       EXITED
+   3lbxf2rnkjsqte   h3-clipcached-baseline-2       EXITED
+   ufhtfdg9ulv3fj   h3-clipcached-baseline         EXITED
+[15:14:52Z] === stopping the GPU ===
+{"ok": true, "steps": ["stop_h3.sh exit=255", "Pod desiredStatus=EXITED"], "network_volume_preserved": true, "network_volume": "olmj77x4pc"}
+  u3j83y0qfrdc56   h3-clipcached-baseline-3     EXITED
+  jqj722x4jkwcan   h3-clipcached-baseline-3     EXITED
+  otyu05x8yh2v96   h3-clipcached-baseline-3     EXITED
+  sgiaeck1hh0m1l   h3-clipcached-baseline-3     EXITED
+  3lbxf2rnkjsqte   h3-clipcached-baseline-2     EXITED
+  ufhtfdg9ulv3fj   h3-clipcached-baseline       EXITED
+[15:14:59Z] done (rc=1). log: results/ab_quality/acquire_20260906T145427Z.log

@@ -70,10 +70,17 @@ FIXED = {
     "seeds": {"miss": 424242, "hit1": 424243, "hit2": 424244},
 }
 
+# expect_miss says whether the first pass can be a cache MISS at all. C reuses
+# B's prompt and resolution, and the CLIPCached fingerprint does not include the
+# LoRA, so C is a HIT by construction -- flagging that as a fault made a valid
+# run look broken.
 CONDITIONS = [
-    {"id": "A", "label": "0.40MP standard 12step", "quality": "ab_040", "turbo": False},
-    {"id": "B", "label": "1.00MP standard 12step", "quality": "ab_100", "turbo": False},
-    {"id": "C", "label": "1.00MP turbo 8step", "quality": "ab_100", "turbo": True},
+    {"id": "A", "label": "0.40MP standard 12step", "quality": "ab_040",
+     "turbo": False, "expect_miss": True},
+    {"id": "B", "label": "1.00MP standard 12step", "quality": "ab_100",
+     "turbo": False, "expect_miss": True},
+    {"id": "C", "label": "1.00MP turbo 8step", "quality": "ab_100",
+     "turbo": True, "expect_miss": False},
 ]
 
 PASSES = ("miss", "hit1", "hit2")
@@ -194,7 +201,11 @@ def start_vram_logger():
     body = SAMPLER_BODY.replace("LOGPATH", VRAM_LOG)
     blob = base64.b64encode(body.encode()).decode()
     steps = [
-        ("write", "pkill -f h3_vram_sampler; rm -f %s; echo %s | base64 -d > %s"
+        # The bracket keeps pkill's pattern from matching the ssh command line
+        # that carries it: `pkill -f h3_vram_sampler` killed its own shell and
+        # returned 255, so the sampler never started and a whole run went by
+        # with no VRAM figures.
+        ("write", "pkill -f 'h3_vram_[s]ampler'; rm -f %s; echo %s | base64 -d > %s"
                   % (VRAM_LOG, blob, SAMPLER_SH)),
         ("chmod", "chmod +x %s" % SAMPLER_SH),
         ("launch", "setsid nohup %s >/dev/null 2>&1 </dev/null & echo launched"
@@ -218,7 +229,7 @@ def start_vram_logger():
 
 
 def stop_vram_logger():
-    runpod_ctl.ssh("pkill -f h3_vram_sampler || true", timeout=60)
+    runpod_ctl.ssh("pkill -f 'h3_vram_[s]ampler' || true", timeout=60)
 
 
 def fetch_vram_samples():
@@ -292,13 +303,17 @@ def run_condition(cond, pass_name, seed, prompt_text):
     g = done["generations"][0]
     phases = g.get("phase_seconds") or {}
     suspicious = []
-    if g["status"] == "done" and not phases.get("sampling"):
+    if g["status"] == "done" and not phases.get("sampling") and g["seconds"] < 15:
         # ComfyUI returns a cached result instantly when the graph and inputs
         # are identical to something it already ran. That is not a measurement.
-        suspicious.append("no sampling phase -- ComfyUI served its execution cache")
+        # A missing sampling phase on its own is not enough to say so: phase
+        # attribution comes from WebSocket events and occasionally drops one,
+        # which flagged two runs that had plainly done 31 and 72 seconds of work.
+        suspicious.append("finished in %.1fs with no sampling phase -- ComfyUI "
+                          "served its execution cache" % g["seconds"])
     if cond["turbo"] and not g["params"].get("turbo"):
         suspicious.append("Turbo was requested but not applied")
-    if pass_name == "miss" and g["cache_result"] != "MISS":
+    if pass_name == "miss" and cond.get("expect_miss") and g["cache_result"] != "MISS":
         suspicious.append("the MISS pass hit the cache -- MISS peak is not measured")
     if pass_name.startswith("hit") and g["cache_result"] != "HIT":
         suspicious.append("the HIT pass missed the cache")
@@ -419,7 +434,14 @@ def main():
         stop_gpu()
         raise SystemExit("gate failed after boot: %s" % problem)
 
-    start_vram_logger()
+    sampling_live = start_vram_logger()
+    report["vram_sampler_started"] = time.time() if sampling_live else None
+    if not sampling_live:
+        # The first condition's MISS window is where the encoder is resident and
+        # the peak actually happens. Measuring it late reports a floor as if it
+        # were a peak, so say so rather than publishing the number.
+        print("  WARNING: peaks for the first condition will be floors, not peaks",
+              flush=True)
     t0 = time.time()
     try:
         for cond in CONDITIONS:
@@ -438,9 +460,16 @@ def main():
 
     samples = fetch_vram_samples()
     report["vram_samples"] = len(samples)
+    first_sample = min((t for t, _ in samples), default=None)
     for r in report["results"]:
         if r.get("started_at") and r.get("finished_at"):
             r["peak_vram_mib"] = peak_between(samples, r["started_at"], r["finished_at"])
+            if first_sample and r["started_at"] < first_sample:
+                r["peak_is_floor"] = True
+                r["suspicious"] = "; ".join(filter(None, [
+                    r.get("suspicious"),
+                    "sampling began %.0fs into this run -- its peak is a floor"
+                    % (first_sample - r["started_at"])]))
     report["idle_vram_mib"] = min((m for _, m in samples), default=None)
     report["elapsed_seconds"] = round(time.time() - t0, 1)
 

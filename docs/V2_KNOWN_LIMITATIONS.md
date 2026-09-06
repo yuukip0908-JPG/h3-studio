@@ -38,6 +38,8 @@ MISS（Qwen3-VL エンコード込み）は Prompt Cinema で **75.2s**。
 | 条件 | 結果 |
 |---|---|
 | **9:16 縦（Portrait Widescreen）** | **PASS** — aspect_ratio 修正後、実機で完走 |
+| **1.00 MP / 768p（1376×768）** | **PASS** — 2秒・16:9。MISS peak 46.4 GiB（余裕 1.5 GiB） |
+| **Turbo LoRA 8step（FL2VA）** | **PASS** — 768p HIT 71.5s。破綻なし。既定は OFF のまま |
 | **18秒 = 447フレーム（学習範囲 124-362 を超過）** | **PASS** — 18.625秒 / 480x864 / H.264 + AAC stereo 32kHz |
 | Motion Trace + 18.2秒の参照動画 | PASS |
 

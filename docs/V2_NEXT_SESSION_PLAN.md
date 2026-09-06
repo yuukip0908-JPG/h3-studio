@@ -47,12 +47,16 @@
 **§3 の事前準備は完了済み。** Turbo グラフ分岐・安全判定・ETA 3層・mock・テスト
 （100件 PASS）・A/B ランナー・manifest まで実装とコミットが終わっている。
 
-**GPU A/B は未実行** — US-WA-1 の在庫枯渇のため。起動も新規Pod作成も失敗した
-（`docs/V2_KNOWN_LIMITATIONS.md` §1.5）。空き次第この1コマンドで完了する:
+**GPU A/B は 2026-09-06 に完了。** RTX 6000 Ada 48GB（新Pod `u3j83y0qfrdc56`）で
+A/B/C 各3パス、計9本を実測した。結果と判定は `docs/V2_AB_TESTS.md` §0。
 
-```bash
-/opt/homebrew/bin/python3.12 scripts/ab_quality.py --run
-```
+要点: 768p の MISS peak は **46.4 GiB**（0.40 MP の 47.3 GiB より低い）。
+ピークはエンコーダ常駐分で決まり解像度では動かない。画質差は明確。
+Turbo は 768p HIT を 100.2 s → 71.5 s（1.40倍速）にし、破綻は観測されなかった。
+**どちらも既定にはしていない**（1プロンプト・2秒の1点のみのため）。
+
+到達までに GPU セッションを3回消費している。原因はすべて測定側の不備で、
+再発防止は `scripts/ab_quality.py` のゲートに落とした（§9-4）。
 
 ## 3. 事前準備（GPU不要・先に済ませる）
 
@@ -229,3 +233,12 @@ bash scripts/ab_test.sh steps 12 8 image_trace   # ※turbo有効化フラグ付
 2. **検証範囲がまだ狭い** — 2秒/16:9 と 18秒/9:16 の2点。モード × 長さ × 縦横比の
    最小マトリクスは未実施。
 3. **idle 自動停止の既定が OFF** — 30分を既定にすべき（現在は手動で20分に設定済み）。
+4. **測定そのものが壊れうる** — 実際に3回壊れた。(a) 走行中の Studio が古い
+   コードだった（`start_studio.sh` は既に上がっていると何もしない）、
+   (b) 前回が埋めた cache のせいで MISS が一度も起きなかった、
+   (c) `ssh` が stdin を食べて manifest の2件目（Turbo LoRA）が
+   ダウンロードされないまま「verified」と報告された、
+   (d) `pkill -f h3_vram_sampler` が自分の ssh にマッチして自滅し VRAM が取れなかった。
+   いずれも `scripts/ab_quality.py` の事前ゲートと `download_models_v2.sh` の
+   件数チェックで検出されるようにした。**GPU を使う前に落ちる**のが要点。
+5. **未評価の観点** — 手・指、音声、長尺（15秒超）× 768p、9:16、Motion Trace。

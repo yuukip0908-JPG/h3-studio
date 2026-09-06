@@ -514,3 +514,55 @@ core 検証は 2秒 / 16:9 の1点だけだったが、通常運用で2点追加
 `Ref2VA Preprocessor` / `CFG 3.5-5.0` を推奨しているが、**これらはノード定義に一切存在しない**
 （`nodes_minimax_h3.py` に0件）。CFG も「guidance は 1 固定」と矛盾する。
 外部情報は必ずノード定義と照合してから採用すること。
+
+
+---
+
+## 2026-09-06 夜 — 解像度 / Turbo LoRA A/B（実測完了）
+
+**Pod:** `u3j83y0qfrdc56`（新規作成・同一 Network Volume `olmj77x4pc`）
+**GPU:** NVIDIA RTX 6000 Ada Generation 49,140 MiB / US-WA-1 / $0.84時
+**baseline:** Pod側 `doctor.sh` FAIL=0 WARN=0（実行前に確認）
+**生データ:** `results/ab_quality/run_20260906T150042Z.json`
+
+固定: Image Trace / 同一画像 / 同一 prompt（run 固有 nonce 付き）/ seed 424242-244 /
+2.0秒 / 16:9 / res_multistep / simple。変えたのは解像度と Turbo のみ。
+
+| 条件 | 実解像度 | cache | 総時間 | sampling | peak VRAM |
+|---|---|---|---|---|---|
+| A 0.40 MP 12step | 864×480 | MISS | 157.8 s | 64.4 s | *(計測外)* |
+| A 0.40 MP 12step | 864×480 | HIT ×2 | 31.3 / 28.7 s | 20.4 s | 26.5 GiB |
+| B 1.00 MP 12step | 1376×768 | MISS | 155.5 s | 83.9 s | **46.4 GiB** |
+| B 1.00 MP 12step | 1376×768 | HIT ×2 | 100.3 / 100.0 s | 85.0 s | 28.0 GiB |
+| C 1.00 MP 8step Turbo | 1376×768 | HIT ×3 | 72.0 / 71.0 / 72.1 s | 56.5 s | 28.0 GiB |
+
+- 768p の代償: HIT 30.0 s → 100.2 s（**3.34倍**）
+- Turbo の効果: 768p HIT 100.2 s → 71.5 s（**1.40倍速**、sampling は 1.49倍速）
+- **MISS peak は解像度に依存しない** — 46.4 GiB（1.0MP）< 47.3 GiB（0.4MP・既知値）。
+  ピークは Qwen3-VL エンコーダ常駐の瞬間に決まり、sampling は解放後に走る
+- 48 GB の余裕は **1.5 GiB**。2秒での話であり、長尺 × 768p は未検証
+- 再現性: 実行ごとのブレは A 8% / B 0.3% / C 1.5%
+
+**A の MISS peak は無効**（VRAMサンプラー起動が54秒遅れ、エンコーダ常駐の瞬間を逃した）。
+
+目視（フレーム 8/28/48）: 480p は顔輪郭・肌・髪・生地・背景がいずれも甘い。
+768p は明確に改善。Turbo 8step は 768p 通常と同等以上で、4step 版で報告される
+ブロックノイズ・モーションスメアは**観測されなかった**。手・指と音声はこのカットに
+写っておらず未評価。
+
+**既定は変更していない。** 1プロンプト・1画像・2秒・16:9 の1点のみの実測であり、
+「未検証の値を既定にしない」を満たさないため。判定は `docs/V2_AB_TESTS.md` §0。
+
+### この結果に到達するまでに GPU セッションを3回消費した
+
+すべて測定側の不備で、baseline には一切影響していない。
+
+| # | 症状 | 原因 | 対策 |
+|---|---|---|---|
+| 1 | 条件Cが6秒で完了・turbo未適用 | 起動済み Studio が Turbo 実装前の古いコードだった（`start_studio.sh` は既に上がっていると何もしない） | ランナーが起動時刻と `studio/*.py` の mtime を比較して**GPU前に**落ちる。オーケストレータは restart する |
+| 2 | 全パスが HIT・MISS peak が取れない | 前回の失敗runが同じ prompt で cache を埋めていた | prompt に run 固有 nonce を付ける |
+| 3 | 「LoRA verified」と報告されたが実在しなかった | `ssh` が stdin を食べ、manifest 2件目の行が消えた | manifest を fd 3 で読む + 処理件数チェック |
+| 4 | VRAM が1件も取れない | `pkill -f h3_vram_sampler` が自分の ssh コマンドにマッチして自滅（rc 255） | パターンを `h3_vram_[s]ampler` に |
+| 5 | 停止成功なのに 502 で異常終了 | `/api/gpu/stop` は Pod 自身の proxy 経由で、Pod と同時に消える | RunPod API で停止を確認する |
+
+3回目は Turbo ゲートが**生成を1本も走らせる前に**落ちて GPU を停止した（GPU使用 約2.5分）。
