@@ -150,6 +150,59 @@ def refresh_endpoint(pod_id=None):
     return info
 
 
+def create_pod(spec, wait_seconds=420):
+    """Create a Pod from a recreate spec and wait until it is usable.
+
+    Used to move the H3 environment to a different host when the machine the
+    current Pod is bound to has no free GPU. The network volume carries
+    everything (ComfyUI, the venv, models, the CLIPCached cache), so the new
+    Pod only has to mount it -- but it MUST use the same imageName, because
+    the venv was built by that image's interpreter.
+
+    This never touches any existing Pod.
+    """
+    body = {k: v for k, v in spec.items() if not k.endswith("_note")}
+    created = _call("POST", "/pods", payload=body, timeout=120)
+    pid = created.get("id")
+    if not pid:
+        raise RunPodError("pod creation returned no id: %r" % (created,))
+    deadline = time.time() + wait_seconds
+    info = describe(pid)
+    while time.time() < deadline:
+        if info.get("desiredStatus") == "RUNNING" and info.get("sshPort"):
+            break
+        time.sleep(5)
+        info = describe(pid)
+    return info
+
+
+def activate_pod(info):
+    """Point results/runpod_state.json at a different Pod, keeping a record of
+    the previous one so it can still be inspected (and is never deleted)."""
+    state = config.load_runpod_state()
+    previous = state.get("podId")
+    if previous and previous != info.get("podId"):
+        history = state.setdefault("previousPods", [])
+        if previous not in history:
+            history.append(previous)
+        state["previousPodId"] = previous
+    state["podId"] = info.get("podId")
+    state["comfyUrl"] = info.get("comfyUrl")
+    for key in ("publicIp", "sshPort"):
+        if info.get(key):
+            state[key] = info[key]
+    if info.get("gpu"):
+        state["plannedGpuTypeId"] = info["gpu"]
+    if info.get("costPerHr"):
+        state["costPerHrTotal"] = info["costPerHr"]
+    state["lastUpdated"] = time.strftime("%Y-%m-%d")
+    tmp = config.RUNPOD_STATE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, config.RUNPOD_STATE)
+    return state
+
+
 def stop(pod_id=None):
     """Stop the Pod. Never terminates; the network volume is untouched."""
     pid = pod_id or config.pod_id()

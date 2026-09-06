@@ -1,0 +1,29 @@
+{
+  "consumerUserId": "user_3IuKzQvGOf6YnlcRvsiGTrmH29I",
+  "containerDiskInGb": 60,
+  "costPerHr": 0.84,
+  "createdAt": "2026-09-05 16:28:30.584 +0000 UTC",
+  "desiredStatus": "EXITED",
+  "env": {
+    "PUBLIC_KEY": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH/Isvin4lhnpRhz3tx/TH2gbg/THU6iOcYdNqH1yuG0 h3-cloud-repro-20260905"
+  },
+  "gpuCount": 1,
+  "id": "ufhtfdg9ulv3fj",
+  "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
+  "lastStartedAt": "2026-09-06 08:52:22.087 +0000 UTC",
+  "lastStatusChange": "Exited by user: Sun Sep 06 2026 09:21:38 GMT+0000 (Coordinated Universal Time)",
+  "machine": {},
+  "machineId": "bkwan6a3ct4i",
+  "memoryInGb": 188,
+  "name": "h3-clipcached-baseline",
+  "networkVolumeId": "olmj77x4pc",
+  "ports": [
+    "8188/http",
+    "22/tcp"
+  ],
+  "publicIp": "",
+  "templateId": "",
+  "vcpuCount": 16,
+  "volumeInGb": 0,
+  "volumeMountPath": "/workspace"
+}

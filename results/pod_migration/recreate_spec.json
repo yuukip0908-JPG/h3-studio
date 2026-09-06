@@ -1,0 +1,79 @@
+{
+  "captured": "2026-09-06T09:59:52Z",
+  "purpose": "Everything needed to recreate the H3 environment on a different host. The OLD pod ufhtfdg9ulv3fj is kept EXITED as insurance and must not be deleted or modified.",
+  "old_pod": {
+    "id": "ufhtfdg9ulv3fj",
+    "name": "h3-clipcached-baseline",
+    "machineId": "bkwan6a3ct4i",
+    "desiredStatus": "EXITED",
+    "note": "bound to machineId bkwan6a3ct4i, which has no free GPU; that is the only reason it cannot start. Keep as EXITED insurance."
+  },
+  "recreate_spec": {
+    "name": "h3-clipcached-baseline-2",
+    "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
+    "imageName_note": "MUST match. The venv at /workspace/ComfyUI/.venv was built by this image's interpreter (Python 3.12.3, Ubuntu 24.04.4, GCC 13.3.0). A different image with a different Python minor version breaks it.",
+    "gpuTypeIds": [
+      "NVIDIA RTX 6000 Ada Generation",
+      "NVIDIA A100-SXM4-80GB"
+    ],
+    "gpuTypePriority": "availability",
+    "gpuCount": 1,
+    "dataCenterIds": [
+      "US-WA-1"
+    ],
+    "dataCenterIds_note": "forced: network volume olmj77x4pc lives in US-WA-1 and can only attach to a pod in the same data center.",
+    "cloudType": "SECURE",
+    "networkVolumeId": "olmj77x4pc",
+    "volumeMountPath": "/workspace",
+    "containerDiskInGb": 60,
+    "ports": [
+      "8188/http",
+      "22/tcp"
+    ],
+    "allowedCudaVersions": "OMITTED ON PURPOSE - requiring 13.0 returns 'no instances currently available' even on machines reporting CUDA 13.0",
+    "env": "PUBLIC_KEY is injected by RunPod from the account SSH keys; not set by us"
+  },
+  "measured_requirements": {
+    "peak_vram_mib": 48392,
+    "peak_vram_note": "47.3 GiB observed on a 49140 MiB card during a cache MISS, when the 27 GB Qwen3-VL encoder is resident. Cache HIT runs peak at ~26 GiB. 48 GB is the validated size; do not go below it.",
+    "driver_on_old_host": "550.127.05 reporting CUDA Version 13.0",
+    "torch": "2.14.0+cu130",
+    "python": "3.12.3",
+    "os": "Ubuntu 24.04.4 LTS"
+  },
+  "persistence_audit": {
+    "verdict": "everything required lives on the network volume",
+    "on_volume": [
+      "/workspace/ComfyUI (source, .venv, models, custom_nodes, input, output)",
+      "/workspace/ComfyUI/.venv (torch cu130 + all pip packages)",
+      "/workspace/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached (+ its cache/)",
+      "/workspace/ComfyUI/custom_nodes/h3studio (Reference Strength node)",
+      "/workspace/ComfyUI/models (5 checkpoints incl. ref2va)",
+      "/workspace/H3_CLOUD_REPRO (scripts, workflows, results, logs)",
+      "/workspace/.cache/huggingface, /workspace/.cache/pip"
+    ],
+    "not_on_volume_but_reproduced_by_the_image": [
+      "system python 3.12.3 and OS packages (from imageName)",
+      "NVIDIA driver / CUDA runtime (from the host + image)",
+      "/root/.ssh/authorized_keys (RunPod re-injects PUBLIC_KEY at creation)"
+    ],
+    "nothing_else_installed_outside_workspace": "install_comfyui.sh only creates the venv under /workspace/ComfyUI and pip-installs into it; no apt-get, no system-wide installs."
+  },
+  "availability_survey_us_wa_1_secure": [
+    {
+      "gpuTypeId": "NVIDIA RTX 6000 Ada Generation",
+      "vramGb": 48,
+      "usdPerHr": 0.84,
+      "stock": "Low",
+      "verdict": "FIRST CHOICE - identical to the validated baseline"
+    },
+    {
+      "gpuTypeId": "NVIDIA A100-SXM4-80GB",
+      "vramGb": 80,
+      "usdPerHr": 1.59,
+      "stock": "Low",
+      "verdict": "fallback - 80 GB is ample, sm_80 is supported by torch cu130, but it is a different architecture than the one the baseline was measured on"
+    }
+  ],
+  "rejected_candidates": "Every other GPU type in US-WA-1 SECURE returned no price and no stock, i.e. not purchasable right now. Community cloud has none. Anything under 48 GB was excluded on the measured 47.3 GiB peak."
+}

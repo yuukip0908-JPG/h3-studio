@@ -912,6 +912,155 @@ class CapacityErrorTests(unittest.TestCase):
             runpod_ctl.describe, runpod_ctl.start = orig_describe, orig_start
 
 
+class PodMigrationTests(unittest.TestCase):
+    """Moving to a new host must keep the volume and never touch the old Pod."""
+
+    def setUp(self):
+        import tempfile
+        from studio import config as cfg
+        self.tmp = tempfile.mkdtemp(prefix="h3state-")
+        self._saved = cfg.RUNPOD_STATE
+        cfg.RUNPOD_STATE = os.path.join(self.tmp, "runpod_state.json")
+        with open(cfg.RUNPOD_STATE, "w") as f:
+            json.dump({"podId": "oldpod", "comfyUrl": "https://oldpod-8188.proxy.runpod.net",
+                       "publicIp": "1.1.1.1", "sshPort": 25061,
+                       "networkVolumeId": "olmj77x4pc"}, f)
+        self.cfg = cfg
+
+    def tearDown(self):
+        import shutil
+        self.cfg.RUNPOD_STATE = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_activate_pod_repoints_state_and_keeps_the_old_id(self):
+        from studio import runpod_ctl
+        state = runpod_ctl.activate_pod({
+            "podId": "newpod", "comfyUrl": "https://newpod-8188.proxy.runpod.net",
+            "publicIp": "2.2.2.2", "sshPort": 30000,
+            "gpu": "NVIDIA RTX 6000 Ada Generation", "costPerHr": 0.84})
+        self.assertEqual(state["podId"], "newpod")
+        self.assertEqual(state["previousPodId"], "oldpod")
+        self.assertIn("oldpod", state["previousPods"])
+        self.assertEqual(state["sshPort"], 30000)
+        self.assertEqual(self.cfg.pod_id(), "newpod")
+        self.assertEqual(self.cfg.comfy_url(), "https://newpod-8188.proxy.runpod.net")
+        # the old pod's record is kept, not deleted
+        self.assertEqual(json.load(open(self.cfg.RUNPOD_STATE))["previousPodId"], "oldpod")
+
+    def test_create_pod_never_deletes_anything(self):
+        """The migration path must only ever POST /pods and GET /pods/{id}."""
+        from studio import runpod_ctl
+        seen = []
+
+        def fake_call(method, path, payload=None, timeout=30):
+            seen.append((method, path))
+            if method == "POST" and path == "/pods":
+                return {"id": "newpod"}
+            return {"id": "newpod", "desiredStatus": "RUNNING", "publicIp": "2.2.2.2",
+                    "portMappings": {"22": 30000}, "networkVolumeId": "olmj77x4pc",
+                    "volumeMountPath": "/workspace", "costPerHr": 0.84, "gpuCount": 1}
+
+        orig = runpod_ctl._call
+        try:
+            runpod_ctl._call = fake_call
+            info = runpod_ctl.create_pod({"name": "x", "networkVolumeId": "olmj77x4pc",
+                                          "imageName": "img", "note_ignored_note": "drop me"})
+        finally:
+            runpod_ctl._call = orig
+        self.assertEqual(info["podId"], "newpod")
+        self.assertEqual(info["sshPort"], 30000)
+        self.assertEqual(info["networkVolumeId"], "olmj77x4pc")
+        self.assertNotIn("DELETE", [m for m, _ in seen])
+        self.assertEqual(seen[0], ("POST", "/pods"))
+
+    def test_create_pod_strips_note_fields_from_the_spec(self):
+        from studio import runpod_ctl
+        captured = {}
+
+        def fake_call(method, path, payload=None, timeout=30):
+            if method == "POST":
+                captured.update(payload or {})
+                return {"id": "p"}
+            return {"id": "p", "desiredStatus": "RUNNING", "portMappings": {"22": 1},
+                    "publicIp": "x"}
+
+        orig = runpod_ctl._call
+        try:
+            runpod_ctl._call = fake_call
+            runpod_ctl.create_pod({"name": "x", "imageName": "img",
+                                   "imageName_note": "explanatory prose",
+                                   "dataCenterIds_note": "more prose"})
+        finally:
+            runpod_ctl._call = orig
+        self.assertEqual(sorted(captured), ["imageName", "name"])
+
+    def test_recreate_spec_is_self_consistent(self):
+        """The saved spec must carry everything POST /pods needs."""
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "results", "pod_migration", "recreate_spec.json")
+        doc = json.load(open(path))
+        r = doc["recreate_spec"]
+        for key in ("name", "imageName", "gpuTypeIds", "gpuCount", "dataCenterIds",
+                    "cloudType", "networkVolumeId", "volumeMountPath",
+                    "containerDiskInGb", "ports"):
+            self.assertIn(key, r, key)
+        self.assertEqual(r["networkVolumeId"], "olmj77x4pc")
+        self.assertEqual(r["volumeMountPath"], "/workspace")
+        self.assertEqual(r["dataCenterIds"], ["US-WA-1"])
+        # the image must match the old pod: the venv on the volume depends on it
+        old = json.load(open(os.path.join(os.path.dirname(path), "old_pod_full.json")))
+        self.assertEqual(r["imageName"], old["imageName"])
+        self.assertEqual(r["containerDiskInGb"], old["containerDiskInGb"])
+        self.assertEqual(sorted(r["ports"]), sorted(old["ports"]))
+        # every candidate GPU must clear the measured peak VRAM
+        self.assertGreaterEqual(doc["measured_requirements"]["peak_vram_mib"], 48000)
+        for cand in doc["availability_survey_us_wa_1_secure"]:
+            self.assertGreaterEqual(cand["vramGb"], 48, cand["gpuTypeId"])
+
+    def test_studio_rebinds_when_the_state_file_changes_pod(self):
+        """A migration must not require restarting the Studio."""
+        from studio import comfy_client, server as srv, runpod_ctl
+        saved = (srv.MANAGER, srv.GUARD, runpod_ctl.describe, runpod_ctl.have_api_key,
+                 srv.BOUND_POD_ID)
+        try:
+            runpod_ctl.describe = lambda pod_id=None: {"podId": "newpod",
+                                                       "desiredStatus": "EXITED"}
+            runpod_ctl.have_api_key = lambda: True
+
+            class FakeManager:
+                def __init__(self):
+                    self.client = comfy_client.ComfyClient("https://oldpod-8188.proxy.runpod.net")
+                    self.ws_connected = False
+                    self.rebound = []
+
+                def rebind(self, url):
+                    self.rebound.append(url)
+                    self.client = comfy_client.ComfyClient(url)
+
+                def notice(self, *a):
+                    pass
+
+                def active_count(self):
+                    return 0
+
+            srv.MANAGER = FakeManager()
+            srv.GUARD = None
+            srv.BOUND_POD_ID = "oldpod"
+            with open(self.cfg.RUNPOD_STATE, "w") as f:
+                json.dump({"podId": "newpod",
+                           "comfyUrl": "https://newpod-8188.proxy.runpod.net"}, f)
+            out = srv._gpu_status()
+            self.assertEqual(srv.MANAGER.rebound, ["https://newpod-8188.proxy.runpod.net"])
+            self.assertEqual(out["comfy_url"], "https://newpod-8188.proxy.runpod.net")
+            self.assertEqual(srv.BOUND_POD_ID, "newpod")
+            # a second poll must not rebind again
+            srv._gpu_status()
+            self.assertEqual(len(srv.MANAGER.rebound), 1)
+        finally:
+            (srv.MANAGER, srv.GUARD, runpod_ctl.describe, runpod_ctl.have_api_key,
+             srv.BOUND_POD_ID) = saved
+
+
 class CostGuardTests(unittest.TestCase):
     def test_guard_never_stops_while_busy(self):
         from studio import runpod_ctl

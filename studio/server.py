@@ -27,6 +27,9 @@ from . import comfy_client, config, graph, history, jobs, mediaprobe, runpod_ctl
 STARTED_AT = time.time()
 MANAGER = None
 GUARD = None
+# Pod id the JobManager is currently bound to, so a host migration can be
+# detected without second-guessing an explicitly overridden ComfyUI URL.
+BOUND_POD_ID = None
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 
 
@@ -58,6 +61,19 @@ def _gpu_status():
     except runpod_ctl.RunPodError as e:
         out["pod_state"] = "UNKNOWN"
         out["pod_error"] = str(e)
+    # results/runpod_state.json can be repointed at a different Pod while the
+    # Studio is running (a host migration), so pick that up without a restart.
+    # Keyed on the Pod ID, not on the URL: an explicit H3_COMFY_URL override or
+    # an injected client is deliberate and must never be rebound away from.
+    global BOUND_POD_ID
+    if MANAGER and not os.environ.get("H3_COMFY_URL"):
+        current_pod = config.pod_id()
+        if current_pod and BOUND_POD_ID is not None and current_pod != BOUND_POD_ID:
+            url = config.comfy_url()
+            MANAGER.notice("info", "Pod changed to %s -- reconnecting to %s" % (current_pod, url))
+            MANAGER.rebind(url)
+            BOUND_POD_ID = current_pod
+    out["comfy_url"] = MANAGER.client.base if MANAGER else config.comfy_url()
     out["comfy_ready"] = MANAGER.client.is_alive() if MANAGER else False
     if out.get("pod_state") == "RUNNING":
         secs = _running_seconds(out.get("last_started_at"))
@@ -524,8 +540,11 @@ class Server(ThreadingHTTPServer):
 
 def build_app(comfy=None):
     """Wire the globals. Exposed so the test harness can drive the same code."""
-    global MANAGER, GUARD
+    global MANAGER, GUARD, BOUND_POD_ID
     config.ensure_dirs()
+    # An injected client (tests, H3_COMFY_URL) is authoritative: leave the
+    # bound-pod tracking disabled so nothing rebinds it out from under us.
+    BOUND_POD_ID = None if (comfy is not None or os.environ.get("H3_COMFY_URL")) else config.pod_id()
     MANAGER = jobs.JobManager(comfy=comfy)
     MANAGER.start()
 
