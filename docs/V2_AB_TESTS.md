@@ -4,7 +4,8 @@
 
 新技術を既定にする前に条件を固定する。
 
-固定するもの: **image / prompt / seed / resolution / duration / sampler / scheduler / steps**
+固定するもの: **image / source video / prompt / seed / resolution / duration /
+sampler / scheduler / steps**
 変更するもの: **1 個だけ**
 
 ```bash
@@ -34,12 +35,14 @@ ComfyUI ログの `[CACHE HIT]`/`[CACHE MISS]`（ground truth）・ffprobe を�
 
 ## 状態一覧（2026-09-06 時点）
 
-このセッションでは **Pod を起動しない**方針だったため、GPU を要する A/B はすべて
-未実施である。実装・ハーネス・ロールバック手順は準備済みで、Pod を起動すれば
+3モードの基本動作は実機で確認済み（`docs/V2_KNOWN_LIMITATIONS.md` §1）だが、
+**A/B はいずれも未実施**。最後の通し検証は RunPod のホスト空き待ちで止まっている。
+実装・ハーネス・ロールバック手順は揃っているので、Pod が起動できれば
 そのまま実行できる。
 
 | # | 実験 | 変数 | 実装 | 実測 | 既定に採用 |
 |---|---|---|---|---|---|
+| 0 | Motion Trace `ref_image_size` | `match` vs `max` | **完了** | **未実施** | `match`（速い方。`max` は数倍遅い） |
 | 1 | Reference Strength | `minimax_visual_cond_noise_aug` | **完了** | **未実施** | 既定 0.999（= stock 値、実質無変更） |
 | 2 | Draft steps | `steps` 12 vs 20 | 完了 | 未実施 | Draft=12 は暫定 |
 | 3 | Final 解像度 | `megapixels` 0.4 vs 0.6 | 完了 | 未実施 | 0.4（実測済み baseline 値） |
@@ -152,6 +155,39 @@ RTX 6000 Ada + driver 550.127.05 + RunPod で動くかどうかが未確認。
 
 不採用の場合: `bash scripts/venv_rollback.sh pre_vsr`
 
-## 7. 2-pass / latent refine
+## 7. Motion Trace: `ref_image_size`
+
+```bash
+AB_NAME=refsize bash scripts/ab_test.sh refsize match max motion_trace
+```
+
+`match` は識別画像を生成解像度の画素数に、`max` は 2048px short edge に合わせる。
+`max` は参照トークンが全サンプリングステップを通るため**数倍遅い**が、
+同一性は上がるはず。Image Trace 相当の人物再現が必要なときだけの選択肢。
+
+**注意:** `match` と `max` は encoder 入力が変わるので**両方 MISS**になる。
+これは想定どおり（速度比較のみ意味がある）。
+
+| 日付 | match | max | time | VRAM | 同一性 | 判定 |
+|---|---|---|---|---|---|---|
+| — | | | 未実施 | | | |
+
+## 8. Motion Trace: Reference Strength
+
+Motion Trace では Reference Strength が**識別画像と元動画の両方**に効く
+（`model_base.py` が両方を `cond_video_latents` に入れる）。
+下げると人物同一性と動きの追従が同時に緩む。
+
+```bash
+AB_NAME=mt_refstrength bash scripts/ab_test.sh refstrength 0.999 0.95 motion_trace
+```
+
+期待: **両方 HIT**（cached node の下流なので）。
+
+| 日付 | A | B | cache | 同一性 | 動き追従 | 判定 |
+|---|---|---|---|---|---|---|
+| — | 0.999 | 0.95 | 未実施 | | | |
+
+## 9. 2-pass / latent refine
 
 v2 初版の必須機能ではない。通常 Final が安定してから着手する。未着手。

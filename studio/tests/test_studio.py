@@ -869,6 +869,49 @@ class PodStartTests(unittest.TestCase):
         self.assertEqual(persisted[-1]["sshPort"], 28041)
 
 
+class CapacityErrorTests(unittest.TestCase):
+    def test_no_free_gpu_is_reported_as_retryable_not_as_a_fault(self):
+        """RunPod answers HTTP 500 when the Pod's host is fully allocated.
+
+        A stopped Pod can only restart on the host it is bound to, so this is a
+        wait, not a failure -- the Studio must say so rather than surfacing a
+        bare 502. Measured against the live API on 2026-09-06.
+        """
+        from studio import runpod_ctl, server as srv
+        orig_describe, orig_start = runpod_ctl.describe, runpod_ctl.start
+        try:
+            runpod_ctl.describe = lambda pod_id=None: {"podId": "p", "desiredStatus": "EXITED"}
+
+            def boom(*a, **kw):
+                raise runpod_ctl.RunPodError(
+                    'RunPod POST /pods/p/start -> HTTP 500: {"error":"start pod: There are '
+                    'not enough free GPUs on the host machine to start this pod.","status":500}')
+
+            runpod_ctl.start = boom
+            result = srv._start_gpu()
+        finally:
+            runpod_ctl.describe, runpod_ctl.start = orig_describe, orig_start
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["retryable"])
+        self.assertIn("no free GPU", result["error"])
+        self.assertIn("untouched", result["error"])
+
+    def test_other_runpod_errors_still_propagate(self):
+        from studio import runpod_ctl, server as srv
+        orig_describe, orig_start = runpod_ctl.describe, runpod_ctl.start
+        try:
+            runpod_ctl.describe = lambda pod_id=None: {"podId": "p", "desiredStatus": "EXITED"}
+
+            def boom(*a, **kw):
+                raise runpod_ctl.RunPodError("HTTP 401: unauthorized")
+
+            runpod_ctl.start = boom
+            with self.assertRaises(runpod_ctl.RunPodError):
+                srv._start_gpu()
+        finally:
+            runpod_ctl.describe, runpod_ctl.start = orig_describe, orig_start
+
+
 class CostGuardTests(unittest.TestCase):
     def test_guard_never_stops_while_busy(self):
         from studio import runpod_ctl

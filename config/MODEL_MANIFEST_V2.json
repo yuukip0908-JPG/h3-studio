@@ -1,0 +1,20 @@
+{
+  "source_repo": "Comfy-Org/MiniMax-H3",
+  "revision": "main",
+  "purpose": "H3 Studio v2 additions on top of the frozen v1 baseline manifest. config/MODEL_MANIFEST.json is deliberately left untouched so the validated baseline keeps its exact definition; this file lists only what v2 adds.",
+  "size_bytes_source": "huggingface.co/api/models/Comfy-Org/MiniMax-H3/tree/main (LFS metadata, checked 2026-09-06)",
+  "warning_same_size": "minimax_h3_ref2va_pruned_int8_convrot.safetensors is EXACTLY the same byte size as the baseline's fl2va checkpoint (20970379616). A size check cannot tell them apart -- always verify with sha256.",
+  "files": [
+    {
+      "role": "diffusion_ref2va",
+      "used_by": "Motion Trace (MiniMaxH3CLIPCachedRef2VA / MiniMaxH3ReferenceToVideo)",
+      "remote_path": "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "local_subdir": "models/diffusion_models",
+      "filename": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "size": "21 GB",
+      "size_bytes": 20970379616,
+      "sha256": "9255f52b6677845ad238f20dfaafa94727053694127ab7f255c048f0f9365779",
+      "verified_on_pod": "2026-09-06 (sha256sum on ufhtfdg9ulv3fj matched exactly)"
+    }
+  ]
+}

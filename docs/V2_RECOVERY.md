@@ -11,6 +11,7 @@
 | Pod venv スナップショット | `results/venv_snapshots/<label>/` | `scripts/venv_snapshot.sh` が作る pip freeze + torch + custom_nodes |
 | Pod 側 baseline 証跡 | `results/BASELINE_READY` | 何が PASS したかの記録 |
 | Network Volume | RunPod `olmj77x4pc` | モデル・キャッシュ・出力。**削除しない** |
+| v2 追加モデル | `config/MODEL_MANIFEST_V2.json` | Ref2VA の sha256。`scripts/download_models_v2.sh --verify` で照合 |
 
 ## 1. 症状別の切り分け
 
@@ -24,6 +25,9 @@
 | 生成は通るが常に MISS | fingerprint / encoder drift | §4 |
 | Reference Strength が効かない | 追加ノード未導入 | `bash scripts/install_h3studio_node.sh` |
 | baseline の doctor が FAIL | Pod venv | §5 |
+| START GPU が「no free GPU」 | RunPod のホスト空き | §3.5 — 待つだけ。異常ではない |
+| Motion Trace が 400 で弾かれる | Ref2VA モデル未導入 | `bash scripts/download_models_v2.sh` |
+| Motion Trace の動きが速い/遅い | 元動画の fps | 24fps 前提。UI の解析結果を確認 |
 
 ## 2. Studio だけ元に戻す（Pod に触れない）
 
@@ -55,6 +59,27 @@ bash scripts/pod_ssh.sh 'bash /workspace/H3_CLOUD_REPRO/scripts/doctor.sh'
 bash scripts/install_h3studio_node.sh --uninstall
 ```
 
+## 3.5 START GPU が「no free GPU on the host machine」
+
+停止した Pod は**元のホストマシンにしか戻れない**。そのホストが埋まっていると
+RunPod は HTTP 500 で
+
+```
+start pod: There are not enough free GPUs on the host machine to start this pod.
+```
+
+を返す。**これは異常ではない。** Pod もコンテナディスクも Network Volume も無事で、
+データは何も失われていない。数分〜数十分おいて再試行する。
+
+```bash
+bash scripts/runpod_status.sh     # まだ EXITED か確認
+# UI の START GPU を押し直すか、上記を待ってから scripts/v2_validate.sh
+```
+
+どうしても空かない場合は RunPod コンソールで別ホストの Pod を作り直すことになるが、
+**その場合も Network Volume は同じものを再マウントできる**（モデル 75 GB と
+キャッシュは失われない）。既存 Pod を terminate する必要はない。
+
 ## 4. 常に cache MISS になる
 
 fingerprint は prompt + keyframe テンソル + **encoder 同一性（filename / size /
@@ -64,6 +89,7 @@ mtime_ns / ctime_ns）** + encoder ABI（ComfyUI バージョン + `comfy/text_e
 - encoder ファイルを `touch` / 再コピー / 再ダウンロードした → ctime が変わる
 - ComfyUI のバージョンを変えた → ABI が変わる
 - Image Trace で解像度 / aspect を変えた → keyframe テンソルが変わる（仕様）
+- Motion Trace で duration / 解像度 / `ref_image_size` を変えた → 参照テンソルが変わる（仕様）
 
 確認:
 

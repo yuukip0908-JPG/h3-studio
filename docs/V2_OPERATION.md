@@ -46,7 +46,38 @@ UI の VARIATIONS 下に予測が出る。
     Draft と解像度が同じなので **cache HIT、再エンコードなし**
 11. **EXPORT** → `results/studio/exports/` に mp4 と metadata json
 
-## 2. PIPELINE B — Prompt Cinema（画像なし）
+## 1.5 PIPELINE B — Motion Trace（識別画像 + 元動画）
+
+元動画から**動き・テンポ・カメラ**を、識別画像から**人物・見た目**を取る。
+
+1. **MODE** → `Motion Trace`
+2. **IDENTITY IMAGE** → 人物の顔・服がはっきり写った画像
+3. **SOURCE VIDEO** → 動きの手本にする動画
+   - H3 の想定は **24fps / 2〜15秒**。アップロード直後に
+     `2.334s · 24 fps · 56 frames` のように解析結果が出る
+   - 24fps から外れていると「motion が N% 遅く/速くなる」と警告が出る
+     （H3 は参照フレームを常に 24fps として読むため）
+   - 2秒未満は生成前に拒否される（GPU 時間を無駄にしないため）
+4. **IDENTITY FIDELITY**
+   - `match`（既定）— 速い。識別画像を生成解像度に合わせる
+   - `max` — 2048px で扱い同一性が上がるが**数倍遅い**
+5. **PROMPT** → 参照はタグで指す。placeholder が雛形を出す:
+   ```
+   keep the person of <Picture 1>, follow the motion and camera of <Video 1>;
+   change the background to a sunlit street
+   ```
+   `<Picture 1>` = 識別画像、`<Video 1>` = 元動画。
+   **元動画の服・背景・照明までコピーしたいわけではない**ので、
+   変えたいものは prompt に書く。
+6. **REFERENCE STRENGTH (identity + motion)** → 既定 0.999
+   このモードでは識別画像と元動画の**両方に同時に**効く（片方だけは緩められない）
+7. Draft ×4 → SELECT → FINALIZE → EXPORT（他モードと同じ）
+
+**Motion Trace だけの注意:** duration を変えると参照動画が切り詰められるため
+**cache MISS になる**。Draft と Final は解像度も duration も同じなので
+Final は HIT のまま。
+
+## 2. PIPELINE C — Prompt Cinema（画像なし）
 
 Image Trace と同じだが SOURCE IMAGE と REFERENCE STRENGTH は出ない
 （T2V には参照 latent が無いので Reference Strength は効果を持たない）。
@@ -71,6 +102,16 @@ bash scripts/install_h3studio_node.sh
 bash scripts/install_h3studio_node.sh --uninstall
 ```
 
+## 3.5 START GPU が「no free GPU」で失敗したとき
+
+停止中の Pod は**元のホストマシンでしか再起動できない**。そのホストが埋まっていると
+RunPod は「There are not enough free GPUs on the host machine」を返す。
+
+これは異常ではなく空き待ちである。Pod・コンテナディスク・Network Volume は
+すべて無事なので、数分おいて **START GPU** を押し直す。
+UI にもその旨が表示される。長時間空かない場合は RunPod コンソールで
+ホストの空き状況を確認する。
+
 ## 4. AUTO STOP（課金事故防止）
 
 右カラム **AUTO STOP** で `OFF / 20 min / 30 min / 60 min`。既定は **OFF**。
@@ -89,6 +130,7 @@ bash scripts/install_h3studio_node.sh --uninstall
 | Studio 側の健全性 | `http://127.0.0.1:8010/api/doctor` |
 | Pod 側 baseline の健全性 | `bash scripts/pod_ssh.sh 'bash /workspace/H3_CLOUD_REPRO/scripts/doctor.sh'` |
 | 実験の導入状況 | `bash scripts/install_experiment.sh --status` |
+| 3モードまとめて実機検証 | `bash scripts/v2_validate.sh`（GPU を使う。PASS 時のみ `results/V2_READY` 作成） |
 | Studio のログ | `results/logs/studio.log` |
 | ComfyUI のログ | `bash scripts/pod_ssh.sh 'tail -100 /workspace/H3_CLOUD_REPRO/results/logs/comfyui.log'` |
 
@@ -101,8 +143,9 @@ results/studio/exports/H3_<mode>_<gen>_seed<n>.json          その設定一式
 results/studio/history.sqlite3                               全履歴
 ```
 
-履歴には mode / 元画像 / prompt / seed / preset / Reference Strength /
-生成時間 / cache HIT・MISS / 出力パス / 選択有無 / finish options が入る。
+履歴には mode / 元画像 / **元動画とその解析結果** / **ref_image_size** / prompt / seed /
+preset / Reference Strength / 生成時間 / cache HIT・MISS / 出力パス / 選択有無 /
+finish options が入る。
 「この動画はどの設定だったか」は後から必ず追える。
 
 ## 7. ComfyUI GUI（debug 時のみ）

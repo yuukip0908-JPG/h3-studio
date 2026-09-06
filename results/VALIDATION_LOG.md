@@ -334,3 +334,86 @@ Pod venv すべて無変更。Pod を起動していないため Pod 側への�
 （速い 1 本目の更新が古いスナップショットで上書きされ、2 本目が MISS と誤報告されうる）。
 
 修正後 **10 回連続で 30/30 PASS、失敗 0**。
+
+---
+
+## Session 2026-09-06 (continued) — Motion Trace 追加と実機検証
+
+### PHASE 2 — 既存2モードの実機スモークテスト（実施）
+Pod `ufhtfdg9ulv3fj` を起動。**実機でしか出ない不具合が3件出た。**
+
+1. **Cloudflare 403（致命的）** — RunPod の Pod HTTP proxy は Cloudflare 経由で、
+   既定の `Python-urllib/3.x` User-Agent に `403 error code: 1010` を返す。
+   Studio → ComfyUI の**全リクエストが失敗**していた。curl は通るが urllib は通らない。
+   → 全 HTTP リクエストと WebSocket handshake に明示 User-Agent を付与。
+     mock 側も既定 UA を 403 で弾くようにして退行を検出できるようにした。
+2. **SSH ポートが変わる** — Pod 再起動で container 22 のホスト側ポートが
+   25061 → **28041** に変わった。さらに `desiredStatus=RUNNING` は
+   `portMappings` 公開**前**に返るため、`start()` が null ポートを保存し
+   旧ポートが残って「Connection refused」になっていた。
+   → `start()` はポートマッピングが出るまで待ち、`ssh()` は毎回再取得する。
+3. **`/api/status` が 500** — RunPod の `lastStartedAt` は Go 形式
+   `2026-09-06 08:52:22.087 +0000 UTC` で ISO8601 ではない。ISO 専用パーサが
+   None を返し、コスト計算が None で除算していた。
+   → 両形式を受け付け、None は常に「不明」として扱う。
+
+加えて RUNNING の Pod の payload には `machine.gpuTypeId` も `gpuTypeIds` も無い
+（`machine` が `{}`）ため、GPU 名は作成時の記録から補うようにした。
+
+実機スモーク結果:
+
+| 項目 | 実測 |
+|---|---|
+| START GPU 全経路 | PASS（Pod起動 → SSH → ComfyUI HEALTHY 58s） |
+| Prompt Cinema ×1 | **PASS 233.2s / cache MISS** |
+| Image Trace ×1（ref 0.999） | **PASS 175.3s / cache MISS** |
+| WebSocket（proxy 経由） | **PASS**（ノード単位の進捗、`sampling 12/12`） |
+| Reference Strength ノード導入 | PASS（`install_h3studio_node.sh` → 登録確認） |
+| STOP GPU | PASS（EXITED / Volume `olmj77x4pc` 保持） |
+| セッション課金 | 29分 = **$0.41** |
+
+### Motion Trace 調査（ソース確認・推測なし）
+- `MiniMaxH3CLIPCachedRef2VA` / `LoadVideo` / `GetVideoComponents` は
+  **すべて登録済み** → 追加 custom node は不要
+- モデル `minimax_h3_ref2va_pruned_int8_convrot.safetensors` 20,970,379,616 bytes、
+  sha256 `9255f52b…`。**fl2va と同一バイト数**なのでサイズでは区別不能。
+  Pod へダウンロードし sha256 一致を確認
+- `model_base.py` は Ref2VA の refs を `cond_video_latents` に**追記**する
+  → Reference Strength は Motion Trace でも効くが**識別画像と元動画に一括**
+- `MiniMaxH3ReferenceToVideo.execute()` は参照動画を生成フレーム数で切り詰め、
+  Qwen には 2fps で見せる → **duration が encoder-visible なのは Motion Trace だけ**
+- 参照は `<Picture 1>` / `<Video 1>` タグでモデルに渡る
+
+### PHASE 4-5 — 実装とオフライン検証
+`studio/templates/motion_trace_base.json` は検証済み T2V グラフから
+`scripts/build_motion_trace_template.py` が生成（差分4点）。実機から取得した
+`/object_info` に対して required/optional を突き合わせて検証。
+
+`studio/mediaprobe.py`（標準ライブラリのみの MP4 probe）を追加。
+H3 は 24fps/2-15s を前提とし 5 フレーム未満で例外を投げるため、
+GPU を使う前に弾く。**hdlr で video track を選ぶ** — サンプル数が最多の track を
+選ぶ実装は baseline 自身のサンプル動画で音声 track を拾い、
+56フレーム/24fps を 74フレーム/31.4fps と誤読した。ffprobe と完全一致を確認。
+
+テスト **58件 PASS**。ブラウザ実操作で Motion Trace 通し確認:
+Draft ×4 = `MISS 6.6s` + `HIT 3.5s ×3` → SELECT → FINALIZE = 同一seed・**HIT**。
+
+### PHASE 6 — 3モード通し実機検証（**未了・外部要因**）
+`bash scripts/v2_validate.sh` 実行時、RunPod が
+
+```
+start pod: There are not enough free GPUs on the host machine to start this pod.
+```
+
+を返した。停止中の Pod は元のホストでしか再起動できず、そのホストが満杯。
+**コードの問題ではなく空き待ち。** Pod・コンテナディスク・Network Volume は無事。
+3分間隔で複数回リトライしたが空かず。
+
+→ この状態を UI で「retryable な空き待ち」として明示するようにし、
+   回帰テストも追加した。空いたら `bash scripts/v2_validate.sh` を実行すれば
+   3モード ×4 / HIT / Select / Final / EXPORT / STOP まで自動測定し、
+   FAIL=0 のときだけ `results/V2_READY` を作成する。
+
+baseline への影響: **なし**（ComfyUI / CLIPCached / モデル4点 / baseline workflow /
+Pod venv すべて無変更。追加は Ref2VA モデル1本と custom node 1ファイルのみ、
+どちらも削除可能）。

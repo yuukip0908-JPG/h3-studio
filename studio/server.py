@@ -99,7 +99,23 @@ def _start_gpu():
     info = runpod_ctl.describe()
     if info.get("desiredStatus") != "RUNNING":
         steps.append("starting Pod %s" % info.get("podId"))
-        info = runpod_ctl.start()
+        try:
+            info = runpod_ctl.start()
+        except runpod_ctl.RunPodError as e:
+            # A stopped Pod can only restart on the host it is bound to. When
+            # that host is fully allocated RunPod answers HTTP 500 "There are
+            # not enough free GPUs on the host machine to start this pod."
+            # That is a capacity condition, not a fault: nothing is lost and
+            # retrying later usually works, so say so instead of surfacing a
+            # bare 502. (Measured 2026-09-06.)
+            message = str(e)
+            if "not enough free GPUs" in message or "no instances currently available" in message:
+                return {"ok": False, "steps": steps, "retryable": True,
+                        "error": "RunPod currently has no free GPU on this Pod's host. "
+                                 "The Pod, its container disk and the network volume are "
+                                 "untouched -- press START GPU again in a few minutes, or "
+                                 "check the RunPod console for availability."}
+            raise
     else:
         steps.append("Pod already RUNNING")
     if info.get("desiredStatus") != "RUNNING":

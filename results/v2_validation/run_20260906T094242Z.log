@@ -1,0 +1,9 @@
+== H3 Studio v2 end-to-end validation ==
+date: 2026-09-06T09:42:42Z
+commit: dbe650e
+
+starting H3 Studio
+H3 Studio READY -> http://127.0.0.1:8010/  (pid 4683, log /Users/user/Downloads/H3_CLOUD_REPRO/results/logs/studio.log)
+PASS  Studio responds on http://127.0.0.1:8010
+initial Pod state: EXITED
+starting GPU (this is where billing resumes)

@@ -4,8 +4,8 @@
 1. **v1 baseline（達成済み・凍結）** — RunPod等のLinux/NVIDIA環境で MiniMax H3 + CLIPCached
    baseline を再現し、Stock → MISS → full restart → HIT を証明する。
    証跡: `results/BASELINE_READY`、タグ `v1-baseline`。
-2. **v2 H3 Studio（進行中）** — baselineを壊さず、Image Trace と Prompt Cinema の
-   2用途を普段使いできるUIに変える。
+2. **v2 H3 Studio（進行中）** — baselineを壊さず、Image Trace / Motion Trace /
+   Prompt Cinema の3用途を普段使いできるUIに変える。
 
 ## 絶対原則
 **baselineが最優先。v2の機能はすべて捨てられる。baselineは捨てられない。**
@@ -41,24 +41,31 @@ Studio が Mac 側にあるのは**論理的強制**。Pod上のbackendはPodと
 「START GPU」を提供できない。
 
 ## Cache expectation（ソース確認済み・推測禁止）
-fingerprint = prompt + tokenize kwargs（keyframe画像テンソル）+ encoder同一性 + ABI。
+fingerprint = prompt + tokenize kwargs（参照テンソル）+ encoder同一性 + ABI。
 
-| 変更 | Image Trace (I2V) | Prompt Cinema (T2V) |
-|---|---|---|
-| seed / sampler / scheduler / steps / duration | HIT | HIT |
-| Reference Strength（cached nodeの下流） | HIT | 効果なし |
-| 解像度・aspect | **MISS**（keyframeをw×hにresize） | **HIT**（images=[]） |
-| prompt / 元画像 / encoder | MISS | MISS |
+| 変更 | Image Trace (FL2VA) | Motion Trace (Ref2VA) | Prompt Cinema (T2V) |
+|---|---|---|---|
+| seed / sampler / scheduler / steps | HIT | HIT | HIT |
+| duration | HIT（lengthはtokenizeに渡らない） | **MISS**（参照動画が切り詰められる） | HIT |
+| Reference Strength（cached nodeの下流） | HIT | HIT（識別+動きに一括で効く） | 効果なし |
+| 解像度・aspect | **MISS**（keyframeをw×hにresize） | **MISS**（ref_image_size=match時） | **HIT**（images=[]） |
+| ref_image_size | — | **MISS** | — |
+| prompt / 元画像 / 元動画 / encoder | MISS | MISS | MISS |
 
 この非対称性が preset を決めている（`studio/graph.py` PRESETS）。
-Image Trace の Draft と Final は解像度を揃える — Finalをcache HITにし、かつ
-選んだDraftと同一ピクセルからencodeするため。
+Image Trace と Motion Trace の Draft と Final は解像度（Motion Traceはdurationも）を
+揃える — Finalをcache HITにし、かつ選んだDraftと同一ピクセルからencodeするため。
+
+Motion Traceは `MiniMaxH3CLIPCachedRef2VA` + `minimax_h3_ref2va_pruned_int8_convrot`
+（fl2vaと**同一バイト数**。sha256でしか区別できない）。追加custom nodeは不要。
 
 ## 切り分け
 - Studio起動不可 → Mac側。`results/logs/studio.log`。Podは無関係
 - GPU情報がUNKNOWN → RunPod API / Keychain。`scripts/runpod_status.sh`
 - ComfyUI health不可 → Pod側。`scripts/pod_ssh.sh` → `doctor.sh`
 - 生成が400 → グラフ/ノード未登録。`/api/doctor`
+- Motion Traceが400 → Ref2VAモデル未導入。`scripts/download_models_v2.sh`
+- START GPUが「no free GPU」 → RunPodのホスト空き待ち。異常ではない。待って再試行
 - stock H3不可 → ComfyUI/H3/model。cacheを触らない
 - MISS成功・cacheなし → persistence/write
 - cacheあり・restart後MISS → fingerprint/environment drift（encoderのctime、ComfyUI版）
@@ -66,11 +73,12 @@ Image Trace の Draft と Final は解像度を揃える — Finalをcache HIT�
 
 ## ロールバック
 - ローカル: `scripts/rollback_v1.sh`（タグ `v1-baseline`）/ `~/Downloads/H3_CLOUD_REPRO_BACKUPS/*.tar.gz`
+- v1のMODEL_MANIFEST.jsonは凍結。v2の追加モデルは `config/MODEL_MANIFEST_V2.json` に分離
 - Pod venv: `scripts/venv_snapshot.sh` → `scripts/venv_rollback.sh <label>`
 - 実験導入は `scripts/install_experiment.sh`（スナップショット必須、torchはconstraintsで固定）
 
 ## 完了条件
 - v1: Stock成功 / MISS成功 / persistent cache / full restart / HIT / matrix / snapshot → **達成済み**
-- v2: `docs/V2_KNOWN_LIMITATIONS.md` §1 の未検証項目を実機で埋め、
-  `docs/V2_AB_TESTS.md` の表を実測で埋め、`results/V2_READY` を作成する。
-  実測せずに `V2_READY` を作らない。
+- v2: 3モードすべてを実機で通す（`bash scripts/v2_validate.sh`）。FAIL=0のときだけ
+  `results/V2_READY` が作られる。`docs/V2_AB_TESTS.md` の表を実測で埋める。
+  **mock成功だけで `V2_READY` を作らない。**

@@ -154,8 +154,13 @@ if [[ -f "$DIR/results/sample_MiniMax_H3_00015_.mp4" ]]; then
 fi
 say "motion trace source video: ${SRC_VIDEO:-<none>}"
 
+# Order matters for cost: Image Trace and Prompt Cinema share the fl2va
+# checkpoint, so running them back to back avoids a second 21 GB UNet reload
+# when Motion Trace swaps to ref2va.
 run_pipeline image_trace "a slow push-in, gentle natural light, subtle motion" \
   ",\"image\":\"$IMG\",\"reference_strength\":0.999" "PIPELINE A: Image Trace"
+run_pipeline prompt_cinema "slow dolly through a neon-lit street after rain, cinematic" \
+  "" "PIPELINE C: Prompt Cinema"
 if [[ -n "$SRC_VIDEO" ]]; then
   run_pipeline motion_trace "keep the person of <Picture 1>, follow the motion and camera of <Video 1>" \
     ",\"image\":\"$IMG\",\"source_video\":\"$SRC_VIDEO\",\"ref_image_size\":\"match\",\"reference_strength\":0.999" \
@@ -163,8 +168,6 @@ if [[ -n "$SRC_VIDEO" ]]; then
 else
   no "PIPELINE B: Motion Trace -- could not upload a source video"
 fi
-run_pipeline prompt_cinema "slow dolly through a neon-lit street after rain, cinematic" \
-  "" "PIPELINE C: Prompt Cinema"
 
 # ---- 6. history ----
 api /api/history '' 30 | python3 -c '

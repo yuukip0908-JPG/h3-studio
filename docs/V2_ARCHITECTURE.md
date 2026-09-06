@@ -44,6 +44,68 @@ Studio は ComfyUI の公開 HTTP API 経由でのみ動作する。ノードグ
 (`results/runs/*/api_prompt.json`) をテンプレートとして使い、入力値だけ差し替える。
 グラフを書き起こしていないので、baseline と構造がずれることがない。
 
+## 2.5 Motion Trace（Ref2VA）
+
+3本目のモードは Ref2VA 系を使う。**新しい custom node は不要**（`MiniMaxH3CLIPCachedRef2VA`
+`LoadVideo` `GetVideoComponents` はすべて登録済み。実機の `/object_info` で確認済み）。
+
+```
+LoadImage        ──▶ ref_image_0   識別: 人物・顔・服・印象      <Picture 1>
+LoadVideo
+  └▶ GetVideoComponents.images ──▶ ref_video_0  動き・テンポ・カメラ  <Video 1>
+                                   ↓
+                        MiniMaxH3CLIPCachedRef2VA
+                        (clip / vae / audio_vae / prompt / w / h / length / ref_image_size)
+```
+
+`studio/templates/motion_trace_base.json` は検証済み T2V グラフから
+`scripts/build_motion_trace_template.py` が生成する。差分は 4 点だけ:
+
+1. cached node を `MiniMaxH3CLIPCachedFL2VA` → `MiniMaxH3CLIPCachedRef2VA`（**node id は据え置き**
+   なので下流リンクは無変更）
+2. UNETLoader が `minimax_h3_ref2va_pruned_int8_convrot.safetensors` を読む
+   （**fl2va と同一バイト数 20,970,379,616**。sha256 でしか区別できない）
+3. Ref2VA は `audio_vae` を必須で要求する → baseline に既にある audio VAELoader を
+   2 つ目の consumer として繋ぐだけ（新規ローダも追加モデルロードもなし）
+4. LoadImage / LoadVideo / GetVideoComponents を追加
+
+**元動画の音声は意図的に接続していない。** Motion Trace は動画から「動き」を取る。
+音声は H3 が他 2 モードと同様に生成する。接続すると fingerprint にも入る。
+`ref_video_audio_0` スロットは将来のオプション用に空けてある。
+
+### プロンプトの役割分担
+
+stock ノードの docstring どおり、モデルは参照を **`<Picture 1>` / `<Video 1>`** という
+タグで受け取る（images → videos の順、種別ごとに 1 始まり）。UI の placeholder は
+
+```
+keep the person of <Picture 1>, follow the motion and camera of <Video 1>;
+change the background to a sunlit street
+```
+
+を提示する。つまり prompt は「何を保ち、何を変えるか」を書く場所であり、
+source video の服・背景・照明までコピーしたいわけではないことをタグで表現する。
+
+### Reference Strength は Motion Trace でも効く（ただし一括）
+
+`comfy/model_base.py` は Ref2VA の refs を **`cond_video_latents` に追記する**:
+
+```python
+payload["cond_video_latents"] = payload.get("cond_video_latents", []) + [r["latent"] for r in refs ...]
+```
+
+`_cond_video_rows` はこのリスト全体に `r = aug*r + (1-aug)*noise` を適用する。
+したがって Reference Strength は Motion Trace でも有効だが、
+**識別画像と元動画の両方に同時に効く**（片方だけ緩めることはできない）。
+UI では `REFERENCE STRENGTH (identity + motion)` と表示している。
+
+### IDENTITY FIDELITY (`ref_image_size`)
+
+- `match`（既定）— 識別画像を生成解像度の画素数に合わせて縮小。速い。
+  ただし**生成解像度が fingerprint に入る**。
+- `max` — 2048px short edge の参照パイプライン。同一性は上がるが、
+  参照トークンが全サンプリングステップを通るため**数倍遅い**。
+
 ## 3. キャッシュのセマンティクス（実装の中核）
 
 CLIPCached `f17ba8f` の `fingerprint.py` と ComfyUI `169fcf35` の
@@ -72,10 +134,12 @@ fingerprint に入るのは **prompt + tokenize kwargs（= 画像テンソル）
 ### この表から preset が決まる
 
 ```
-image_trace/draft    0.4 MP / 12 steps  ─┐ 解像度を揃える
-image_trace/final    0.4 MP / 30 steps  ─┘ → Final は純粋な cache HIT
+image_trace/draft    0.4  MP / 12 steps ─┐ 解像度を揃える
+image_trace/final    0.4  MP / 30 steps ─┘ → Final は純粋な cache HIT
+motion_trace/draft   0.4  MP / 12 steps ─┐ 解像度 + duration を揃える
+motion_trace/final   0.4  MP / 30 steps ─┘ → Final は cache HIT
 prompt_cinema/draft  0.25 MP / 12 steps
-prompt_cinema/final  0.4 MP / 30 steps    → T2V は解像度非依存なので HIT のまま
+prompt_cinema/final  0.4  MP / 30 steps   → T2V は解像度非依存なので HIT のまま
 ```
 
 Image Trace で Draft と Final の解像度を**あえて揃えている**のは節約のためだけではない。
