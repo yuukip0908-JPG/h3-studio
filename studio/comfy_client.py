@@ -30,8 +30,19 @@ class ComfyUnavailable(ComfyError):
     """The server did not answer at all (Pod stopped, ComfyUI not started)."""
 
 
+# RunPod serves the Pod's HTTP proxy through Cloudflare, which rejects the
+# default "Python-urllib/3.x" User-Agent with HTTP 403 "error code: 1010"
+# (measured against https://<pod>-8188.proxy.runpod.net on 2026-09-06). Any
+# non-default User-Agent is accepted, so every request the Studio makes must
+# carry one -- without it the Studio cannot talk to a real Pod at all, while
+# still working perfectly against a local ComfyUI or the test mock.
+USER_AGENT = "H3Studio/2.0 (+https://github.com/Comfy-Org/ComfyUI)"
+
+
 def _request(url, data=None, headers=None, method=None, timeout=30):
-    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+    headers = dict(headers or {})
+    headers.setdefault("User-Agent", USER_AGENT)
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, r.read(), dict(r.headers)
@@ -182,7 +193,7 @@ class WebSocketClient:
         handshake = (
             "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
             "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n"
-            "User-Agent: H3Studio\r\n\r\n" % (path, u.netloc, key)
+            "User-Agent: %s\r\n\r\n" % (path, u.netloc, key, USER_AGENT)
         )
         raw.sendall(handshake.encode())
         header = b""

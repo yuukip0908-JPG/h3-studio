@@ -198,6 +198,26 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def _cloudflare_gate(self):
+        """Reject the default Python User-Agent, exactly as RunPod's proxy does.
+
+        The Pod's HTTP proxy is fronted by Cloudflare, which answers
+        "Python-urllib/3.x" with HTTP 403 "error code: 1010" (measured against
+        a live Pod on 2026-09-06). Without this gate the mock is more permissive
+        than production and a missing User-Agent header passes every test while
+        making the Studio completely unable to reach a real Pod.
+        """
+        ua = self.headers.get("User-Agent") or ""
+        if not ua or ua.startswith("Python-urllib"):
+            body = b"error code: 1010\n"
+            self.send_response(403)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return False
+        return True
+
     def _json(self, obj, status=200):
         body = json.dumps(obj).encode()
         self.send_response(status)
@@ -215,6 +235,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- GET ----
     def do_GET(self):
+        if not self._cloudflare_gate():
+            return
         u = urllib.parse.urlparse(self.path)
         path, q = u.path, urllib.parse.parse_qs(u.query)
 
@@ -255,6 +277,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- POST ----
     def do_POST(self):
+        if not self._cloudflare_gate():
+            return
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n) if n else b""
         path = urllib.parse.urlparse(self.path).path
@@ -295,6 +319,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- websocket upgrade ----
     def _websocket(self):
+        if not self._cloudflare_gate():
+            return
         key = self.headers.get("Sec-WebSocket-Key")
         if not key:
             return self._json({"error": "not a websocket request"}, 400)

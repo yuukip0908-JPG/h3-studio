@@ -43,7 +43,10 @@ def _call(method, path, payload=None, timeout=30):
     req = urllib.request.Request(
         config.RUNPOD_API_BASE + path, data=data, method=method,
         headers={"Authorization": "Bearer " + _api_key(),
-                 "Content-Type": "application/json"})
+                 "Content-Type": "application/json",
+                 # rest.runpod.io accepts the default agent today, but it sits
+                 # behind the same CDN as the Pod proxy; be explicit.
+                 "User-Agent": "H3Studio/2.0"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             body = r.read()
@@ -71,14 +74,20 @@ def describe(pod_id=None):
     d = _call("GET", "/pods/%s" % pid)
     machine = d.get("machine") or {}
     ssh_ip, ssh_port = _ssh_endpoint(d)
+    # A RUNNING Pod's payload carries neither machine.gpuTypeId nor gpuTypeIds
+    # (measured 2026-09-06: `machine` comes back as {}), so the GPU name falls
+    # back to what was recorded when the Pod was created.
+    state = config.load_runpod_state()
     return {
         "podId": d.get("id"),
         "name": d.get("name"),
         "desiredStatus": d.get("desiredStatus"),
-        "gpu": machine.get("gpuTypeId") or (d.get("gpuTypeIds") or [None])[0],
+        "gpu": (machine.get("gpuTypeId") or (d.get("gpuTypeIds") or [None])[0]
+                or state.get("plannedGpuTypeId")),
         "gpuCount": d.get("gpuCount"),
         "costPerHr": d.get("costPerHr"),
-        "dataCenterId": machine.get("dataCenterId") or d.get("dataCenterId"),
+        "dataCenterId": (machine.get("dataCenterId") or d.get("dataCenterId")
+                         or state.get("plannedDataCenterId")),
         "networkVolumeId": d.get("networkVolumeId"),
         "volumeMountPath": d.get("volumeMountPath"),
         "publicIp": d.get("publicIp") or ssh_ip,
@@ -106,13 +115,37 @@ def is_running(pod_id=None):
 
 
 def start(pod_id=None, wait_seconds=300):
+    """Start the Pod and wait until it is both RUNNING and reachable.
+
+    A restarted Pod reports desiredStatus=RUNNING *before* RunPod publishes its
+    portMappings, and it is usually given a NEW host port for container port 22.
+    Returning at RUNNING therefore persists a null port, leaves the previous
+    run's port in runpod_state.json, and the next SSH gets "Connection refused".
+    So we wait for the mapping too, not just the status.
+    """
     pid = pod_id or config.pod_id()
     _call("POST", "/pods/%s/start" % pid, payload={})
     deadline = time.time() + wait_seconds
     info = describe(pid)
-    while time.time() < deadline and info.get("desiredStatus") != "RUNNING":
+    while time.time() < deadline:
+        if info.get("desiredStatus") == "RUNNING" and info.get("sshPort"):
+            break
         time.sleep(5)
         info = describe(pid)
+    _persist_endpoint(info)
+    return info
+
+
+def refresh_endpoint(pod_id=None):
+    """Re-read the Pod's public IP / SSH port and write them to runpod_state.json.
+
+    Cheap (one API call) and idempotent. Called before every SSH so a stale
+    port from a previous Pod lifetime can never be used.
+    """
+    try:
+        info = describe(pod_id)
+    except RunPodError:
+        return None
     _persist_endpoint(info)
     return info
 
@@ -148,7 +181,13 @@ def _persist_endpoint(info):
 
 
 def ssh(command, timeout=600):
-    """Run one command on the Pod via the existing scripts/pod_ssh.sh."""
+    """Run one command on the Pod via the existing scripts/pod_ssh.sh.
+
+    The endpoint is refreshed first: pod_ssh.sh reads results/runpod_state.json,
+    and that file is only as fresh as the last start. One API call here is much
+    cheaper than a 7-minute timeout on a stale port.
+    """
+    refresh_endpoint()
     script = os.path.join(config.PROJECT_DIR, "scripts", "pod_ssh.sh")
     try:
         proc = subprocess.run(["bash", script, command], capture_output=True, text=True, timeout=timeout)

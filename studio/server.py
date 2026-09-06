@@ -6,6 +6,7 @@ stop a billable GPU Pod, so it is a single-operator local tool, not a service.
 Run:  bash scripts/start_studio.sh      (or: python3 -m studio.server)
 """
 
+import calendar
 import json
 import mimetypes
 import os
@@ -58,20 +59,37 @@ def _gpu_status():
         out["pod_state"] = "UNKNOWN"
         out["pod_error"] = str(e)
     out["comfy_ready"] = MANAGER.client.is_alive() if MANAGER else False
-    if out.get("pod_state") == "RUNNING" and out.get("last_started_at"):
-        out["session_seconds"] = _running_seconds(out["last_started_at"])
-        if out.get("hourly_usd"):
-            out["session_cost_usd"] = round(out["session_seconds"] / 3600.0 * out["hourly_usd"], 3)
+    if out.get("pod_state") == "RUNNING":
+        secs = _running_seconds(out.get("last_started_at"))
+        out["session_seconds"] = secs
+        if secs is not None and out.get("hourly_usd"):
+            out["session_cost_usd"] = round(secs / 3600.0 * out["hourly_usd"], 3)
     return out
 
 
-def _running_seconds(iso):
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S"):
+def _running_seconds(stamp):
+    """Seconds since the Pod last started, or None if the timestamp is unusable.
+
+    RunPod's REST API returns lastStartedAt in Go's default layout --
+    "2026-09-06 08:52:22.087 +0000 UTC" -- not ISO 8601, so an ISO-only parser
+    silently yields None and any arithmetic on it raises (measured against the
+    live API on 2026-09-06). Both shapes are accepted here, and every caller
+    must still treat None as "unknown".
+    """
+    if not isinstance(stamp, str) or not stamp.strip():
+        return None
+    s = stamp.strip().replace("+00:00", "Z")
+    if s.endswith(" UTC"):                      # Go: "... +0000 UTC"
+        s = s[:-4].strip()
+        if len(s) > 6 and s[-5] in "+-" and s[-6] == " ":
+            s = s[:-6].strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
         try:
-            t = time.strptime(iso.replace("+00:00", "Z"), fmt)
-            return max(0, int(time.time() - (time.mktime(t) - time.timezone)))
+            t = time.strptime(s, fmt)
         except (ValueError, TypeError):
             continue
+        return max(0, int(time.time() - calendar.timegm(t)))
     return None
 
 

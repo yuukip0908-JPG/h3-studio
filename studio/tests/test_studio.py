@@ -507,6 +507,93 @@ class ApiServerTests(StudioTestCase):
         self.assertIn("still running", r["error"])
 
 
+class RealPodRegressionTests(StudioTestCase):
+    """Regressions for defects that only a real Pod could expose.
+
+    Each of these passed every mock test before 2026-09-06 and still broke
+    against the live RunPod deployment.
+    """
+
+    def test_default_python_user_agent_is_rejected_like_cloudflare(self):
+        """The mock now behaves like RunPod's proxy; prove the gate is live."""
+        import urllib.error
+        import urllib.request
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(self.url + "/system_stats", timeout=10)
+        self.assertEqual(cm.exception.code, 403)
+        self.assertIn(b"1010", cm.exception.read())
+
+    def test_studio_client_sets_a_user_agent_everywhere(self):
+        """HTTP and the WebSocket handshake must both carry a User-Agent."""
+        c = comfy_client.ComfyClient(self.url)
+        self.assertTrue(c.is_alive(), "ComfyClient must pass the proxy's UA check")
+        self.assertFalse(comfy_client.USER_AGENT.startswith("Python-urllib"))
+        ws = comfy_client.WebSocketClient(
+            comfy_client.ws_url_for(self.url, "ua-check"), timeout=10)
+        ws.connect()          # a 403 here would raise
+        try:
+            self.assertIsNotNone(ws.recv_message())
+        finally:
+            ws.close()
+
+    def test_upload_also_carries_the_user_agent(self):
+        src = os.path.join(self.tmp, "ua.png")
+        with open(src, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        name, _ = comfy_client.ComfyClient(self.url).upload_image(src)
+        self.assertIn("ua.png", name)
+
+
+class TimestampTests(unittest.TestCase):
+    def test_running_seconds_parses_runpods_go_timestamp(self):
+        """RunPod returns Go's layout, not ISO 8601."""
+        from studio import server as srv
+        now = time.time()
+        for stamp in ("%s +0000 UTC" % time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now - 600)),
+                      time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 600))):
+            secs = srv._running_seconds(stamp)
+            self.assertIsNotNone(secs, stamp)
+            self.assertAlmostEqual(secs, 600, delta=5)
+
+    def test_running_seconds_returns_none_instead_of_raising(self):
+        from studio import server as srv
+        for bad in (None, "", "not a date", 12345, {}):
+            self.assertIsNone(srv._running_seconds(bad))
+
+
+class PodStartTests(unittest.TestCase):
+    def test_start_waits_for_the_ssh_port_mapping(self):
+        """RUNNING arrives before portMappings; returning early strands SSH."""
+        from studio import runpod_ctl
+        calls = []
+        # RUNNING immediately, but no port until the third poll.
+        responses = [
+            {"id": "p", "desiredStatus": "RUNNING", "publicIp": "1.2.3.4", "portMappings": {}},
+            {"id": "p", "desiredStatus": "RUNNING", "publicIp": "1.2.3.4", "portMappings": {}},
+            {"id": "p", "desiredStatus": "RUNNING", "publicIp": "1.2.3.4", "portMappings": {"22": 28041}},
+        ]
+
+        def fake_call(method, path, payload=None, timeout=30):
+            calls.append((method, path))
+            if method == "POST":
+                return {}
+            return responses[min(len(calls) - 2, len(responses) - 1)]
+
+        orig_call, orig_persist, orig_sleep = (
+            runpod_ctl._call, runpod_ctl._persist_endpoint, time.sleep)
+        persisted = []
+        try:
+            runpod_ctl._call = fake_call
+            runpod_ctl._persist_endpoint = persisted.append
+            time.sleep = lambda s: None
+            info = runpod_ctl.start("p", wait_seconds=60)
+        finally:
+            runpod_ctl._call, runpod_ctl._persist_endpoint = orig_call, orig_persist
+            time.sleep = orig_sleep
+        self.assertEqual(info["sshPort"], 28041, "start() must not return before the port exists")
+        self.assertEqual(persisted[-1]["sshPort"], 28041)
+
+
 class CostGuardTests(unittest.TestCase):
     def test_guard_never_stops_while_busy(self):
         from studio import runpod_ctl
