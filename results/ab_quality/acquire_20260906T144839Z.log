@@ -1,0 +1,171 @@
+stopped pid 25420
+NOTE: the RunPod Pod is unaffected. Check billing with: bash scripts/runpod_status.sh
+H3 Studio READY -> http://127.0.0.1:8010/  (pid 25682, log /Users/user/Downloads/H3_CLOUD_REPRO/results/logs/studio.log)
+[14:48:43Z] studio: restarted
+[14:48:45Z] attempt 1: restart refused (host full)
+=== new Pod request ===
+{
+  "name": "h3-clipcached-baseline-3",
+  "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
+  "gpuTypeIds": [
+    "NVIDIA RTX 6000 Ada Generation",
+    "NVIDIA L40S",
+    "NVIDIA L40",
+    "NVIDIA RTX A6000",
+    "NVIDIA A40",
+    "NVIDIA RTX PRO 5000 Blackwell",
+    "NVIDIA A100-SXM4-80GB",
+    "NVIDIA A100 80GB PCIe",
+    "NVIDIA H100 PCIe",
+    "NVIDIA H100 80GB HBM3",
+    "NVIDIA H100 NVL",
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+  ],
+  "gpuTypePriority": "availability",
+  "gpuCount": 1,
+  "dataCenterIds": [
+    "US-WA-1"
+  ],
+  "cloudType": "SECURE",
+  "networkVolumeId": "olmj77x4pc",
+  "volumeMountPath": "/workspace",
+  "containerDiskInGb": 60,
+  "ports": [
+    "8188/http",
+    "22/tcp"
+  ]
+}
+
+=== old Pod 3lbxf2rnkjsqte ===
+  desiredStatus : EXITED (must stay EXITED, never deleted)
+  networkVolume : olmj77x4pc
+
+attempt 1/13 with gpuTypeIds=['NVIDIA RTX 6000 Ada Generation']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: There are no instances currently available","status":500}
+
+
+attempt 2/13 with gpuTypeIds=['NVIDIA L40S']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 3/13 with gpuTypeIds=['NVIDIA L40']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 4/13 with gpuTypeIds=['NVIDIA RTX A6000']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 5/13 with gpuTypeIds=['NVIDIA A40']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 6/13 with gpuTypeIds=['NVIDIA RTX PRO 5000 Blackwell']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 7/13 with gpuTypeIds=['NVIDIA A100-SXM4-80GB']
+creating the Pod (billing starts once it is RUNNING) ...
+  new Pod id    : jqj722x4jkwcan
+  desiredStatus : RUNNING
+  gpu           : NVIDIA RTX 6000 Ada Generation
+  cost/hr       : 1.59
+  volume        : olmj77x4pc -> /workspace
+  ssh           : 195.26.233.64 48257
+  comfyUrl      : https://jqj722x4jkwcan-8188.proxy.runpod.net
+
+results/runpod_state.json now points at jqj722x4jkwcan
+previous Pod kept as: otyu05x8yh2v96 (EXITED, untouched)
+[14:50:36Z] attempt 1: created a new Pod on an available host
+{"ok": true, "steps": ["Pod already RUNNING", "starting ComfyUI over SSH", "start_h3.sh exit=0", "ComfyUI healthy"], "comfy_url": "https://jqj722x4jkwcan-8188.proxy.runpod.net"}[14:51:23Z] === GPU acquired via new-pod ===
+  pod=jqj722x4jkwcan gpu=NVIDIA A100-SXM4-80GB (81920 MiB) cost/hr=1.59 dc=US-WA-1
+  NOTE: not the baseline card. Absolute times and VRAM are NOT comparable
+        to earlier measurements; only A vs B vs C among themselves are.
+[14:51:27Z] === downloading the Turbo LoRA ===
+== minimax_h3_ref2va_pruned_int8_convrot.safetensors ==
+  present with the expected size (20970379616 bytes)
+  verifying sha256 (this reads 21 GB, ~1 min) ...
+  PASS sha256 9255f52b6677845ad238f20dfaafa94727053694127ab7f255c048f0f9365779
+
+restarting ComfyUI so UNETLoader lists the new checkpoint
+stopping pid 111 (SIGTERM)
+process 111 stopped
+port 8188 released
+started pid=424
+log=/workspace/H3_CLOUD_REPRO/results/logs/comfyui.log
+HEALTHY after 31s (http://127.0.0.1:8188/system_stats)
+Local URL: http://127.0.0.1:8188
+done. Motion Trace is ready once /object_info/UNETLoader lists the ref2va file.
+[14:52:45Z] LoRA present and sha256 verified
+[14:52:45Z] === baseline doctor on the Pod ===
+== H3 doctor 2026-09-06 14:52:47 ==
+project=/workspace/H3_CLOUD_REPRO
+workspace=/workspace comfyui=/workspace/ComfyUI
+PASS  GPU: NVIDIA A100-SXM4-80GB, 81920 MiB, 570.195.03;
+PASS  venv python: /workspace/ComfyUI/.venv/bin/python (Python 3.12.3)
+PASS  torch 2.14.0+cu130 cuda=13.0 available on NVIDIA A100-SXM4-80GB
+PASS  ComfyUI present: version=0.34.2 commit=169fcf3 ref=v0.34.2
+PASS  model diffusion: minimax_h3_fl2va_pruned_int8_convrot.safetensors size OK (20970379616 bytes)
+PASS  model encoder: qwen3vl_32b_minimax_h3_int8_convrot.safetensors size OK (27141342152 bytes)
+PASS  model video_vae: minimax_h3_video_vae_fp16.safetensors size OK (5207808496 bytes)
+PASS  model audio_vae: minimax_h3_audio_vae_fp32.safetensors size OK (605254808 bytes)
+PASS  CLIPCached present: commit=f17ba8f369740a02a2138031517f853eb67b9d43 branch=HEAD
+PASS  cache dir: /workspace/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache (12 entries, 325M) writable=yes
+PASS  free disk on /workspace: 160577 GiB
+PASS  workflow: /workspace/H3_CLOUD_REPRO/workflows/READY_TO_USE_H3_CLIPCACHED.json
+PASS  ComfyUI process running (pid 424)
+PASS  port 8188 listening (pid '424')
+PASS  HTTP health OK: http://127.0.0.1:8188/system_stats
+PASS  node registered: MiniMaxH3ImageToVideo
+PASS  node registered: MiniMaxH3CLIPCachedFL2VA
+== summary: FAIL=0 WARN=0 ==
+[14:52:53Z] doctor: FAIL=0
+[14:52:53Z] === running the A/B ===
+=== conditions ===
+  A  0.40MP standard 12step   0.40 MP  12 steps  turbo=False
+  B  1.00MP standard 12step   1.00 MP  12 steps  turbo=False
+  C  1.00MP turbo 8step       1.00 MP   8 steps  turbo=True
+
+=== held fixed ===
+  mode           image_trace
+  prompt         a woman in a linen shirt turns slowly toward the camera and smiles, natural window light, shallow depth of field
+  duration       2.0
+  aspect_ratio   16:9 (Widescreen)
+  image          transparent_rgb_gaming_mouse.png
+  seeds          {'miss': 424242, 'hit1': 424243, 'hit2': 424244}
+  nonce          ab-20260906T145253Z
+
+each condition runs miss, hit1, hit2
+
+=== gates (no GPU) ===
+  studio is current      OK
+  turbo graph differs    OK
+
+starting GPU ...
+   {"ok": true, "steps": ["Pod already RUNNING", "ComfyUI already healthy"], "comfy_url": "https://jqj722x4jkwcan-8188.proxy.runpod.net"}
+  GPU: NVIDIA A100-SXM4-80GB (81920 MiB) $1.59/hr
+  NOTE: not the baseline card. Absolute seconds and VRAM are NOT
+        comparable to earlier measurements, and the '768p in 48 GB?'
+        question cannot be answered here.
+  turbo loadable        ComfyUI cannot load the Turbo LoRA: minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors not loadable by ComfyUI
+   {"ok": true, "steps": ["stop_h3.sh exit=0", "Pod desiredStatus=EXITED"], "network_volume_preserved": true, "network_volume": "olmj77x4pc"}
+   jqj722x4jkwcan   h3-clipcached-baseline-3       EXITED
+   otyu05x8yh2v96   h3-clipcached-baseline-3       EXITED
+   sgiaeck1hh0m1l   h3-clipcached-baseline-3       EXITED
+   3lbxf2rnkjsqte   h3-clipcached-baseline-2       EXITED
+   ufhtfdg9ulv3fj   h3-clipcached-baseline         EXITED
+gate failed after boot: ComfyUI cannot load the Turbo LoRA: minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors not loadable by ComfyUI
+[14:53:12Z] === stopping the GPU ===
+{"ok": true, "steps": ["stop_h3.sh exit=255", "Pod desiredStatus=EXITED"], "network_volume_preserved": true, "network_volume": "olmj77x4pc"}
+  jqj722x4jkwcan   h3-clipcached-baseline-3     EXITED
+  otyu05x8yh2v96   h3-clipcached-baseline-3     EXITED
+  sgiaeck1hh0m1l   h3-clipcached-baseline-3     EXITED
+  3lbxf2rnkjsqte   h3-clipcached-baseline-2     EXITED
+  ufhtfdg9ulv3fj   h3-clipcached-baseline       EXITED
+[14:53:18Z] done (rc=1). log: results/ab_quality/acquire_20260906T144839Z.log

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Download the H3 Studio v2 model additions onto the Pod (currently just the
-# Ref2VA checkpoint that Motion Trace needs), then verify them by sha256.
+# Download the H3 Studio v2 model additions onto the Pod -- the Ref2VA
+# checkpoint Motion Trace needs and the FL2VA Turbo LoRA -- and verify them by
+# sha256.
 #
 # Deliberately separate from scripts/download_models.sh: the v1 baseline
 # manifest stays frozen at exactly the four files it was validated with, so a
@@ -19,7 +20,14 @@ pod(){ bash "$DIR/scripts/pod_ssh.sh" "$@"; }
 
 python3 -c "import json;json.load(open('$MANIFEST'))" >/dev/null || { echo "bad manifest"; exit 1; }
 
-while IFS='|' read -r remote subdir filename size sha; do
+# Read the manifest on fd 3, not stdin. ssh consumes stdin, so a plain `while
+# read` loop that shells out to the Pod has its remaining input eaten by the
+# first iteration: this script silently handled only the first of the two
+# files, reported success, and the A/B then spent a GPU session concluding that
+# ComfyUI could not load a LoRA that had never been downloaded.
+processed=0
+while IFS='|' read -r remote subdir filename size sha <&3; do
+  processed=$((processed + 1))
   target="$MODELS/$remote"
   echo "== $filename =="
   present="$(pod "[ -f '$target' ] && stat -c %s '$target' || echo missing")"
@@ -37,19 +45,26 @@ p = hf_hub_download(repo_id='Comfy-Org/MiniMax-H3', filename='$remote',
 print('saved', p, Path(p).stat().st_size)
 PY"
   fi
-  echo "  verifying sha256 (this reads 21 GB, ~1 min) ..."
+  echo "  verifying sha256 (reads $((size/1024/1024/1024)) GB) ..."
   actual="$(pod "sha256sum '$target' | cut -d' ' -f1")"
   if [[ "$actual" == "$sha" ]]; then
     echo "  PASS sha256 $sha"
   else
     echo "  FAIL sha256 $actual != $sha"; exit 1
   fi
-done < <(python3 -c "
+done 3< <(python3 -c "
 import json
 for f in json.load(open('$MANIFEST'))['files']:
     print('|'.join([f['remote_path'], f['local_subdir'], f['filename'],
                     str(f['size_bytes']), f['sha256']]))
 ")
+
+expected="$(python3 -c "
+import json; print(len(json.load(open('$MANIFEST'))['files']))")"
+if [[ "$processed" != "$expected" ]]; then
+  echo "FAIL: handled $processed of $expected manifest files" >&2; exit 1
+fi
+echo "handled $processed of $expected manifest files"
 
 echo
 echo "restarting ComfyUI so UNETLoader lists the new checkpoint"
