@@ -136,6 +136,24 @@ def start(pod_id=None, wait_seconds=300):
     return info
 
 
+def actual_gpu(pod_id=None):
+    """The GPU the Pod really has, read from the Pod itself.
+
+    describe() falls back to the GPU recorded when the Pod was created, because
+    a RUNNING Pod's API payload carries no GPU name. After a migration that
+    recorded name can be wrong: a run was reported as an RTX 6000 Ada while the
+    card was actually an A100-SXM4-80GB, which silently invalidates any
+    comparison against earlier measurements. Only nvidia-smi knows.
+    """
+    rc, out, _ = ssh("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader",
+                     timeout=90)
+    if rc != 0 or not out.strip():
+        return None
+    first = out.strip().splitlines()[0]
+    name, _, total = first.partition(",")
+    return {"name": name.strip(), "memory_total": total.strip()}
+
+
 def refresh_endpoint(pod_id=None):
     """Re-read the Pod's public IP / SSH port and write them to runpod_state.json.
 

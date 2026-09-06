@@ -20,8 +20,14 @@ LOG="$DIR/results/ab_quality/acquire_$(date -u +%Y%m%dT%H%M%SZ).log"
 mkdir -p "$(dirname "$LOG")"
 say(){ echo "[$(date -u +%H:%M:%SZ)] $*" | tee -a "$LOG"; }
 
-curl -fsS --max-time 5 "$BASE/api/config" >/dev/null 2>&1 || bash scripts/start_studio.sh >/dev/null 2>&1
-say "studio: $(curl -fsS --max-time 5 "$BASE/api/config" >/dev/null 2>&1 && echo up || echo DOWN)"
+# Restart rather than "ensure up". start_studio.sh is a no-op when a process is
+# already listening, and the second attempt at this A/B silently measured a
+# Studio that had been started before Turbo support existed -- it ignored
+# strict_turbo and recorded condition C as condition B. A measurement run gets
+# a process built from the code on disk, every time.
+bash scripts/stop_studio.sh >>"$LOG" 2>&1 || true
+bash scripts/start_studio.sh >>"$LOG" 2>&1 || true
+say "studio: $(curl -fsS --max-time 5 "$BASE/api/config" >/dev/null 2>&1 && echo restarted || echo DOWN)"
 
 deadline=$(( $(date +%s) + MAX_MINUTES * 60 ))
 acquired=""
@@ -61,8 +67,13 @@ $PY - <<'PYEOF' 2>&1 | tee -a "$LOG"
 import sys; sys.path.insert(0, ".")
 from studio import runpod_ctl, config
 d = runpod_ctl.describe()
-print("  pod=%s gpu=%s cost/hr=%s dc=%s" % (d["podId"], d["gpu"], d["costPerHr"], d["dataCenterId"]))
-if d["gpu"] and "RTX 6000 Ada" not in str(d["gpu"]):
+# The API gives no GPU name for a RUNNING Pod and describe() falls back to what
+# was recorded at creation, which after a migration can be a different card.
+real = runpod_ctl.actual_gpu() or {}
+gpu = real.get("name") or d["gpu"]
+print("  pod=%s gpu=%s (%s) cost/hr=%s dc=%s"
+      % (d["podId"], gpu, real.get("memory_total", "?"), d["costPerHr"], d["dataCenterId"]))
+if gpu and "RTX 6000 Ada" not in str(gpu):
     print("  NOTE: not the baseline card. Absolute times and VRAM are NOT comparable")
     print("        to earlier measurements; only A vs B vs C among themselves are.")
 PYEOF

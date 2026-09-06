@@ -23,17 +23,17 @@
     "containerDiskInGb": 60,
     "cloudType": "SECURE"
   },
-  "podId": "sgiaeck1hh0m1l",
+  "podId": "otyu05x8yh2v96",
   "networkVolumeId": "olmj77x4pc",
   "status": "BASELINE_READY",
   "lastUpdated": "2026-09-06",
   "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
   "note_allowedCudaVersions": "omitted: requiring 13.0 returned \"no instances currently available\"",
-  "publicIp": "195.26.233.32",
-  "sshPort": 36689,
-  "costPerHrTotal": 0.84,
+  "publicIp": "195.26.233.38",
+  "sshPort": 19723,
+  "costPerHrTotal": 1.59,
   "gpuUsdPerHour": 0.74,
-  "comfyUrl": "https://sgiaeck1hh0m1l-8188.proxy.runpod.net",
+  "comfyUrl": "https://otyu05x8yh2v96-8188.proxy.runpod.net",
   "accountSpendRatePerHr": 0.867,
   "comfyuiCommit": "169fcf35a2fc163fec31338b816503ddac0d3fcf",
   "clipcachedCommit": "f17ba8f369740a02a2138031517f853eb67b9d43",
@@ -51,7 +51,8 @@
   },
   "previousPods": [
     "ufhtfdg9ulv3fj",
-    "3lbxf2rnkjsqte"
+    "3lbxf2rnkjsqte",
+    "sgiaeck1hh0m1l"
   ],
-  "previousPodId": "3lbxf2rnkjsqte"
+  "previousPodId": "sgiaeck1hh0m1l"
 }
