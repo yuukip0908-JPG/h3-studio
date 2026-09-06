@@ -93,6 +93,11 @@ class JobManager:
         self._poller = None
         self._stop = threading.Event()
         self._ref_node_available = None
+        # ComfyUI filename -> {"local": path, "kind": image|video, "sent": bool}
+        # Files are accepted whenever the operator picks them and forwarded to
+        # ComfyUI lazily, so choosing an image while the GPU is still booting
+        # works instead of being refused.
+        self.inputs = {}
 
     # ---------- lifecycle ----------
     def start(self):
@@ -167,27 +172,79 @@ class JobManager:
                 return None
         return self._ref_node_available
 
+    def accept_input(self, local_path, kind="image"):
+        """Register a file the operator picked, forwarding it if ComfyUI is up.
+
+        Returns (name, subfolder, sent). The GPU takes minutes to boot, so a
+        file must be selectable straight away: when ComfyUI is not reachable the
+        file is kept on this machine and forwarded by _ensure_inputs_uploaded()
+        at generate time. ComfyUI's /upload/image is content-agnostic, so the
+        same transport carries video.
+        """
+        name = os.path.basename(local_path)
+        sent = False
+        subfolder = ""
+        try:
+            if self.client.is_alive():
+                name, subfolder = self.client.upload_image(local_path)
+                sent = True
+        except comfy_client.ComfyError:
+            sent = False
+        with self.lock:
+            self.inputs[name] = {"local": local_path, "kind": kind, "sent": sent}
+        return name, subfolder, sent
+
     def upload_source_image(self, local_path):
-        name, subfolder = self.client.upload_image(local_path)
+        name, subfolder, _sent = self.accept_input(local_path, "image")
         return name, subfolder
 
     def upload_source_video(self, local_path):
-        """Send a Motion Trace source video to ComfyUI's input directory.
+        """Register a Motion Trace source video, with its probe result.
 
-        ComfyUI's /upload/image endpoint is content-agnostic -- it writes the
-        raw bytes and LoadVideo then lists the file by extension -- so the same
-        transport carries video. The probe result rides along so the UI can warn
-        about a clip H3 will mishandle before any GPU time is spent.
+        The probe runs locally and needs no GPU, so the operator is warned about
+        a clip H3 would mishandle even before the Pod is running.
         """
         meta = mediaprobe.describe_for_motion_trace(local_path)
-        name, subfolder = self.client.upload_image(local_path)
+        name, subfolder, _sent = self.accept_input(local_path, "video")
         return name, subfolder, meta
+
+    def _ensure_inputs_uploaded(self, *names):
+        """Forward any file that was accepted while ComfyUI was down.
+
+        Called just before a batch is built. By this point ComfyUI must be up
+        anyway to generate, so this is the natural place to catch up -- and the
+        operator never had to sequence their file picking around the GPU.
+        """
+        pending = []
+        with self.lock:
+            for name in names:
+                entry = self.inputs.get(name) if name else None
+                if entry and not entry["sent"]:
+                    pending.append((name, entry))
+        for name, entry in pending:
+            if not os.path.exists(entry["local"]):
+                raise comfy_client.ComfyError(
+                    "選んだファイルが見つかりません（%s）。もう一度選び直してください。" % name)
+            uploaded, _sub = self.client.upload_image(entry["local"])
+            with self.lock:
+                entry["sent"] = True
+                if uploaded != name:
+                    # ComfyUI renamed it; keep both keys pointing at the file.
+                    self.inputs[uploaded] = entry
+            self.notice("info", "%s を ComfyUI に転送しました。" % name)
 
     def submit_batch(self, *, mode, prompt_text, quality, variations, duration,
                      aspect_ratio, image=None, image_source=None, reference_strength=None,
                      seeds=None, parent_generation=None, kind=None,
                      source_video=None, source_video_meta=None, ref_image_size="match"):
         kind = kind or ("final" if quality != "draft" else "draft")
+        # Fail fast and once. Without this every variation is submitted, fails
+        # on its own, and the operator gets four identical error cards instead
+        # of one sentence telling them to start the GPU.
+        if not self.client.is_alive():
+            raise comfy_client.ComfyUnavailable("ComfyUI is not running")
+        # Anything picked while the GPU was booting is forwarded now.
+        self._ensure_inputs_uploaded(image, source_video)
         batch_id = _short_id("b")
         seeds = list(seeds) if seeds else [int.from_bytes(os.urandom(4), "big") for _ in range(variations)]
         variations = len(seeds)
@@ -285,13 +342,23 @@ class JobManager:
         return batch
 
     def cancel_all(self):
+        """Stop everything this Studio has in flight.
+
+        Interrupting alone is not enough: /interrupt only aborts the prompt
+        ComfyUI is executing, so the next queued prompt immediately starts and
+        the run appears to cancel itself one job at a time. The queued prompts
+        have to be removed as well.
+        """
+        with self.lock:
+            active = [g for g in self.generations.values() if g.status in ACTIVE_STATES]
+            queued_ids = [g.prompt_id for g in active if g.prompt_id]
+        self.client.cancel_queued(queued_ids)
         ok = self.client.interrupt()
         with self.lock:
-            for g in self.generations.values():
-                if g.status in ACTIVE_STATES:
-                    g.status = "cancelled"
-                    g.progress_text = "中止しました"
-                    history.update_generation(g.id, status="cancelled")
+            for g in active:
+                g.status = "cancelled"
+                g.progress_text = "中止しました"
+                history.update_generation(g.id, status="cancelled")
         return ok
 
     # ---------- progress ----------
@@ -309,6 +376,11 @@ class JobManager:
                 gid = self.by_prompt_id.get(pid)
                 gen = self.generations.get(gid) if gid else None
         if gen is None:
+            return
+        # A cancelled generation must stay cancelled. ComfyUI can still emit
+        # events for a prompt that was removed from the queue, and letting them
+        # through flips the row back to "running" so a cancel never sticks.
+        if gen.status == "cancelled":
             return
         if mtype == "execution_start":
             gen.status = "running"

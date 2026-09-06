@@ -279,7 +279,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/config":
                 return self._json({
                     "modes": list(graph.MODES),
-                    "aspect_ratios": graph.ASPECT_RATIOS,
+                    "aspect_ratios": _aspect_ratio_choices(),
                     "presets": {"%s/%s" % k: v for k, v in graph.PRESETS.items()},
                     "experimental_presets": graph.EXPERIMENTAL_PRESETS,
                     "variation_choices": [1, 4, 8],
@@ -361,10 +361,6 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     def _upload(self, kind="image"):
-        # Checked before the body is read: uploading to a stopped Pod can only
-        # fail, and reading a large video first just makes the failure slower.
-        if MANAGER and not MANAGER.client.is_alive():
-            raise comfy_client.ComfyUnavailable("ComfyUI is not running")
         """Accept one image from the browser and forward it to ComfyUI /input.
 
         multipart is parsed here rather than with cgi.FieldStorage so the file
@@ -387,11 +383,14 @@ class Handler(BaseHTTPRequestHandler):
             f.write(content)
         if kind == "video":
             name, subfolder, meta = MANAGER.upload_source_video(local)
+            sent = MANAGER.inputs.get(name, {}).get("sent", False)
             return {"ok": True, "video": name, "subfolder": subfolder,
-                    "local_path": local, "bytes": len(content), "probe": meta}
+                    "local_path": local, "bytes": len(content), "probe": meta,
+                    "sent_to_comfyui": sent}
         name, subfolder = MANAGER.upload_source_image(local)
+        sent = MANAGER.inputs.get(name, {}).get("sent", False)
         return {"ok": True, "image": name, "subfolder": subfolder, "local_path": local,
-                "bytes": len(content)}
+                "bytes": len(content), "sent_to_comfyui": sent}
 
     def _generate(self, data):
         mode = data.get("mode")
@@ -517,6 +516,27 @@ def _doctor():
     fails = sum(1 for c in checks if c["status"] == "FAIL")
     return {"checks": checks, "fail": fails,
             "warn": sum(1 for c in checks if c["status"] == "WARN"), "ok": fails == 0}
+
+
+def _aspect_ratio_choices():
+    """[{value, label}] for the aspect ratio picker.
+
+    The values come from the live ResolutionSelector node whenever ComfyUI is
+    reachable, so the list can never drift out of step with what /prompt will
+    accept; the pinned list is the offline fallback. Labels stay ours.
+    """
+    values = list(graph.ASPECT_RATIOS)
+    try:
+        info = MANAGER.client.object_info("ResolutionSelector") or {}
+        spec = (info.get("ResolutionSelector") or {}).get("input", {}).get("required", {})
+        live = (spec.get("aspect_ratio") or [None])[0]
+        if isinstance(live, list) and live:
+            # Keep our preferred order for the ones we know, then anything new.
+            known = [v for v in graph.ASPECT_RATIOS if v in live]
+            values = known + [v for v in live if v not in known]
+    except comfy_client.ComfyError:
+        pass
+    return [{"value": v, "label": graph.ASPECT_RATIO_LABELS.get(v, v)} for v in values]
 
 
 def _ref2va_model_present():

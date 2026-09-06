@@ -42,6 +42,15 @@ CACHED_CLASSES = ("MiniMaxH3CLIPCachedFL2VA", "MiniMaxH3CLIPCachedRef2VA")
 
 MP_TO_WH = {0.25: (672, 384), 0.4: (832, 480), 0.6: (1024, 576)}
 
+# Verbatim from the AspectRatio enum in comfy_extras/nodes_resolution.py at the
+# pinned ComfyUI commit 169fcf35. Served through /object_info so a value the
+# Studio invents fails here instead of as an HTTP 400 from a real Pod.
+ASPECT_RATIO_OPTIONS = [
+    "1:1 (Square)", "2:3 (Portrait Photo)", "3:2 (Photo)",
+    "3:4 (Portrait Standard)", "4:3 (Standard)", "9:16 (Portrait Widescreen)",
+    "16:9 (Widescreen)", "21:9 (Ultrawide)",
+]
+
 
 class MockState:
     """Shared mutable state: cache entries, queued jobs, sockets, knobs."""
@@ -62,6 +71,7 @@ class MockState:
         # with 404 + empty body rather than refusing the connection. Flip this
         # on to reproduce that, so the Studio's handling of it stays covered.
         self.pod_stopped = False
+        self.cancelled = set()   # prompt ids removed from the queue
         self.submitted = []        # every api prompt we received, for assertions
         # Real ComfyUI drains its prompt queue with a SINGLE worker: job N+1
         # does not start until job N has finished. That serialisation is what
@@ -76,6 +86,8 @@ class MockState:
             item = self.queue.get()
             if item is None:
                 return
+            if item[0] in self.cancelled:
+                continue
             try:
                 run_job(*item)
             except Exception:  # noqa: BLE001 - a mock job must not kill the worker
@@ -320,9 +332,21 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/object_info"):
             rest = path[len("/object_info"):].strip("/")
             known = KNOWN_NODES | STATE.extra_nodes
+
+            def describe(name):
+                spec = {"input": {"required": {}}, "output": []}
+                if name == "ResolutionSelector":
+                    spec["input"]["required"]["aspect_ratio"] = [
+                        list(ASPECT_RATIO_OPTIONS), {"default": "1:1 (Square)"}]
+                if name == "UNETLoader":
+                    spec["input"]["required"]["unet_name"] = [
+                        ["minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+                         "minimax_h3_ref2va_pruned_int8_convrot.safetensors"], {}]
+                return spec
+
             if rest:
-                return self._json({rest: {"input": {}, "output": []}} if rest in known else {})
-            return self._json({n: {"input": {}, "output": []} for n in known})
+                return self._json({rest: describe(rest)} if rest in known else {})
+            return self._json({n: describe(n) for n in known})
         if path.startswith("/history/"):
             pid = path.rsplit("/", 1)[-1]
             with STATE.lock:
@@ -359,6 +383,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/prompt":
             body = json.loads(raw)
             prompt = body["prompt"]
+            bad = [v["inputs"]["aspect_ratio"] for v in prompt.values()
+                   if v["class_type"] == "ResolutionSelector"
+                   and v["inputs"].get("aspect_ratio") not in ASPECT_RATIO_OPTIONS]
+            if bad:
+                # Exactly what ComfyUI answers for a COMBO value it does not know.
+                return self._json({"error": {"type": "prompt_outputs_failed_validation",
+                                             "message": "Prompt outputs failed validation"},
+                                   "node_errors": {"115": {"errors": [
+                                       {"type": "value_not_in_list",
+                                        "message": "Value not in list: aspect_ratio: '%s'" % bad[0]}]}}}, 400)
             unknown = sorted({v["class_type"] for v in prompt.values()}
                              - (KNOWN_NODES | STATE.extra_nodes))
             if unknown:
@@ -387,6 +421,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"name": name, "subfolder": "", "type": "input"})
 
         if path == "/interrupt":
+            return self._json({})
+
+        if path == "/queue":
+            body = json.loads(raw) if raw else {}
+            drop = set(body.get("delete") or [])
+            with STATE.lock:
+                keep = []
+                while not STATE.queue.empty():
+                    item = STATE.queue.get_nowait()
+                    if item[0] not in drop:
+                        keep.append(item)
+                for item in keep:
+                    STATE.queue.put(item)
+                STATE.cancelled |= drop
             return self._json({})
         return self._json({"error": "not found"}, 404)
 

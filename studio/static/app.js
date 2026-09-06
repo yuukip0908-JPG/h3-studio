@@ -47,7 +47,10 @@ function notice(level, text, ttl = 9000) {
 async function loadConfig() {
   const cfg = await api("/api/config");
   state.cfg = cfg;
-  $("aspect").innerHTML = cfg.aspect_ratios.map((a) => `<option>${a}</option>`).join("");
+  /* value = what ComfyUI accepts, text = what the operator reads. Never send
+     the label: the node validates against its own option strings. */
+  $("aspect").innerHTML = cfg.aspect_ratios
+    .map((a) => `<option value="${a.value}">${a.label}</option>`).join("");
 
   const rs = cfg.reference_strength;
   $("refstrength").min = rs.min;
@@ -224,16 +227,13 @@ function renderGpu(g) {
   $("gpu-why").hidden = !why;
 }
 
-/* Uploading goes straight through to ComfyUI, so it can only work while the
-   GPU is up. Say that up front instead of letting the picker fail. */
+/* Files are always selectable. If ComfyUI is not up yet the Studio keeps the
+   file locally and forwards it automatically when you press 生成する, so you
+   can pick an image and write your prompt while the GPU is still booting. */
 function renderReadiness() {
-  const ready = state.comfyReady;
-  ["image-file", "video-file"].forEach((id) => {
-    const el = $(id);
-    if (el) el.disabled = !ready;
-  });
-  const note = $("upload-blocked");
-  if (note) note.hidden = ready;
+  const waiting = !state.comfyReady && (state.image || state.sourceVideo);
+  const note = $("upload-pending");
+  if (note) note.hidden = !waiting;
 }
 
 function renderStats(s) {
@@ -357,12 +357,13 @@ $("video-file").addEventListener("change", async (e) => {
     state.sourceVideo = r.video;
     state.sourceVideoMeta = r.probe;
     const p = r.probe || {};
-    const bits = ["ComfyUI input: " + r.video,
-                  (Math.round(r.bytes / 1024 / 1024 * 10) / 10) + " MB"];
+    const bits = [r.video, (Math.round(r.bytes / 1024 / 1024 * 10) / 10) + " MB"];
     if (p.duration) bits.push(p.duration + "s");
     if (p.fps) bits.push(p.fps + " fps");
     if (p.frames) bits.push(p.frames + " frames");
+    if (!r.sent_to_comfyui) bits.push("GPU起動後に自動で転送します");
     $("video-status").textContent = bits.join(" · ");
+    renderReadiness();
     $("video-notes").textContent = (p.notes || []).join("\n");
     if (p.ok === false) notice("warn", (p.notes || []).join(" / "));
     const v = $("video-preview");
@@ -384,7 +385,10 @@ $("image-file").addEventListener("change", async (e) => {
     const r = await api("/api/upload", { method: "POST", body: fd });
     state.image = r.image;
     state.localPath = r.local_path;
-    $("image-status").textContent = `ComfyUI input: ${r.image} (${Math.round(r.bytes / 1024)} KB)`;
+    $("image-status").textContent =
+      `${r.image}（${Math.round(r.bytes / 1024)} KB）` +
+      (r.sent_to_comfyui ? "" : " · GPU起動後に自動で転送します");
+    renderReadiness();
     const img = $("image-preview");
     img.src = URL.createObjectURL(f);
     img.hidden = false;

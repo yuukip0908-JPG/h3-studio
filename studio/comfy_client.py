@@ -145,8 +145,28 @@ class ComfyClient:
         return h.get(prompt_id)
 
     def interrupt(self):
+        """Stop the prompt ComfyUI is executing right now.
+
+        This does NOT touch the queue -- anything already queued starts next.
+        Use cancel_queued() as well to actually stop a batch.
+        """
         try:
             self._json("/interrupt", payload={}, timeout=10)
+            return True
+        except ComfyError:
+            return False
+
+    def cancel_queued(self, prompt_ids):
+        """Remove specific prompts from ComfyUI's pending queue.
+
+        Deleting by id rather than clearing the whole queue, so a batch this
+        Studio did not submit is never discarded.
+        """
+        ids = [p for p in prompt_ids if p]
+        if not ids:
+            return True
+        try:
+            self._json("/queue", {"delete": ids}, timeout=15)
             return True
         except ComfyError:
             return False

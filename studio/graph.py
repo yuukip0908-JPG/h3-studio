@@ -121,13 +121,30 @@ EXPERIMENTAL_PRESETS = {
     "final_hq": {"megapixels": 0.6, "steps": 30, "sampler": "res_multistep", "scheduler": "simple"},
 }
 
-ASPECT_RATIOS = [
-    "16:9 (Widescreen)",
-    "9:16 (Vertical)",
-    "1:1 (Square)",
-    "4:3 (Standard)",
-    "3:4 (Portrait)",
+# Aspect ratio: the UI label and the value ComfyUI accepts are deliberately
+# separate. The values below are the AspectRatio enum from
+# comfy_extras/nodes_resolution.py at the pinned commit 169fcf35 -- they are the
+# node's COMBO options, not names chosen here. Inventing readable names ("9:16
+# (Vertical)") produced value_not_in_list and an HTTP 400 from /prompt, so the
+# label is the only part this project is allowed to word.
+#
+# server.py replaces these with the live options from /object_info when ComfyUI
+# is reachable, so a ComfyUI change is picked up rather than silently breaking.
+ASPECT_RATIO_CHOICES = [
+    {"value": "16:9 (Widescreen)",          "label": "16:9 横（ワイド）"},
+    {"value": "9:16 (Portrait Widescreen)", "label": "9:16 縦（スマホ）"},
+    {"value": "1:1 (Square)",               "label": "1:1 正方形"},
+    {"value": "4:3 (Standard)",             "label": "4:3 横（標準）"},
+    {"value": "3:4 (Portrait Standard)",    "label": "3:4 縦（標準）"},
+    {"value": "3:2 (Photo)",                "label": "3:2 横（写真）"},
+    {"value": "2:3 (Portrait Photo)",       "label": "2:3 縦（写真）"},
+    {"value": "21:9 (Ultrawide)",           "label": "21:9 シネスコ"},
 ]
+ASPECT_RATIOS = [c["value"] for c in ASPECT_RATIO_CHOICES]
+
+# Japanese labels keyed by node value, so a live option we did not anticipate
+# still renders (as its raw value) instead of disappearing from the UI.
+ASPECT_RATIO_LABELS = {c["value"]: c["label"] for c in ASPECT_RATIO_CHOICES}
 
 
 class GraphError(ValueError):
@@ -277,6 +294,10 @@ def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
         raise GraphError("prompt is required")
     if mode == MODE_IMAGE_TRACE and not image:
         raise GraphError("image_trace requires a source image")
+    if aspect_ratio not in ASPECT_RATIOS:
+        raise GraphError(
+            "aspect_ratio %r is not one of the ResolutionSelector options (%s)"
+            % (aspect_ratio, ", ".join(ASPECT_RATIOS)))
     if mode == MODE_MOTION_TRACE:
         if not image:
             raise GraphError("motion_trace requires an identity image")

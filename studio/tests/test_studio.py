@@ -118,6 +118,31 @@ class GraphBuilderTests(unittest.TestCase):
         expr = graph.one_id(p, "ComfyMathExpression")
         self.assertNotIn("value", p[expr]["inputs"])
 
+    def test_aspect_ratio_values_match_the_resolution_selector_node(self):
+        """Every value we ship must be a real ResolutionSelector option.
+
+        Regression: "9:16 (Vertical)" and "3:4 (Portrait)" were invented here
+        and rejected by /prompt with value_not_in_list (HTTP 400).
+        """
+        from studio.tests.mock_comfy import ASPECT_RATIO_OPTIONS
+        for value in graph.ASPECT_RATIOS:
+            self.assertIn(value, ASPECT_RATIO_OPTIONS, value)
+        self.assertIn("9:16 (Portrait Widescreen)", graph.ASPECT_RATIOS)
+        self.assertNotIn("9:16 (Vertical)", graph.ASPECT_RATIOS)
+        self.assertNotIn("3:4 (Portrait)", graph.ASPECT_RATIOS)
+
+    def test_label_and_api_value_are_separate(self):
+        for choice in graph.ASPECT_RATIO_CHOICES:
+            self.assertIn("value", choice)
+            self.assertIn("label", choice)
+            # the label is ours to word; the value never is
+            self.assertNotEqual(choice["label"], choice["value"])
+
+    def test_an_invented_aspect_ratio_is_refused_before_it_reaches_comfyui(self):
+        with self.assertRaises(graph.GraphError) as cm:
+            graph.build(graph.MODE_PROMPT_CINEMA, "x", 1, aspect_ratio="9:16 (Vertical)")
+        self.assertIn("9:16 (Vertical)", str(cm.exception))
+
     def test_image_trace_requires_an_image(self):
         with self.assertRaises(graph.GraphError):
             graph.build(graph.MODE_IMAGE_TRACE, "x", 1)
@@ -552,6 +577,22 @@ class EndToEndTests(StudioTestCase):
         self.assertNotIn(graph.REF_STRENGTH_ID, mock_comfy.STATE.submitted[-1])
         self.assertTrue(any("Reference Strength ignored" in e["text"] for e in m.events))
 
+    def test_cancel_stops_the_whole_batch_not_one_job_at_a_time(self):
+        """Interrupting alone lets the next queued prompt start immediately."""
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 6.0
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="cancel me",
+                               quality="draft", variations=4, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        self.assertTrue(wait_until(m.is_busy, 10))
+        m.cancel_all()
+        self.assertTrue(wait_until(lambda: not m.is_busy(), 15),
+                        "a cancel must not leave a job running")
+        wait_until(lambda: False, 3)     # give any stray event time to arrive
+        self.assertTrue(all(g.status == "cancelled" for g in batch.generations),
+                        [g.status for g in batch.generations])
+        self.assertEqual(m.active_count(), 0)
+
     def test_execution_error_is_recorded_not_swallowed(self):
         m = self.make_manager()
         mock_comfy.STATE.fail_next = "CUDA out of memory"
@@ -733,6 +774,34 @@ class ApiServerTests(StudioTestCase):
             self.assertGreater(len(r.read()), 0)
             self.assertEqual(r.headers["Content-Type"], "video/mp4")
 
+    def test_nine_sixteen_actually_reaches_comfyui(self):
+        """End to end: pick 9:16, /prompt must accept it (was HTTP 400)."""
+        cfg = self.get("/api/config")
+        nine = [a for a in cfg["aspect_ratios"] if a["value"].startswith("9:16")]
+        self.assertTrue(nine, "9:16 must be offered")
+        self.assertEqual(nine[0]["value"], "9:16 (Portrait Widescreen)")
+        self.assertEqual(nine[0]["label"], "9:16 縦（スマホ）")
+
+        batch = self.post("/api/generate", {
+            "mode": "prompt_cinema", "prompt": "vertical please", "quality": "draft",
+            "variations": 1, "duration": 2.0, "aspect_ratio": nine[0]["value"]})
+        obj = self.manager.batch(batch["id"])
+        wait_until(lambda: all(g.status == "done" for g in obj.generations), 40)
+        gen = obj.generations[0]
+        self.assertEqual(gen.status, "done", gen.error)
+        submitted = mock_comfy.STATE.submitted[-1]
+        res = [v for v in submitted.values() if v["class_type"] == "ResolutionSelector"][0]
+        self.assertEqual(res["inputs"]["aspect_ratio"], "9:16 (Portrait Widescreen)")
+
+    def test_a_bad_aspect_ratio_would_be_rejected_by_comfyui(self):
+        """Proves the mock really validates, so the test above means something."""
+        api_prompt, _ = graph.build(graph.MODE_PROMPT_CINEMA, "x", 1)
+        res_id = graph.one_id(api_prompt, "ResolutionSelector")
+        api_prompt[res_id]["inputs"]["aspect_ratio"] = "9:16 (Vertical)"
+        with self.assertRaises(comfy_client.ComfyError) as cm:
+            self.manager.client.submit(api_prompt, "test-client")
+        self.assertIn("value_not_in_list", str(cm.exception))
+
     def test_config_exposes_all_three_modes(self):
         cfg = self.get("/api/config")
         self.assertEqual(cfg["modes"], ["image_trace", "motion_trace", "prompt_cinema"])
@@ -784,24 +853,39 @@ class ApiServerTests(StudioTestCase):
         self.assertEqual(len(final["generations"]), 1)
         self.assertEqual(final["generations"][0]["params"]["mode"], "motion_trace")
 
-    def test_upload_with_the_gpu_off_returns_a_clear_503(self):
-        import urllib.error
+    def test_upload_is_accepted_while_the_gpu_is_still_off(self):
+        """Picking a file must not require the Pod to be up.
+
+        Starting the GPU takes minutes; refusing the file picker for that whole
+        time forces the operator to sit and wait before they can even choose an
+        image. The file is kept locally and forwarded later instead.
+        """
         import urllib.request
         mock_comfy.STATE.pod_stopped = True
-        self.manager._ref_node_available = None
         boundary = "----h3test"
         body = (("--%s\r\nContent-Disposition: form-data; name=\"image\"; "
-                 "filename=\"a.png\"\r\n\r\n" % boundary).encode()
+                 "filename=\"early.png\"\r\n\r\n" % boundary).encode()
                 + b"\x89PNG\r\n\x1a\n" + ("\r\n--%s--\r\n" % boundary).encode())
         req = urllib.request.Request(
             self.base + "/api/upload", data=body, method="POST",
             headers={"Content-Type": "multipart/form-data; boundary=%s" % boundary})
-        with self.assertRaises(urllib.error.HTTPError) as cm:
-            urllib.request.urlopen(req, timeout=30)
-        self.assertEqual(cm.exception.code, 503)
-        message = json.loads(cm.exception.read())["error"]
-        self.assertIn("START GPU", message)
-        self.assertNotIn("404", message)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            up = json.loads(r.read())
+        self.assertTrue(up["ok"])
+        self.assertIn("early.png", up["image"])
+        self.assertFalse(up["sent_to_comfyui"], "not forwarded while the Pod is down")
+        self.assertTrue(os.path.exists(up["local_path"]), "kept on this machine")
+
+        # ...and it reaches ComfyUI on its own once the Pod is back.
+        mock_comfy.STATE.pod_stopped = False
+        batch = self.post("/api/generate", {
+            "mode": "image_trace", "prompt": "late upload", "quality": "draft",
+            "variations": 1, "duration": 2.0,
+            "aspect_ratio": graph.ASPECT_RATIOS[0], "image": up["image"]})
+        obj = self.manager.batch(batch["id"])
+        wait_until(lambda: all(g.status == "done" for g in obj.generations), 40)
+        self.assertEqual(obj.generations[0].status, "done")
+        self.assertIn(up["image"], mock_comfy.STATE.uploads)
 
     def test_motion_trace_without_a_video_is_rejected(self):
         with self.assertRaises(Exception) as cm:
@@ -896,12 +980,63 @@ class StoppedPodUploadTests(StudioTestCase):
             c.system_stats()
 
     def test_upload_to_a_stopped_pod_raises_unavailable_not_a_generic_error(self):
+        """The low-level client still reports the real reason."""
         mock_comfy.STATE.pod_stopped = True
         src = os.path.join(self.tmp, "x.png")
         with open(src, "wb") as f:
             f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
         with self.assertRaises(comfy_client.ComfyUnavailable):
             comfy_client.ComfyClient(self.url).upload_image(src)
+
+    def test_manager_keeps_a_file_picked_while_the_pod_is_down(self):
+        m = self.make_manager()
+        mock_comfy.STATE.pod_stopped = True
+        src = os.path.join(self.tmp, "early.png")
+        with open(src, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        name, _sub, sent = m.accept_input(src, "image")
+        self.assertFalse(sent)
+        self.assertEqual(name, "early.png")
+        self.assertFalse(m.inputs[name]["sent"])
+
+        mock_comfy.STATE.pod_stopped = False
+        m._ensure_inputs_uploaded(name)                      # noqa: SLF001
+        self.assertTrue(m.inputs[name]["sent"])
+        self.assertIn(name, mock_comfy.STATE.uploads)
+
+    def test_a_vanished_local_file_is_reported_clearly(self):
+        m = self.make_manager()
+        mock_comfy.STATE.pod_stopped = True
+        src = os.path.join(self.tmp, "gone.png")
+        with open(src, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+        name, _sub, _sent = m.accept_input(src, "image")
+        os.remove(src)
+        mock_comfy.STATE.pod_stopped = False
+        with self.assertRaises(comfy_client.ComfyError) as cm:
+            m._ensure_inputs_uploaded(name)                   # noqa: SLF001
+        self.assertIn("見つかりません", str(cm.exception))
+
+    def test_generating_with_the_gpu_off_fails_once_not_per_variation(self):
+        m = self.make_manager()
+        mock_comfy.STATE.pod_stopped = True
+        before = len(mock_comfy.STATE.submitted)
+        with self.assertRaises(comfy_client.ComfyUnavailable):
+            m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="x",
+                           quality="draft", variations=4, duration=2.0,
+                           aspect_ratio=graph.ASPECT_RATIOS[0])
+        self.assertEqual(len(mock_comfy.STATE.submitted), before,
+                         "nothing should be queued when ComfyUI is down")
+        self.assertEqual(m.recent_batches(), [], "no half-built batch is left behind")
+
+    def test_motion_trace_video_is_probed_even_with_the_pod_down(self):
+        """The probe is local, so the 24fps/2-15s warning works before boot."""
+        m = self.make_manager()
+        mock_comfy.STATE.pod_stopped = True
+        name, _sub, meta = m.upload_source_video(MediaProbeTests.SAMPLE)
+        self.assertEqual(meta["frames"], 56)
+        self.assertTrue(meta["ok"])
+        self.assertFalse(m.inputs[name]["sent"])
 
     def test_a_real_comfyui_404_is_still_an_ordinary_error(self):
         """Only an empty-bodied Cloudflare 404 means 'Pod down'."""
