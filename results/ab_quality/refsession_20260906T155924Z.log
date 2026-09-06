@@ -1,0 +1,764 @@
+stopped pid 32195
+NOTE: the RunPod Pod is unaffected. Check billing with: bash scripts/runpod_status.sh
+H3 Studio READY -> http://127.0.0.1:8010/  (pid 32857, log /Users/user/Downloads/H3_CLOUD_REPRO/results/logs/studio.log)
+[15:59:28Z] studio: restarted
+[15:59:30Z] attempt 1: restart refused (host full)
+=== new Pod request ===
+{
+  "name": "h3-clipcached-baseline-3",
+  "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
+  "gpuTypeIds": [
+    "NVIDIA RTX 6000 Ada Generation",
+    "NVIDIA L40S",
+    "NVIDIA L40",
+    "NVIDIA RTX A6000",
+    "NVIDIA A40",
+    "NVIDIA RTX PRO 5000 Blackwell",
+    "NVIDIA A100-SXM4-80GB",
+    "NVIDIA A100 80GB PCIe",
+    "NVIDIA H100 PCIe",
+    "NVIDIA H100 80GB HBM3",
+    "NVIDIA H100 NVL",
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+  ],
+  "gpuTypePriority": "availability",
+  "gpuCount": 1,
+  "dataCenterIds": [
+    "US-WA-1"
+  ],
+  "cloudType": "SECURE",
+  "networkVolumeId": "olmj77x4pc",
+  "volumeMountPath": "/workspace",
+  "containerDiskInGb": 60,
+  "ports": [
+    "8188/http",
+    "22/tcp"
+  ]
+}
+
+=== old Pod 3lbxf2rnkjsqte ===
+  desiredStatus : EXITED (must stay EXITED, never deleted)
+  networkVolume : olmj77x4pc
+
+attempt 1/13 with gpuTypeIds=['NVIDIA RTX 6000 Ada Generation']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: There are no instances currently available","status":500}
+
+
+attempt 2/13 with gpuTypeIds=['NVIDIA L40S']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 3/13 with gpuTypeIds=['NVIDIA L40']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 4/13 with gpuTypeIds=['NVIDIA RTX A6000']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 5/13 with gpuTypeIds=['NVIDIA A40']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 6/13 with gpuTypeIds=['NVIDIA RTX PRO 5000 Blackwell']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 7/13 with gpuTypeIds=['NVIDIA A100-SXM4-80GB']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: There are no instances currently available","status":500}
+
+
+attempt 8/13 with gpuTypeIds=['NVIDIA A100 80GB PCIe']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 9/13 with gpuTypeIds=['NVIDIA H100 PCIe']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 10/13 with gpuTypeIds=['NVIDIA H100 80GB HBM3']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 11/13 with gpuTypeIds=['NVIDIA H100 NVL']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 12/13 with gpuTypeIds=['NVIDIA RTX PRO 6000 Blackwell Server Edition']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 13/13 with gpuTypeIds=['NVIDIA RTX 6000 Ada Generation', 'NVIDIA L40S', 'NVIDIA L40', 'NVIDIA RTX A6000', 'NVIDIA A40', 'NVIDIA RTX PRO 5000 Blackwell', 'NVIDIA A100-SXM4-80GB', 'NVIDIA A100 80GB PCIe', 'NVIDIA H100 PCIe', 'NVIDIA H100 80GB HBM3', 'NVIDIA H100 NVL', 'NVIDIA RTX PRO 6000 Blackwell Server Edition']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: There are no instances currently available","status":500}
+
+could not create a Pod with any candidate GPU. Nothing was created; the old Pod is untouched.
+[15:59:44Z] attempt 1: no card obtainable; waiting
+[16:01:46Z] attempt 2: restart refused (host full)
+=== new Pod request ===
+{
+  "name": "h3-clipcached-baseline-3",
+  "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
+  "gpuTypeIds": [
+    "NVIDIA RTX 6000 Ada Generation",
+    "NVIDIA L40S",
+    "NVIDIA L40",
+    "NVIDIA RTX A6000",
+    "NVIDIA A40",
+    "NVIDIA RTX PRO 5000 Blackwell",
+    "NVIDIA A100-SXM4-80GB",
+    "NVIDIA A100 80GB PCIe",
+    "NVIDIA H100 PCIe",
+    "NVIDIA H100 80GB HBM3",
+    "NVIDIA H100 NVL",
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+  ],
+  "gpuTypePriority": "availability",
+  "gpuCount": 1,
+  "dataCenterIds": [
+    "US-WA-1"
+  ],
+  "cloudType": "SECURE",
+  "networkVolumeId": "olmj77x4pc",
+  "volumeMountPath": "/workspace",
+  "containerDiskInGb": 60,
+  "ports": [
+    "8188/http",
+    "22/tcp"
+  ]
+}
+
+=== old Pod 3lbxf2rnkjsqte ===
+  desiredStatus : EXITED (must stay EXITED, never deleted)
+  networkVolume : olmj77x4pc
+
+attempt 1/13 with gpuTypeIds=['NVIDIA RTX 6000 Ada Generation']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: There are no instances currently available","status":500}
+
+
+attempt 2/13 with gpuTypeIds=['NVIDIA L40S']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 3/13 with gpuTypeIds=['NVIDIA L40']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 4/13 with gpuTypeIds=['NVIDIA RTX A6000']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 5/13 with gpuTypeIds=['NVIDIA A40']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 6/13 with gpuTypeIds=['NVIDIA RTX PRO 5000 Blackwell']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 7/13 with gpuTypeIds=['NVIDIA A100-SXM4-80GB']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: There are no instances currently available","status":500}
+
+
+attempt 8/13 with gpuTypeIds=['NVIDIA A100 80GB PCIe']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 9/13 with gpuTypeIds=['NVIDIA H100 PCIe']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 10/13 with gpuTypeIds=['NVIDIA H100 80GB HBM3']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 11/13 with gpuTypeIds=['NVIDIA H100 NVL']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 12/13 with gpuTypeIds=['NVIDIA RTX PRO 6000 Blackwell Server Edition']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 13/13 with gpuTypeIds=['NVIDIA RTX 6000 Ada Generation', 'NVIDIA L40S', 'NVIDIA L40', 'NVIDIA RTX A6000', 'NVIDIA A40', 'NVIDIA RTX PRO 5000 Blackwell', 'NVIDIA A100-SXM4-80GB', 'NVIDIA A100 80GB PCIe', 'NVIDIA H100 PCIe', 'NVIDIA H100 80GB HBM3', 'NVIDIA H100 NVL', 'NVIDIA RTX PRO 6000 Blackwell Server Edition']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: There are no instances currently available","status":500}
+
+could not create a Pod with any candidate GPU. Nothing was created; the old Pod is untouched.
+[16:01:59Z] attempt 2: no card obtainable; waiting
+[16:04:01Z] attempt 3: restart refused (host full)
+=== new Pod request ===
+{
+  "name": "h3-clipcached-baseline-3",
+  "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
+  "gpuTypeIds": [
+    "NVIDIA RTX 6000 Ada Generation",
+    "NVIDIA L40S",
+    "NVIDIA L40",
+    "NVIDIA RTX A6000",
+    "NVIDIA A40",
+    "NVIDIA RTX PRO 5000 Blackwell",
+    "NVIDIA A100-SXM4-80GB",
+    "NVIDIA A100 80GB PCIe",
+    "NVIDIA H100 PCIe",
+    "NVIDIA H100 80GB HBM3",
+    "NVIDIA H100 NVL",
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+  ],
+  "gpuTypePriority": "availability",
+  "gpuCount": 1,
+  "dataCenterIds": [
+    "US-WA-1"
+  ],
+  "cloudType": "SECURE",
+  "networkVolumeId": "olmj77x4pc",
+  "volumeMountPath": "/workspace",
+  "containerDiskInGb": 60,
+  "ports": [
+    "8188/http",
+    "22/tcp"
+  ]
+}
+
+=== old Pod 3lbxf2rnkjsqte ===
+  desiredStatus : EXITED (must stay EXITED, never deleted)
+  networkVolume : olmj77x4pc
+
+attempt 1/13 with gpuTypeIds=['NVIDIA RTX 6000 Ada Generation']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: There are no instances currently available","status":500}
+
+
+attempt 2/13 with gpuTypeIds=['NVIDIA L40S']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 3/13 with gpuTypeIds=['NVIDIA L40']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 4/13 with gpuTypeIds=['NVIDIA RTX A6000']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 5/13 with gpuTypeIds=['NVIDIA A40']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 6/13 with gpuTypeIds=['NVIDIA RTX PRO 5000 Blackwell']
+creating the Pod (billing starts once it is RUNNING) ...
+  failed: RunPod POST /pods -> HTTP 500: {"error":"create pod: could not find any pods with required specifications","status":500}
+
+
+attempt 7/13 with gpuTypeIds=['NVIDIA A100-SXM4-80GB']
+creating the Pod (billing starts once it is RUNNING) ...
+  new Pod id    : y9ts66clj5wml6
+  desiredStatus : RUNNING
+  gpu           : NVIDIA RTX 6000 Ada Generation
+  cost/hr       : 1.59
+  volume        : olmj77x4pc -> /workspace
+  ssh           : 195.26.233.82 28756
+  comfyUrl      : https://y9ts66clj5wml6-8188.proxy.runpod.net
+
+results/runpod_state.json now points at y9ts66clj5wml6
+previous Pod kept as: ttgvtu9fb864k4 (EXITED, untouched)
+[16:06:18Z] attempt 3: created a new Pod on an available host
+{"ok": true, "steps": ["Pod already RUNNING", "starting ComfyUI over SSH", "start_h3.sh exit=0", "ComfyUI healthy"], "comfy_url": "https://y9ts66clj5wml6-8188.proxy.runpod.net"}[16:07:19Z] === GPU acquired via new-pod ===
+  pod=y9ts66clj5wml6 gpu=NVIDIA A100-SXM4-80GB (81920 MiB) cost/hr=1.59 dc=US-WA-1
+  NOTE: not the baseline card. Absolute times and VRAM are NOT comparable
+        to earlier measurements; only A vs B vs C among themselves are.
+[16:07:23Z] === skipping model verify (AB_VERIFY_MODELS=0) ===
+[16:07:23Z] === baseline doctor on the Pod ===
+== H3 doctor 2026-09-06 16:07:25 ==
+project=/workspace/H3_CLOUD_REPRO
+workspace=/workspace comfyui=/workspace/ComfyUI
+PASS  GPU: NVIDIA A100-SXM4-80GB, 81920 MiB, 550.127.05;
+PASS  venv python: /workspace/ComfyUI/.venv/bin/python (Python 3.12.3)
+PASS  torch 2.14.0+cu130 cuda=13.0 available on NVIDIA A100-SXM4-80GB
+PASS  ComfyUI present: version=0.34.2 commit=169fcf3 ref=v0.34.2
+PASS  model diffusion: minimax_h3_fl2va_pruned_int8_convrot.safetensors size OK (20970379616 bytes)
+PASS  model encoder: qwen3vl_32b_minimax_h3_int8_convrot.safetensors size OK (27141342152 bytes)
+PASS  model video_vae: minimax_h3_video_vae_fp16.safetensors size OK (5207808496 bytes)
+PASS  model audio_vae: minimax_h3_audio_vae_fp32.safetensors size OK (605254808 bytes)
+PASS  CLIPCached present: commit=f17ba8f369740a02a2138031517f853eb67b9d43 branch=HEAD
+PASS  cache dir: /workspace/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache (14 entries, 355M) writable=yes
+PASS  free disk on /workspace: 160372 GiB
+PASS  workflow: /workspace/H3_CLOUD_REPRO/workflows/READY_TO_USE_H3_CLIPCACHED.json
+PASS  ComfyUI process running (pid 112)
+PASS  port 8188 listening (pid '112')
+PASS  HTTP health OK: http://127.0.0.1:8188/system_stats
+PASS  node registered: MiniMaxH3ImageToVideo
+PASS  node registered: MiniMaxH3CLIPCachedFL2VA
+== summary: FAIL=0 WARN=0 ==
+[16:07:32Z] doctor: FAIL=0
+[16:07:32Z] === running the payload: bash scripts/ab_reference_session.sh (hard limit 75m) ===
+=== dry run: all three comparisons ===
+  ok: rs_image_20260906T160732Z (refstrength 0.999 vs 0.93, image_trace)
+  ok: rs_motion_20260906T160732Z (refstrength 0.999 vs 0.95, motion_trace)
+  ok: refsize_20260906T160732Z (refsize match vs max, motion_trace)
+
+############################################################
+### rs_image_20260906T160732Z : refstrength 0.999 vs 0.93 on image_trace
+############################################################
+A/B 'rs_image_20260906T160732Z': refstrength  A=0.999  B=0.93
+fixed: mode=image_trace workflow=IMAGE_TRACE_DRAFT.api.json seed=42 duration=2.0 aspect=2:3 (Portrait Photo)
+       image=ab_identity_gym_woman.png
+prompt: she keeps walking forward through the gym, ponytail swaying, steady camera, natural light
+
+pushed IMAGE_TRACE_DRAFT.api.json (4738 bytes)
+=== arm A: refstrength=0.999 ===
+queued prompt_id=5f3baf92-7cbc-4fb7-b956-a2cbeec59b9e
+{
+  "name": "ab/rs_image_20260906T160732Z/A",
+  "status": "success",
+  "total_seconds": 172.589,
+  "conditioning_seconds": 83.538,
+  "peak_vram_mib_nvidia_smi": 27779,
+  "peak_rss_kib_server": 29030812,
+  "cache_result": "MISS",
+  "cache_new_files": {
+    "7ed5f7907127a092ef1cf20ab8ce0629031449e64312f548b3968a6380ea04c7.verbose.json": {
+      "size": 777,
+      "mtime": 1788710949.0
+    },
+    "7ed5f7907127a092ef1cf20ab8ce0629031449e64312f548b3968a6380ea04c7.json": {
+      "size": 189,
+      "mtime": 1788710947.0
+    },
+    "7ed5f7907127a092ef1cf20ab8ce0629031449e64312f548b3968a6380ea04c7.safetensors": {
+      "size": 9240328,
+      "mtime": 1788710946.0
+    }
+  },
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "IMAGE_TRACE_DRAFT_00001_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/IMAGE_TRACE_DRAFT_00001_.mp4",
+      "exists": true,
+      "bytes": 485854,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "485854",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ]
+}
+=== arm B: refstrength=0.93 ===
+queued prompt_id=b57170cc-0b1a-4cc2-968c-19acaa11675e
+{
+  "name": "ab/rs_image_20260906T160732Z/B",
+  "status": "success",
+  "total_seconds": 22.069,
+  "conditioning_seconds": null,
+  "peak_vram_mib_nvidia_smi": 27123,
+  "peak_rss_kib_server": 29330612,
+  "cache_result": "NODE_NOT_EXECUTED",
+  "cache_new_files": {},
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "IMAGE_TRACE_DRAFT_00002_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/IMAGE_TRACE_DRAFT_00002_.mp4",
+      "exists": true,
+      "bytes": 477802,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "477802",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ]
+}
+pulling IMAGE_TRACE_DRAFT_00001_.mp4
+pulling IMAGE_TRACE_DRAFT_00002_.mp4
+
+| arm | refstrength | status | total s | cond s | cache | encoder reran | peak VRAM MiB |
+|---|---|---|---|---|---|---|---|
+| A | 0.999 | success | 172.589 | 83.538 | MISS | True | 27779 |
+| B | 0.93 | success | 22.069 | None | NODE_NOT_EXECUTED | False | 27123 |
+
+measurements: /Users/user/Downloads/H3_CLOUD_REPRO/results/ab/rs_image_20260906T160732Z/summary.json
+videos:       /Users/user/Downloads/H3_CLOUD_REPRO/results/ab/rs_image_20260906T160732Z/{A,B}/
+Videos are NOT scored automatically -- open both and record the visual
+verdict in docs/V2_AB_TESTS.md before changing any default.
+
+############################################################
+### rs_motion_20260906T160732Z : refstrength 0.999 vs 0.95 on motion_trace
+############################################################
+A/B 'rs_motion_20260906T160732Z': refstrength  A=0.999  B=0.95
+fixed: mode=motion_trace workflow=MOTION_TRACE_DRAFT.api.json seed=42 duration=2.0 aspect=2:3 (Portrait Photo)
+       image=ab_identity_gym_woman.png
+       source video=sample_MiniMax_H3_00015_.mp4
+prompt: keep the person of <Picture 1>, follow the motion and camera of <Video 1>
+
+pushed MOTION_TRACE_DRAFT.api.json (5145 bytes)
+=== arm A: refstrength=0.999 ===
+queued prompt_id=8f7c33e8-1df8-452d-a202-3c3446ad76a6
+{
+  "name": "ab/rs_motion_20260906T160732Z/A",
+  "status": "success",
+  "total_seconds": 174.21,
+  "conditioning_seconds": 77.015,
+  "peak_vram_mib_nvidia_smi": 54469,
+  "peak_rss_kib_server": 56254764,
+  "cache_result": "MISS",
+  "cache_new_files": {
+    "85492ded624e4a71f7dc732e9eeee619f17eb243204c7183a7e52bc5091d8bc1.verbose.json": {
+      "size": 1182,
+      "mtime": 1788711162.0
+    },
+    "85492ded624e4a71f7dc732e9eeee619f17eb243204c7183a7e52bc5091d8bc1.json": {
+      "size": 189,
+      "mtime": 1788711162.0
+    },
+    "85492ded624e4a71f7dc732e9eeee619f17eb243204c7183a7e52bc5091d8bc1.safetensors": {
+      "size": 34788864,
+      "mtime": 1788711162.0
+    }
+  },
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "MOTION_TRACE_DRAFT_00001_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/MOTION_TRACE_DRAFT_00001_.mp4",
+      "exists": true,
+      "bytes": 200564,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "200564",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ]
+}
+=== arm B: refstrength=0.95 ===
+queued prompt_id=9bf3ef3e-0226-4d5b-83e5-2d38d2312c93
+{
+  "name": "ab/rs_motion_20260906T160732Z/B",
+  "status": "success",
+  "total_seconds": 50.099,
+  "conditioning_seconds": null,
+  "peak_vram_mib_nvidia_smi": 48575,
+  "peak_rss_kib_server": 50950640,
+  "cache_result": "NODE_NOT_EXECUTED",
+  "cache_new_files": {},
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "MOTION_TRACE_DRAFT_00002_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/MOTION_TRACE_DRAFT_00002_.mp4",
+      "exists": true,
+      "bytes": 197907,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "197907",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ]
+}
+pulling MOTION_TRACE_DRAFT_00001_.mp4
+pulling MOTION_TRACE_DRAFT_00002_.mp4
+
+| arm | refstrength | status | total s | cond s | cache | encoder reran | peak VRAM MiB |
+|---|---|---|---|---|---|---|---|
+| A | 0.999 | success | 174.21 | 77.015 | MISS | True | 54469 |
+| B | 0.95 | success | 50.099 | None | NODE_NOT_EXECUTED | False | 48575 |
+
+measurements: /Users/user/Downloads/H3_CLOUD_REPRO/results/ab/rs_motion_20260906T160732Z/summary.json
+videos:       /Users/user/Downloads/H3_CLOUD_REPRO/results/ab/rs_motion_20260906T160732Z/{A,B}/
+Videos are NOT scored automatically -- open both and record the visual
+verdict in docs/V2_AB_TESTS.md before changing any default.
+
+############################################################
+### refsize_20260906T160732Z : refsize match vs max on motion_trace
+############################################################
+A/B 'refsize_20260906T160732Z': refsize  A=match  B=max
+fixed: mode=motion_trace workflow=MOTION_TRACE_DRAFT.api.json seed=42 duration=2.0 aspect=2:3 (Portrait Photo)
+       image=ab_identity_gym_woman.png
+       source video=sample_MiniMax_H3_00015_.mp4
+prompt: keep the person of <Picture 1>, follow the motion and camera of <Video 1>
+
+pushed MOTION_TRACE_DRAFT.api.json (5145 bytes)
+=== arm A: refsize=match ===
+queued prompt_id=d37b83f8-fe97-431c-b598-e211e61d3f45
+{
+  "name": "ab/refsize_20260906T160732Z/A",
+  "status": "success",
+  "total_seconds": 2.039,
+  "conditioning_seconds": null,
+  "peak_vram_mib_nvidia_smi": 46139,
+  "peak_rss_kib_server": 50888600,
+  "cache_result": "NODE_NOT_EXECUTED",
+  "cache_new_files": {},
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "MOTION_TRACE_DRAFT_00001_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/MOTION_TRACE_DRAFT_00001_.mp4",
+      "exists": true,
+      "bytes": 200564,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "200564",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ]
+}
+=== arm B: refsize=max ===
+queued prompt_id=f96cdb5b-6fed-4d79-ad40-ac959cc6d12e
+{
+  "name": "ab/refsize_20260906T160732Z/B",
+  "status": "success",
+  "total_seconds": 134.196,
+  "conditioning_seconds": 75.205,
+  "peak_vram_mib_nvidia_smi": 74511,
+  "peak_rss_kib_server": 77856172,
+  "cache_result": "MISS",
+  "cache_new_files": {
+    "f4272eb8933424dd4ec3f9c9acccc92e002359584eb2a931d3c6e692729fccbd.verbose.json": {
+      "size": 1182,
+      "mtime": 1788711415.0
+    },
+    "f4272eb8933424dd4ec3f9c9acccc92e002359584eb2a931d3c6e692729fccbd.json": {
+      "size": 189,
+      "mtime": 1788711415.0
+    },
+    "f4272eb8933424dd4ec3f9c9acccc92e002359584eb2a931d3c6e692729fccbd.safetensors": {
+      "size": 57551032,
+      "mtime": 1788711414.0
+    }
+  },
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "MOTION_TRACE_DRAFT_00003_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/MOTION_TRACE_DRAFT_00003_.mp4",
+      "exists": true,
+      "bytes": 181432,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "181432",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ]
+}
+pulling MOTION_TRACE_DRAFT_00001_.mp4
+pulling MOTION_TRACE_DRAFT_00003_.mp4
+
+| arm | refsize | status | total s | cond s | cache | encoder reran | peak VRAM MiB |
+|---|---|---|---|---|---|---|---|
+| A | match | success | 2.039 | None | NODE_NOT_EXECUTED | False | 46139 |
+| B | max | success | 134.196 | 75.205 | MISS | True | 74511 |
+
+measurements: /Users/user/Downloads/H3_CLOUD_REPRO/results/ab/refsize_20260906T160732Z/summary.json
+videos:       /Users/user/Downloads/H3_CLOUD_REPRO/results/ab/refsize_20260906T160732Z/{A,B}/
+Videos are NOT scored automatically -- open both and record the visual
+verdict in docs/V2_AB_TESTS.md before changing any default.
+
+=== results on this Mac ===
+  results/ab/rs_image_20260906T160732Z/A/IMAGE_TRACE_DRAFT_00001_.mp4
+  results/ab/rs_image_20260906T160732Z/A/run.json
+  results/ab/rs_image_20260906T160732Z/B/IMAGE_TRACE_DRAFT_00002_.mp4
+  results/ab/rs_image_20260906T160732Z/B/run.json
+  results/ab/rs_motion_20260906T160732Z/A/MOTION_TRACE_DRAFT_00001_.mp4
+  results/ab/rs_motion_20260906T160732Z/A/run.json
+  results/ab/rs_motion_20260906T160732Z/B/MOTION_TRACE_DRAFT_00002_.mp4
+  results/ab/rs_motion_20260906T160732Z/B/run.json
+  results/ab/refsize_20260906T160732Z/A/MOTION_TRACE_DRAFT_00001_.mp4
+  results/ab/refsize_20260906T160732Z/A/run.json
+  results/ab/refsize_20260906T160732Z/B/MOTION_TRACE_DRAFT_00003_.mp4
+  results/ab/refsize_20260906T160732Z/B/run.json
+[16:18:03Z] === stopping the GPU ===
+{"ok": true, "steps": ["stop_h3.sh exit=0", "Pod desiredStatus=EXITED"], "network_volume_preserved": true, "network_volume": "olmj77x4pc"}
+  y9ts66clj5wml6   h3-clipcached-baseline-3     EXITED
+  ttgvtu9fb864k4   h3-clipcached-baseline-3     EXITED
+  u3j83y0qfrdc56   h3-clipcached-baseline-3     EXITED
+  jqj722x4jkwcan   h3-clipcached-baseline-3     EXITED
+  otyu05x8yh2v96   h3-clipcached-baseline-3     EXITED
+  sgiaeck1hh0m1l   h3-clipcached-baseline-3     EXITED
+  3lbxf2rnkjsqte   h3-clipcached-baseline-2     EXITED
+  ufhtfdg9ulv3fj   h3-clipcached-baseline       EXITED
+[16:18:23Z] done (rc=0). log: results/ab_quality/refsession_20260906T155924Z.log

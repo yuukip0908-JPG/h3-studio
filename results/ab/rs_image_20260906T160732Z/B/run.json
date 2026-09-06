@@ -1,0 +1,455 @@
+{
+  "name": "ab/rs_image_20260906T160732Z/B",
+  "server": "http://127.0.0.1:8188",
+  "started": "2026-09-06T16:10:40+0000",
+  "argv": [
+    "--api",
+    "/workspace/H3_CLOUD_REPRO/workflows/IMAGE_TRACE_DRAFT.api.json",
+    "--name",
+    "ab/rs_image_20260906T160732Z/B",
+    "--server",
+    "http://127.0.0.1:8188",
+    "--prompt",
+    "she keeps walking forward through the gym, ponytail swaying, steady camera, natural light",
+    "--seed",
+    "42",
+    "--duration",
+    "2.0",
+    "--set",
+    "115.aspect_ratio=\"2:3 (Portrait Photo)\"",
+    "--image",
+    "ab_identity_gym_woman.png",
+    "--set",
+    "h3s_refstrength.visual_cond_noise_aug=0.93",
+    "--log",
+    "/workspace/H3_CLOUD_REPRO/results/logs/comfyui.log",
+    "--pid-file",
+    "/workspace/H3_CLOUD_REPRO/results/comfyui.pid",
+    "--cache-dir",
+    "/workspace/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache",
+    "--comfy-output-dir",
+    "/workspace/ComfyUI/output"
+  ],
+  "workflow": "/workspace/H3_CLOUD_REPRO/workflows/IMAGE_TRACE_DRAFT.api.json",
+  "inputs": {
+    "140:141": {
+      "prompt": "she keeps walking forward through the gym, ponytail swaying, steady camera, natural light",
+      "clip_name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "140:132",
+        1
+      ],
+      "cache_mode": "auto",
+      "first_frame": [
+        "145",
+        0
+      ],
+      "last_frame": null
+    },
+    "145": {
+      "image": "ab_identity_gym_woman.png"
+    },
+    "140:129": {
+      "noise_seed": 42
+    },
+    "115": {
+      "aspect_ratio": "2:3 (Portrait Photo)",
+      "megapixels": 0.4,
+      "multiple": 32
+    },
+    "140:133": {
+      "value": 2.0
+    },
+    "140:123": {
+      "sampler_name": "res_multistep"
+    },
+    "140:124": {
+      "model": [
+        "140:135",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": [
+        "140:136",
+        0
+      ],
+      "denoise": 1
+    }
+  },
+  "system_stats_before": {
+    "system": {
+      "os": "linux",
+      "ram_total": 1082008997888,
+      "ram_free": 1016060542976,
+      "comfyui_version": "0.34.2",
+      "required_frontend_version": "1.49.6",
+      "installed_templates_version": "0.11.50",
+      "required_templates_version": "0.11.50",
+      "comfy_package_versions": [
+        {
+          "name": "comfyui-frontend-package",
+          "installed": "1.49.6",
+          "required": "1.49.6"
+        },
+        {
+          "name": "comfyui-workflow-templates",
+          "installed": "0.11.50",
+          "required": "0.11.50"
+        },
+        {
+          "name": "comfyui-embedded-docs",
+          "installed": "0.5.10",
+          "required": "0.5.10"
+        },
+        {
+          "name": "comfy-kitchen",
+          "installed": "0.2.31",
+          "required": "0.2.31"
+        },
+        {
+          "name": "comfy-aimdo",
+          "installed": "0.4.15",
+          "required": "0.4.15"
+        }
+      ],
+      "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+      "pytorch_version": "2.14.0+cu130",
+      "embedded_python": false,
+      "deploy_environment": "local-git",
+      "argv": [
+        "main.py",
+        "--listen",
+        "0.0.0.0",
+        "--port",
+        "8188",
+        "--disable-auto-launch"
+      ]
+    },
+    "devices": [
+      {
+        "name": "cuda:0 NVIDIA A100-SXM4-80GB : cudaMallocAsync",
+        "type": "cuda",
+        "index": 0,
+        "vram_total": 84974239744,
+        "vram_free": 57664128532,
+        "torch_vram_total": 67108864,
+        "torch_vram_free": 55887380
+      }
+    ]
+  },
+  "prompt_id": "b57170cc-0b1a-4cc2-968c-19acaa11675e",
+  "node_errors_at_submit": {},
+  "total_seconds": 22.069,
+  "peak_vram_mib_nvidia_smi": 27123,
+  "peak_rss_kib_server": 29330612,
+  "events": [
+    {
+      "t": 1788711040.4474936,
+      "type": "ws_open"
+    },
+    {
+      "t": 1788711041.1393404,
+      "type": "execution_start",
+      "node": null,
+      "detail": {}
+    },
+    {
+      "t": 1788711041.1551216,
+      "type": "execution_cached",
+      "node": null,
+      "detail": {
+        "nodes": [
+          "140:129",
+          "140:135",
+          "140:139",
+          "140:127",
+          "140:141",
+          "140:119",
+          "115",
+          "140:132",
+          "140:133",
+          "145",
+          "140:123",
+          "140:124",
+          "140:136",
+          "140:137",
+          "140:120"
+        ]
+      }
+    },
+    {
+      "t": 1788711041.1552775,
+      "type": "executing",
+      "node": "h3s_refstrength",
+      "detail": {}
+    },
+    {
+      "t": 1788711041.156139,
+      "type": "executing",
+      "node": "140:126",
+      "detail": {}
+    },
+    {
+      "t": 1788711041.1570604,
+      "type": "executing",
+      "node": "140:125",
+      "detail": {}
+    },
+    {
+      "t": 1788711057.8844664,
+      "type": "executing",
+      "node": "140:121",
+      "detail": {}
+    },
+    {
+      "t": 1788711058.0336866,
+      "type": "executing",
+      "node": "140:122",
+      "detail": {}
+    },
+    {
+      "t": 1788711060.5844922,
+      "type": "executing",
+      "node": "140:130",
+      "detail": {}
+    },
+    {
+      "t": 1788711060.5854228,
+      "type": "executing",
+      "node": "92",
+      "detail": {}
+    },
+    {
+      "t": 1788711061.8372955,
+      "type": "executed",
+      "node": "92",
+      "detail": {}
+    },
+    {
+      "t": 1788711061.8384316,
+      "type": "execution_success",
+      "node": null,
+      "detail": {}
+    }
+  ],
+  "node_timings": [
+    {
+      "node": "h3s_refstrength",
+      "class_type": "H3StudioReferenceStrength",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:126",
+      "class_type": "BasicGuider",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:125",
+      "class_type": "SamplerCustomAdvanced",
+      "seconds": 16.727,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:121",
+      "class_type": "VAEDecodeAudio",
+      "seconds": 0.149,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:122",
+      "class_type": "VAEDecode",
+      "seconds": 2.551,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:130",
+      "class_type": "CreateVideo",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "92",
+      "class_type": "SaveVideo",
+      "seconds": 1.253,
+      "ended_by": "execution_success"
+    }
+  ],
+  "conditioning_seconds": null,
+  "status": "success",
+  "status_messages": [
+    [
+      "execution_start",
+      {
+        "prompt_id": "b57170cc-0b1a-4cc2-968c-19acaa11675e",
+        "timestamp": 1788711041138
+      }
+    ],
+    [
+      "execution_cached",
+      {
+        "nodes": [
+          "140:129",
+          "140:135",
+          "140:139",
+          "140:127",
+          "140:141",
+          "140:119",
+          "115",
+          "140:132",
+          "140:133",
+          "145",
+          "140:123",
+          "140:124",
+          "140:136",
+          "140:137",
+          "140:120"
+        ],
+        "prompt_id": "b57170cc-0b1a-4cc2-968c-19acaa11675e",
+        "timestamp": 1788711041153
+      }
+    ],
+    [
+      "execution_success",
+      {
+        "prompt_id": "b57170cc-0b1a-4cc2-968c-19acaa11675e",
+        "timestamp": 1788711061837
+      }
+    ]
+  ],
+  "outputs": {
+    "92": {
+      "images": [
+        {
+          "filename": "IMAGE_TRACE_DRAFT_00002_.mp4",
+          "subfolder": "video",
+          "type": "output"
+        }
+      ],
+      "animated": [
+        true
+      ]
+    }
+  },
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "IMAGE_TRACE_DRAFT_00002_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/IMAGE_TRACE_DRAFT_00002_.mp4",
+      "exists": true,
+      "bytes": 477802,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "477802",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ],
+  "system_stats_after": {
+    "system": {
+      "os": "linux",
+      "ram_total": 1082008997888,
+      "ram_free": 1015674007552,
+      "comfyui_version": "0.34.2",
+      "required_frontend_version": "1.49.6",
+      "installed_templates_version": "0.11.50",
+      "required_templates_version": "0.11.50",
+      "comfy_package_versions": [
+        {
+          "name": "comfyui-frontend-package",
+          "installed": "1.49.6",
+          "required": "1.49.6"
+        },
+        {
+          "name": "comfyui-workflow-templates",
+          "installed": "0.11.50",
+          "required": "0.11.50"
+        },
+        {
+          "name": "comfyui-embedded-docs",
+          "installed": "0.5.10",
+          "required": "0.5.10"
+        },
+        {
+          "name": "comfy-kitchen",
+          "installed": "0.2.31",
+          "required": "0.2.31"
+        },
+        {
+          "name": "comfy-aimdo",
+          "installed": "0.4.15",
+          "required": "0.4.15"
+        }
+      ],
+      "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+      "pytorch_version": "2.14.0+cu130",
+      "embedded_python": false,
+      "deploy_environment": "local-git",
+      "argv": [
+        "main.py",
+        "--listen",
+        "0.0.0.0",
+        "--port",
+        "8188",
+        "--disable-auto-launch"
+      ]
+    },
+    "devices": [
+      {
+        "name": "cuda:0 NVIDIA A100-SXM4-80GB : cudaMallocAsync",
+        "type": "cuda",
+        "index": 0,
+        "vram_total": 84974239744,
+        "vram_free": 57664128532,
+        "torch_vram_total": 67108864,
+        "torch_vram_free": 55887380
+      }
+    ]
+  },
+  "log_cache_lines": [],
+  "encoder_load_lines": [],
+  "encoder_loaded": false,
+  "log_error_lines": [],
+  "log_prompt_executed": [
+    "\u001b[32m[INFO]\u001b[0m \u001b[32mPrompt executed in 20.70 seconds\u001b[0m"
+  ],
+  "cache_new_files": {},
+  "cache_changed_files": {},
+  "cache_entry_count": 15,
+  "cache_result": "NODE_NOT_EXECUTED",
+  "encoder_reencoded": false
+}

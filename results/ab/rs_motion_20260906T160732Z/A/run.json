@@ -1,0 +1,547 @@
+{
+  "name": "ab/rs_motion_20260906T160732Z/A",
+  "server": "http://127.0.0.1:8188",
+  "started": "2026-09-06T16:11:24+0000",
+  "argv": [
+    "--api",
+    "/workspace/H3_CLOUD_REPRO/workflows/MOTION_TRACE_DRAFT.api.json",
+    "--name",
+    "ab/rs_motion_20260906T160732Z/A",
+    "--server",
+    "http://127.0.0.1:8188",
+    "--prompt",
+    "keep the person of <Picture 1>, follow the motion and camera of <Video 1>",
+    "--seed",
+    "42",
+    "--duration",
+    "2.0",
+    "--set",
+    "115.aspect_ratio=\"2:3 (Portrait Photo)\"",
+    "--set",
+    "mt_identity.image=\"ab_identity_gym_woman.png\"",
+    "--set",
+    "mt_video.file=\"sample_MiniMax_H3_00015_.mp4\"",
+    "--set",
+    "h3s_refstrength.visual_cond_noise_aug=0.999",
+    "--log",
+    "/workspace/H3_CLOUD_REPRO/results/logs/comfyui.log",
+    "--pid-file",
+    "/workspace/H3_CLOUD_REPRO/results/comfyui.pid",
+    "--cache-dir",
+    "/workspace/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache",
+    "--comfy-output-dir",
+    "/workspace/ComfyUI/output"
+  ],
+  "workflow": "/workspace/H3_CLOUD_REPRO/workflows/MOTION_TRACE_DRAFT.api.json",
+  "inputs": {
+    "140:141": {
+      "prompt": "keep the person of <Picture 1>, follow the motion and camera of <Video 1>",
+      "clip_name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "140:132",
+        1
+      ],
+      "cache_mode": "auto",
+      "first_frame": null,
+      "last_frame": null
+    },
+    "mt_identity": {
+      "image": "ab_identity_gym_woman.png"
+    },
+    "140:129": {
+      "noise_seed": 42
+    },
+    "115": {
+      "aspect_ratio": "2:3 (Portrait Photo)",
+      "megapixels": 0.4,
+      "multiple": 32
+    },
+    "140:133": {
+      "value": 2.0
+    },
+    "140:123": {
+      "sampler_name": "res_multistep"
+    },
+    "140:124": {
+      "model": [
+        "140:135",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": [
+        "140:136",
+        0
+      ],
+      "denoise": 1
+    }
+  },
+  "system_stats_before": {
+    "system": {
+      "os": "linux",
+      "ram_total": 1082008997888,
+      "ram_free": 1015869186048,
+      "comfyui_version": "0.34.2",
+      "required_frontend_version": "1.49.6",
+      "installed_templates_version": "0.11.50",
+      "required_templates_version": "0.11.50",
+      "comfy_package_versions": [
+        {
+          "name": "comfyui-frontend-package",
+          "installed": "1.49.6",
+          "required": "1.49.6"
+        },
+        {
+          "name": "comfyui-workflow-templates",
+          "installed": "0.11.50",
+          "required": "0.11.50"
+        },
+        {
+          "name": "comfyui-embedded-docs",
+          "installed": "0.5.10",
+          "required": "0.5.10"
+        },
+        {
+          "name": "comfy-kitchen",
+          "installed": "0.2.31",
+          "required": "0.2.31"
+        },
+        {
+          "name": "comfy-aimdo",
+          "installed": "0.4.15",
+          "required": "0.4.15"
+        }
+      ],
+      "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+      "pytorch_version": "2.14.0+cu130",
+      "embedded_python": false,
+      "deploy_environment": "local-git",
+      "argv": [
+        "main.py",
+        "--listen",
+        "0.0.0.0",
+        "--port",
+        "8188",
+        "--disable-auto-launch"
+      ]
+    },
+    "devices": [
+      {
+        "name": "cuda:0 NVIDIA A100-SXM4-80GB : cudaMallocAsync",
+        "type": "cuda",
+        "index": 0,
+        "vram_total": 84974239744,
+        "vram_free": 57664128532,
+        "torch_vram_total": 67108864,
+        "torch_vram_free": 55887380
+      }
+    ]
+  },
+  "prompt_id": "8f7c33e8-1df8-452d-a202-3c3446ad76a6",
+  "node_errors_at_submit": {},
+  "total_seconds": 174.21,
+  "peak_vram_mib_nvidia_smi": 54469,
+  "peak_rss_kib_server": 56254764,
+  "events": [
+    {
+      "t": 1788711085.1297534,
+      "type": "ws_open"
+    },
+    {
+      "t": 1788711085.7516146,
+      "type": "execution_start",
+      "node": null,
+      "detail": {}
+    },
+    {
+      "t": 1788711085.7876992,
+      "type": "execution_cached",
+      "node": null,
+      "detail": {
+        "nodes": [
+          "140:129",
+          "140:139",
+          "140:119",
+          "115",
+          "140:132",
+          "140:133",
+          "140:123",
+          "140:136",
+          "140:137",
+          "140:120",
+          "mt_identity"
+        ]
+      }
+    },
+    {
+      "t": 1788711085.8015108,
+      "type": "executing",
+      "node": "mt_video",
+      "detail": {}
+    },
+    {
+      "t": 1788711085.8079803,
+      "type": "executing",
+      "node": "mt_components",
+      "detail": {}
+    },
+    {
+      "t": 1788711086.217988,
+      "type": "executing",
+      "node": "140:141",
+      "detail": {}
+    },
+    {
+      "t": 1788711163.2333379,
+      "type": "executing",
+      "node": "140:135",
+      "detail": {}
+    },
+    {
+      "t": 1788711163.2337463,
+      "type": "executing",
+      "node": "h3s_refstrength",
+      "detail": {}
+    },
+    {
+      "t": 1788711163.2366273,
+      "type": "executing",
+      "node": "140:127",
+      "detail": {}
+    },
+    {
+      "t": 1788711164.0009074,
+      "type": "executing",
+      "node": "140:135",
+      "detail": {}
+    },
+    {
+      "t": 1788711164.0017645,
+      "type": "executing",
+      "node": "140:124",
+      "detail": {}
+    },
+    {
+      "t": 1788711164.0029504,
+      "type": "executing",
+      "node": "140:126",
+      "detail": {}
+    },
+    {
+      "t": 1788711164.0041401,
+      "type": "executing",
+      "node": "140:125",
+      "detail": {}
+    },
+    {
+      "t": 1788711254.1370025,
+      "type": "executing",
+      "node": "140:121",
+      "detail": {}
+    },
+    {
+      "t": 1788711254.2896402,
+      "type": "executing",
+      "node": "140:122",
+      "detail": {}
+    },
+    {
+      "t": 1788711256.8484795,
+      "type": "executing",
+      "node": "140:130",
+      "detail": {}
+    },
+    {
+      "t": 1788711256.8498023,
+      "type": "executing",
+      "node": "92",
+      "detail": {}
+    },
+    {
+      "t": 1788711258.0251389,
+      "type": "executed",
+      "node": "92",
+      "detail": {}
+    },
+    {
+      "t": 1788711258.0260818,
+      "type": "execution_success",
+      "node": null,
+      "detail": {}
+    }
+  ],
+  "node_timings": [
+    {
+      "node": "mt_video",
+      "class_type": "LoadVideo",
+      "seconds": 0.006,
+      "ended_by": "executing"
+    },
+    {
+      "node": "mt_components",
+      "class_type": "GetVideoComponents",
+      "seconds": 0.41,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:141",
+      "class_type": "MiniMaxH3CLIPCachedRef2VA",
+      "seconds": 77.015,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:135",
+      "class_type": "ComfySwitchNode",
+      "seconds": 0.0,
+      "ended_by": "executing"
+    },
+    {
+      "node": "h3s_refstrength",
+      "class_type": "H3StudioReferenceStrength",
+      "seconds": 0.003,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:127",
+      "class_type": "UNETLoader",
+      "seconds": 0.764,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:135",
+      "class_type": "ComfySwitchNode",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:124",
+      "class_type": "BasicScheduler",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:126",
+      "class_type": "BasicGuider",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:125",
+      "class_type": "SamplerCustomAdvanced",
+      "seconds": 90.133,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:121",
+      "class_type": "VAEDecodeAudio",
+      "seconds": 0.153,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:122",
+      "class_type": "VAEDecode",
+      "seconds": 2.559,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:130",
+      "class_type": "CreateVideo",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "92",
+      "class_type": "SaveVideo",
+      "seconds": 1.176,
+      "ended_by": "execution_success"
+    }
+  ],
+  "conditioning_seconds": 77.015,
+  "status": "success",
+  "status_messages": [
+    [
+      "execution_start",
+      {
+        "prompt_id": "8f7c33e8-1df8-452d-a202-3c3446ad76a6",
+        "timestamp": 1788711085750
+      }
+    ],
+    [
+      "execution_cached",
+      {
+        "nodes": [
+          "140:129",
+          "140:139",
+          "140:119",
+          "115",
+          "140:132",
+          "140:133",
+          "140:123",
+          "140:136",
+          "140:137",
+          "140:120",
+          "mt_identity"
+        ],
+        "prompt_id": "8f7c33e8-1df8-452d-a202-3c3446ad76a6",
+        "timestamp": 1788711085786
+      }
+    ],
+    [
+      "execution_success",
+      {
+        "prompt_id": "8f7c33e8-1df8-452d-a202-3c3446ad76a6",
+        "timestamp": 1788711258025
+      }
+    ]
+  ],
+  "outputs": {
+    "92": {
+      "images": [
+        {
+          "filename": "MOTION_TRACE_DRAFT_00001_.mp4",
+          "subfolder": "video",
+          "type": "output"
+        }
+      ],
+      "animated": [
+        true
+      ]
+    }
+  },
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "MOTION_TRACE_DRAFT_00001_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/MOTION_TRACE_DRAFT_00001_.mp4",
+      "exists": true,
+      "bytes": 200564,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "200564",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ],
+  "system_stats_after": {
+    "system": {
+      "os": "linux",
+      "ram_total": 1082008997888,
+      "ram_free": 993558466560,
+      "comfyui_version": "0.34.2",
+      "required_frontend_version": "1.49.6",
+      "installed_templates_version": "0.11.50",
+      "required_templates_version": "0.11.50",
+      "comfy_package_versions": [
+        {
+          "name": "comfyui-frontend-package",
+          "installed": "1.49.6",
+          "required": "1.49.6"
+        },
+        {
+          "name": "comfyui-workflow-templates",
+          "installed": "0.11.50",
+          "required": "0.11.50"
+        },
+        {
+          "name": "comfyui-embedded-docs",
+          "installed": "0.5.10",
+          "required": "0.5.10"
+        },
+        {
+          "name": "comfy-kitchen",
+          "installed": "0.2.31",
+          "required": "0.2.31"
+        },
+        {
+          "name": "comfy-aimdo",
+          "installed": "0.4.15",
+          "required": "0.4.15"
+        }
+      ],
+      "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+      "pytorch_version": "2.14.0+cu130",
+      "embedded_python": false,
+      "deploy_environment": "local-git",
+      "argv": [
+        "main.py",
+        "--listen",
+        "0.0.0.0",
+        "--port",
+        "8188",
+        "--disable-auto-launch"
+      ]
+    },
+    "devices": [
+      {
+        "name": "cuda:0 NVIDIA A100-SXM4-80GB : cudaMallocAsync",
+        "type": "cuda",
+        "index": 0,
+        "vram_total": 84974239744,
+        "vram_free": 36649462292,
+        "torch_vram_total": 67108864,
+        "torch_vram_free": 54684180
+      }
+    ]
+  },
+  "log_cache_lines": [
+    "\u001b[32m[INFO]\u001b[0m [CACHE MISS] 85492ded624e"
+  ],
+  "encoder_load_lines": [
+    "\u001b[32m[INFO]\u001b[0m Requested to load MiniMaxH3TEModel_"
+  ],
+  "encoder_loaded": true,
+  "log_error_lines": [],
+  "log_prompt_executed": [
+    "\u001b[32m[INFO]\u001b[0m \u001b[32mPrompt executed in 172.28 seconds\u001b[0m"
+  ],
+  "cache_new_files": {
+    "85492ded624e4a71f7dc732e9eeee619f17eb243204c7183a7e52bc5091d8bc1.verbose.json": {
+      "size": 1182,
+      "mtime": 1788711162.0
+    },
+    "85492ded624e4a71f7dc732e9eeee619f17eb243204c7183a7e52bc5091d8bc1.json": {
+      "size": 189,
+      "mtime": 1788711162.0
+    },
+    "85492ded624e4a71f7dc732e9eeee619f17eb243204c7183a7e52bc5091d8bc1.safetensors": {
+      "size": 34788864,
+      "mtime": 1788711162.0
+    }
+  },
+  "cache_changed_files": {},
+  "cache_entry_count": 16,
+  "cache_result": "MISS",
+  "encoder_reencoded": true
+}

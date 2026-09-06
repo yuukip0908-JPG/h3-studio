@@ -63,6 +63,15 @@ else
 fi
 PROMPT="${5:-$DEFAULT_PROMPT}"
 
+# Per-A/B nonce, shared by both arms so the one-variable rule still holds.
+# Without it a comparison whose arm A repeats an earlier run's inputs exactly is
+# answered from ComfyUI's in-process execution cache: the ref_image_size A/B
+# reported "match = 2.0s" and shipped a video byte-identical to the previous
+# comparison's, because nothing ran at all. ab_quality.py learned this first.
+# AB_NONCE=none opts out (e.g. to deliberately probe cache reuse).
+NONCE="${AB_NONCE:-$NAME}"
+[[ "$NONCE" == "none" ]] || PROMPT="$PROMPT [ab:$NONCE]"
+
 # --- gates (local, no GPU, no SSH) --------------------------------------
 # Every --set below names a node id. If that id is not in the workflow,
 # h3_run.py fails *after* the Pod is up and billing, so check here instead.

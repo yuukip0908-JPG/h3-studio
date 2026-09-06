@@ -1,0 +1,644 @@
+{
+  "name": "ab/rs_image_20260906T160732Z/A",
+  "server": "http://127.0.0.1:8188",
+  "started": "2026-09-06T16:07:44+0000",
+  "argv": [
+    "--api",
+    "/workspace/H3_CLOUD_REPRO/workflows/IMAGE_TRACE_DRAFT.api.json",
+    "--name",
+    "ab/rs_image_20260906T160732Z/A",
+    "--server",
+    "http://127.0.0.1:8188",
+    "--prompt",
+    "she keeps walking forward through the gym, ponytail swaying, steady camera, natural light",
+    "--seed",
+    "42",
+    "--duration",
+    "2.0",
+    "--set",
+    "115.aspect_ratio=\"2:3 (Portrait Photo)\"",
+    "--image",
+    "ab_identity_gym_woman.png",
+    "--set",
+    "h3s_refstrength.visual_cond_noise_aug=0.999",
+    "--log",
+    "/workspace/H3_CLOUD_REPRO/results/logs/comfyui.log",
+    "--pid-file",
+    "/workspace/H3_CLOUD_REPRO/results/comfyui.pid",
+    "--cache-dir",
+    "/workspace/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache",
+    "--comfy-output-dir",
+    "/workspace/ComfyUI/output"
+  ],
+  "workflow": "/workspace/H3_CLOUD_REPRO/workflows/IMAGE_TRACE_DRAFT.api.json",
+  "inputs": {
+    "140:141": {
+      "prompt": "she keeps walking forward through the gym, ponytail swaying, steady camera, natural light",
+      "clip_name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "140:132",
+        1
+      ],
+      "cache_mode": "auto",
+      "first_frame": [
+        "145",
+        0
+      ],
+      "last_frame": null
+    },
+    "145": {
+      "image": "ab_identity_gym_woman.png"
+    },
+    "140:129": {
+      "noise_seed": 42
+    },
+    "115": {
+      "aspect_ratio": "2:3 (Portrait Photo)",
+      "megapixels": 0.4,
+      "multiple": 32
+    },
+    "140:133": {
+      "value": 2.0
+    },
+    "140:123": {
+      "sampler_name": "res_multistep"
+    },
+    "140:124": {
+      "model": [
+        "140:135",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": [
+        "140:136",
+        0
+      ],
+      "denoise": 1
+    }
+  },
+  "system_stats_before": {
+    "system": {
+      "os": "linux",
+      "ram_total": 1082008997888,
+      "ram_free": 1044781121536,
+      "comfyui_version": "0.34.2",
+      "required_frontend_version": "1.49.6",
+      "installed_templates_version": "0.11.50",
+      "required_templates_version": "0.11.50",
+      "comfy_package_versions": [
+        {
+          "name": "comfyui-frontend-package",
+          "installed": "1.49.6",
+          "required": "1.49.6"
+        },
+        {
+          "name": "comfyui-workflow-templates",
+          "installed": "0.11.50",
+          "required": "0.11.50"
+        },
+        {
+          "name": "comfyui-embedded-docs",
+          "installed": "0.5.10",
+          "required": "0.5.10"
+        },
+        {
+          "name": "comfy-kitchen",
+          "installed": "0.2.31",
+          "required": "0.2.31"
+        },
+        {
+          "name": "comfy-aimdo",
+          "installed": "0.4.15",
+          "required": "0.4.15"
+        }
+      ],
+      "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+      "pytorch_version": "2.14.0+cu130",
+      "embedded_python": false,
+      "deploy_environment": "local-git",
+      "argv": [
+        "main.py",
+        "--listen",
+        "0.0.0.0",
+        "--port",
+        "8188",
+        "--disable-auto-launch"
+      ]
+    },
+    "devices": [
+      {
+        "name": "cuda:0 NVIDIA A100-SXM4-80GB : cudaMallocAsync",
+        "type": "cuda",
+        "index": 0,
+        "vram_total": 84974239744,
+        "vram_free": 84527284224,
+        "torch_vram_total": 0,
+        "torch_vram_free": 0
+      }
+    ]
+  },
+  "prompt_id": "5f3baf92-7cbc-4fb7-b956-a2cbeec59b9e",
+  "node_errors_at_submit": {},
+  "total_seconds": 172.589,
+  "peak_vram_mib_nvidia_smi": 27779,
+  "peak_rss_kib_server": 29030812,
+  "events": [
+    {
+      "t": 1788710864.8597865,
+      "type": "ws_open"
+    },
+    {
+      "t": 1788710865.5216382,
+      "type": "execution_start",
+      "node": null,
+      "detail": {}
+    },
+    {
+      "t": 1788710865.9565408,
+      "type": "execution_cached",
+      "node": null,
+      "detail": {
+        "nodes": []
+      }
+    },
+    {
+      "t": 1788710865.964719,
+      "type": "executing",
+      "node": "140:120",
+      "detail": {}
+    },
+    {
+      "t": 1788710866.1006174,
+      "type": "executing",
+      "node": "145",
+      "detail": {}
+    },
+    {
+      "t": 1788710866.231018,
+      "type": "executing",
+      "node": "140:133",
+      "detail": {}
+    },
+    {
+      "t": 1788710866.232381,
+      "type": "executing",
+      "node": "140:132",
+      "detail": {}
+    },
+    {
+      "t": 1788710866.2334745,
+      "type": "executing",
+      "node": "115",
+      "detail": {}
+    },
+    {
+      "t": 1788710866.2354293,
+      "type": "executing",
+      "node": "140:119",
+      "detail": {}
+    },
+    {
+      "t": 1788710866.7307203,
+      "type": "executing",
+      "node": "140:141",
+      "detail": {}
+    },
+    {
+      "t": 1788710950.268996,
+      "type": "executing",
+      "node": "140:139",
+      "detail": {}
+    },
+    {
+      "t": 1788710950.2704384,
+      "type": "executing",
+      "node": "140:136",
+      "detail": {}
+    },
+    {
+      "t": 1788710950.2707675,
+      "type": "executing",
+      "node": "140:135",
+      "detail": {}
+    },
+    {
+      "t": 1788710950.2719083,
+      "type": "executing",
+      "node": "140:123",
+      "detail": {}
+    },
+    {
+      "t": 1788710950.2727604,
+      "type": "executing",
+      "node": "h3s_refstrength",
+      "detail": {}
+    },
+    {
+      "t": 1788710950.2740474,
+      "type": "executing",
+      "node": "140:129",
+      "detail": {}
+    },
+    {
+      "t": 1788710950.2748156,
+      "type": "executing",
+      "node": "140:137",
+      "detail": {}
+    },
+    {
+      "t": 1788710950.2759323,
+      "type": "executing",
+      "node": "140:136",
+      "detail": {}
+    },
+    {
+      "t": 1788710950.2786567,
+      "type": "executing",
+      "node": "140:127",
+      "detail": {}
+    },
+    {
+      "t": 1788710951.0121531,
+      "type": "executing",
+      "node": "140:135",
+      "detail": {}
+    },
+    {
+      "t": 1788710951.0130475,
+      "type": "executing",
+      "node": "140:124",
+      "detail": {}
+    },
+    {
+      "t": 1788710951.0138729,
+      "type": "executing",
+      "node": "140:126",
+      "detail": {}
+    },
+    {
+      "t": 1788710951.0155249,
+      "type": "executing",
+      "node": "140:125",
+      "detail": {}
+    },
+    {
+      "t": 1788711017.984573,
+      "type": "executing",
+      "node": "140:121",
+      "detail": {}
+    },
+    {
+      "t": 1788711019.5993483,
+      "type": "executing",
+      "node": "140:122",
+      "detail": {}
+    },
+    {
+      "t": 1788711035.831049,
+      "type": "executing",
+      "node": "140:130",
+      "detail": {}
+    },
+    {
+      "t": 1788711035.8328261,
+      "type": "executing",
+      "node": "92",
+      "detail": {}
+    },
+    {
+      "t": 1788711037.0882616,
+      "type": "executed",
+      "node": "92",
+      "detail": {}
+    },
+    {
+      "t": 1788711037.088991,
+      "type": "execution_success",
+      "node": null,
+      "detail": {}
+    }
+  ],
+  "node_timings": [
+    {
+      "node": "140:120",
+      "class_type": "VAELoader",
+      "seconds": 0.136,
+      "ended_by": "executing"
+    },
+    {
+      "node": "145",
+      "class_type": "LoadImage",
+      "seconds": 0.13,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:133",
+      "class_type": "PrimitiveFloat",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:132",
+      "class_type": "ComfyMathExpression",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "115",
+      "class_type": "ResolutionSelector",
+      "seconds": 0.002,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:119",
+      "class_type": "VAELoader",
+      "seconds": 0.495,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:141",
+      "class_type": "MiniMaxH3CLIPCachedFL2VA",
+      "seconds": 83.538,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:139",
+      "class_type": "PrimitiveBoolean",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:136",
+      "class_type": "ComfySwitchNode",
+      "seconds": 0.0,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:135",
+      "class_type": "ComfySwitchNode",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:123",
+      "class_type": "KSamplerSelect",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "h3s_refstrength",
+      "class_type": "H3StudioReferenceStrength",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:129",
+      "class_type": "RandomNoise",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:137",
+      "class_type": "PrimitiveInt",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:136",
+      "class_type": "ComfySwitchNode",
+      "seconds": 0.003,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:127",
+      "class_type": "UNETLoader",
+      "seconds": 0.733,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:135",
+      "class_type": "ComfySwitchNode",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:124",
+      "class_type": "BasicScheduler",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:126",
+      "class_type": "BasicGuider",
+      "seconds": 0.002,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:125",
+      "class_type": "SamplerCustomAdvanced",
+      "seconds": 66.969,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:121",
+      "class_type": "VAEDecodeAudio",
+      "seconds": 1.615,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:122",
+      "class_type": "VAEDecode",
+      "seconds": 16.232,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:130",
+      "class_type": "CreateVideo",
+      "seconds": 0.002,
+      "ended_by": "executing"
+    },
+    {
+      "node": "92",
+      "class_type": "SaveVideo",
+      "seconds": 1.256,
+      "ended_by": "execution_success"
+    }
+  ],
+  "conditioning_seconds": 83.538,
+  "status": "success",
+  "status_messages": [
+    [
+      "execution_start",
+      {
+        "prompt_id": "5f3baf92-7cbc-4fb7-b956-a2cbeec59b9e",
+        "timestamp": 1788710865520
+      }
+    ],
+    [
+      "execution_cached",
+      {
+        "nodes": [],
+        "prompt_id": "5f3baf92-7cbc-4fb7-b956-a2cbeec59b9e",
+        "timestamp": 1788710865955
+      }
+    ],
+    [
+      "execution_success",
+      {
+        "prompt_id": "5f3baf92-7cbc-4fb7-b956-a2cbeec59b9e",
+        "timestamp": 1788711037088
+      }
+    ]
+  ],
+  "outputs": {
+    "92": {
+      "images": [
+        {
+          "filename": "IMAGE_TRACE_DRAFT_00001_.mp4",
+          "subfolder": "video",
+          "type": "output"
+        }
+      ],
+      "animated": [
+        true
+      ]
+    }
+  },
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "IMAGE_TRACE_DRAFT_00001_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/IMAGE_TRACE_DRAFT_00001_.mp4",
+      "exists": true,
+      "bytes": 485854,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "485854",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ],
+  "system_stats_after": {
+    "system": {
+      "os": "linux",
+      "ram_total": 1082008997888,
+      "ram_free": 1016062267392,
+      "comfyui_version": "0.34.2",
+      "required_frontend_version": "1.49.6",
+      "installed_templates_version": "0.11.50",
+      "required_templates_version": "0.11.50",
+      "comfy_package_versions": [
+        {
+          "name": "comfyui-frontend-package",
+          "installed": "1.49.6",
+          "required": "1.49.6"
+        },
+        {
+          "name": "comfyui-workflow-templates",
+          "installed": "0.11.50",
+          "required": "0.11.50"
+        },
+        {
+          "name": "comfyui-embedded-docs",
+          "installed": "0.5.10",
+          "required": "0.5.10"
+        },
+        {
+          "name": "comfy-kitchen",
+          "installed": "0.2.31",
+          "required": "0.2.31"
+        },
+        {
+          "name": "comfy-aimdo",
+          "installed": "0.4.15",
+          "required": "0.4.15"
+        }
+      ],
+      "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+      "pytorch_version": "2.14.0+cu130",
+      "embedded_python": false,
+      "deploy_environment": "local-git",
+      "argv": [
+        "main.py",
+        "--listen",
+        "0.0.0.0",
+        "--port",
+        "8188",
+        "--disable-auto-launch"
+      ]
+    },
+    "devices": [
+      {
+        "name": "cuda:0 NVIDIA A100-SXM4-80GB : cudaMallocAsync",
+        "type": "cuda",
+        "index": 0,
+        "vram_total": 84974239744,
+        "vram_free": 57664128532,
+        "torch_vram_total": 67108864,
+        "torch_vram_free": 55887380
+      }
+    ]
+  },
+  "log_cache_lines": [
+    "\u001b[32m[INFO]\u001b[0m [CACHE MISS] 7ed5f7907127"
+  ],
+  "encoder_load_lines": [
+    "\u001b[32m[INFO]\u001b[0m Requested to load MiniMaxH3TEModel_"
+  ],
+  "encoder_loaded": true,
+  "log_error_lines": [],
+  "log_prompt_executed": [
+    "\u001b[32m[INFO]\u001b[0m \u001b[32mPrompt executed in 171.57 seconds\u001b[0m"
+  ],
+  "cache_new_files": {
+    "7ed5f7907127a092ef1cf20ab8ce0629031449e64312f548b3968a6380ea04c7.verbose.json": {
+      "size": 777,
+      "mtime": 1788710949.0
+    },
+    "7ed5f7907127a092ef1cf20ab8ce0629031449e64312f548b3968a6380ea04c7.json": {
+      "size": 189,
+      "mtime": 1788710947.0
+    },
+    "7ed5f7907127a092ef1cf20ab8ce0629031449e64312f548b3968a6380ea04c7.safetensors": {
+      "size": 9240328,
+      "mtime": 1788710946.0
+    }
+  },
+  "cache_changed_files": {},
+  "cache_entry_count": 15,
+  "cache_result": "MISS",
+  "encoder_reencoded": true
+}

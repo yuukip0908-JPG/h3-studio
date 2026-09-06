@@ -42,6 +42,29 @@ RUNS=(
   "refsize_$STAMP|refsize|match|max|motion_trace|$MT_PROMPT"
 )
 
+# AB_ONLY runs a subset (prefix match on the name), AB_PASSES repeats it.
+# A second pass exists for one reason: the first Motion Trace generation of a
+# process pays for loading the 21 GB Ref2VA checkpoint, so arm A of a cold
+# comparison carries a cost arm B does not. Pass 2 has both arms warm.
+ONLY="${AB_ONLY:-}"
+PASSES="${AB_PASSES:-1}"
+if [[ -n "$ONLY" ]]; then
+  KEEP=()
+  for r in "${RUNS[@]}"; do [[ "$r" == "$ONLY"* ]] && KEEP+=("$r"); done
+  [[ ${#KEEP[@]} -gt 0 ]] || { echo "AB_ONLY='$ONLY' matched no comparison"; exit 2; }
+  RUNS=("${KEEP[@]}")
+fi
+if [[ "$PASSES" -gt 1 ]]; then
+  EXPANDED=()
+  for pass in $(seq 1 "$PASSES"); do
+    for r in "${RUNS[@]}"; do
+      IFS='|' read -r name rest <<< "$r"
+      EXPANDED+=("${name}_p${pass}|$rest")
+    done
+  done
+  RUNS=("${EXPANDED[@]}")
+fi
+
 # Gate everything before the first generation: a malformed third comparison
 # should not be discovered after paying for the first two.
 echo "=== dry run: all three comparisons ==="

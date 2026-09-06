@@ -1,0 +1,26 @@
+[
+  {
+    "arm": "A",
+    "refsize": "match",
+    "status": "success",
+    "total_s": 2.039,
+    "cond_s": null,
+    "cache": "NODE_NOT_EXECUTED",
+    "encoder_reran": false,
+    "peak_vram_mib": 46139,
+    "video_s": "2.333333",
+    "bytes": "200564"
+  },
+  {
+    "arm": "B",
+    "refsize": "max",
+    "status": "success",
+    "total_s": 134.196,
+    "cond_s": 75.205,
+    "cache": "MISS",
+    "encoder_reran": true,
+    "peak_vram_mib": 74511,
+    "video_s": "2.333333",
+    "bytes": "181432"
+  }
+]
