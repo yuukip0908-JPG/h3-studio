@@ -303,6 +303,7 @@ class Handler(BaseHTTPRequestHandler):
                         "source_video_seconds": [mediaprobe.MIN_SECONDS, mediaprobe.MAX_SECONDS],
                         "expected_fps": mediaprobe.H3_FPS,
                     },
+                    "draft_quality": _draft_quality_choices(),
                     "finish_options": _finish_option_catalog(),
                     "output_dir": config.OUTPUT_DIR,
                 })
@@ -412,6 +413,11 @@ class Handler(BaseHTTPRequestHandler):
             source_video=data.get("source_video"),
             source_video_meta=data.get("source_video_meta"),
             ref_image_size=data.get("ref_image_size", "match"),
+            turbo=bool(data.get("turbo")),
+            quality_overrides=data.get("quality_overrides"),
+            # Explicit seeds exist for A/B work: holding the seed fixed is what
+            # makes two runs comparable. Normal UI generations omit it.
+            seeds=data.get("seeds"),
         )
         return batch.as_dict()
 
@@ -508,6 +514,11 @@ def _doctor():
             MANAGER.client.has_node(graph.CACHED_NODE_REF2VA), graph.CACHED_NODE_REF2VA)
         add("Ref2VA checkpoint present", _ref2va_model_present(),
             graph.REF2VA_MODEL)
+        turbo = MANAGER.turbo_available()
+        checks.append({"check": "Turbo LoRA (FL2VA)",
+                       "status": "PASS" if turbo else "WARN",
+                       "detail": graph.TURBO_LORAS["fl2va"]["file"] +
+                                 ("" if turbo else " not loadable by ComfyUI")})
         ref = MANAGER.reference_node_available()
         checks.append({"check": "Reference Strength node", "status": "PASS" if ref else "WARN",
                        "detail": graph.REF_STRENGTH_NODE +
@@ -516,6 +527,32 @@ def _doctor():
     fails = sum(1 for c in checks if c["status"] == "FAIL")
     return {"checks": checks, "fail": fails,
             "warn": sum(1 for c in checks if c["status"] == "WARN"), "ok": fails == 0}
+
+
+def _draft_quality_choices():
+    """Draft speed/quality options, with availability the UI can trust.
+
+    Turbo is offered only when ComfyUI reports it can load the LoRA. Display
+    label and the value sent to the API are separate, as everywhere else.
+    """
+    spec = graph.TURBO_LORAS["fl2va"]
+    available = MANAGER.turbo_available() if MANAGER else None
+    reason = ""
+    if available is False:
+        reason = "Turbo LoRA が Pod にありません（scripts/download_models_v2.sh で導入）"
+    elif available is None:
+        reason = "GPU 停止中のため確認できません"
+    return {
+        "choices": [
+            {"value": "standard", "label": "高品質", "sub": "通常 12 step"},
+            {"value": "turbo", "label": "高速", "sub": "Turbo %d step" % spec["steps"],
+             "available": available is True, "reason": reason},
+        ],
+        "turbo_lora": spec["file"],
+        "turbo_strength": graph.TURBO_LORA_STRENGTH,
+        "turbo_modes": list(graph.TURBO_MODES),
+        "available": available,
+    }
 
 
 def _aspect_ratio_choices():

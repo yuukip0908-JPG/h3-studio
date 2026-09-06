@@ -75,6 +75,35 @@ REF2VA_MODEL = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
 # docstring in comfy_extras/nodes_minimax_h3.py.
 IDENTITY_TAG = "<Picture 1>"
 MOTION_TAG = "<Video 1>"
+# --- Turbo LoRA -------------------------------------------------------------
+# The baseline graph has NO LoRA node at all, on purpose: ComfyUI validates
+# LoraLoaderModelOnly.lora_name against folder_paths.get_filename_list("loras")
+# even when the node is bypassed, so a missing file rejects the whole prompt
+# with value_not_in_list (HTTP 400). The node is therefore inserted only when
+# Turbo is explicitly on AND the file is confirmed present on the Pod; with
+# Turbo off the graph is byte-identical to the validated baseline.
+TURBO_LORA_NODE = "LoraLoaderModelOnly"
+TURBO_LORA_ID = "h3s_turbo_lora"
+TURBO_LORA_STRENGTH = 1.0
+
+# FL2VA only. Ref2VA's turbo is 4-step v0.1, the version the community reports
+# block noise in hands from, so Motion Trace is deliberately excluded.
+TURBO_LORAS = {
+    "fl2va": {
+        "file": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+        "steps": 8,
+        "sha256": "2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e",
+        "size_bytes": 1961000000,
+    },
+}
+TURBO_MODES = (MODE_IMAGE_TRACE, MODE_PROMPT_CINEMA)
+
+
+def turbo_lora_for(mode):
+    """The Turbo LoRA usable in this mode, or None."""
+    return TURBO_LORAS.get("fl2va") if mode in TURBO_MODES else None
+
+
 REF_STRENGTH_NODE = "H3StudioReferenceStrength"
 REF_STRENGTH_ID = "h3s_refstrength"
 
@@ -90,7 +119,8 @@ REF_STRENGTH_MAX = 1.0
 # changes; sampler/scheduler stay on the values the baseline validated.
 PRESETS = {
     (MODE_IMAGE_TRACE, "draft"): {
-        "megapixels": 0.4, "steps": 12, "sampler": "res_multistep", "scheduler": "simple",
+        "megapixels": 0.4, "steps": 12, "turbo_steps": 8,
+        "sampler": "res_multistep", "scheduler": "simple",
         "note": "same resolution as Final on purpose -> Final is a cache HIT",
     },
     (MODE_IMAGE_TRACE, "final"): {
@@ -106,7 +136,8 @@ PRESETS = {
         "note": "validated baseline resolution; cache HIT from the selected draft",
     },
     (MODE_PROMPT_CINEMA, "draft"): {
-        "megapixels": 0.25, "steps": 12, "sampler": "res_multistep", "scheduler": "simple",
+        "megapixels": 0.25, "steps": 12, "turbo_steps": 8,
+        "sampler": "res_multistep", "scheduler": "simple",
         "note": "T2V is resolution-independent for the cache, so Draft can be smaller",
     },
     (MODE_PROMPT_CINEMA, "final"): {
@@ -119,6 +150,13 @@ PRESETS = {
 # unverified, so this is never a default -- see docs/V2_AB_TESTS.md.
 EXPERIMENTAL_PRESETS = {
     "final_hq": {"megapixels": 0.6, "steps": 30, "sampler": "res_multistep", "scheduler": "simple"},
+    # A/B candidates. 1.0 MP == 1344x768 == 768p, the resolution H3 is tuned
+    # around; 0.4 MP is the validated baseline. Neither is a default until the
+    # single GPU session decides (docs/V2_NEXT_SESSION_PLAN.md).
+    "ab_040": {"megapixels": 0.4, "steps": 12, "turbo_steps": 8,
+               "sampler": "res_multistep", "scheduler": "simple"},
+    "ab_100": {"megapixels": 1.0, "steps": 12, "turbo_steps": 8,
+               "sampler": "res_multistep", "scheduler": "simple"},
 }
 
 # Aspect ratio: the UI label and the value ComfyUI accepts are deliberately
@@ -250,6 +288,62 @@ def _set_scalar_source(prompt, node_id, input_name, value, field="value"):
     return src
 
 
+def _turbo_boolean_id(prompt):
+    """The PrimitiveBoolean that drives the baseline's Turbo switches."""
+    for nid, node in prompt.items():
+        if node["class_type"] != "ComfySwitchNode":
+            continue
+        sw = node["inputs"].get("switch")
+        if _is_link(sw) and prompt[sw[0]]["class_type"] == "PrimitiveBoolean":
+            return sw[0]
+    raise GraphError("no PrimitiveBoolean driving a ComfySwitchNode (Turbo switch)")
+
+
+def insert_turbo_lora(prompt, lora_name, strength=TURBO_LORA_STRENGTH):
+    """Add the LoRA to the graph and take the baseline's own Turbo branch.
+
+    The baseline already wires two ComfySwitchNodes to one PrimitiveBoolean:
+    one selects the model, one selects the step count (20 vs 8). Both branches
+    of the model switch currently point at the plain UNETLoader because the
+    LoRA node was removed. We add the node, repoint only `on_true` at it, and
+    flip the boolean -- so model and steps switch together exactly as the
+    template intended, and `on_false` still reaches the untouched baseline path.
+    """
+    unet = one_id(prompt, "UNETLoader")
+    prompt[TURBO_LORA_ID] = {
+        "class_type": TURBO_LORA_NODE,
+        "inputs": {"model": [unet, 0], "lora_name": lora_name,
+                   "strength_model": float(strength)},
+    }
+    repointed = 0
+    for node in prompt.values():
+        if node["class_type"] != "ComfySwitchNode":
+            continue
+        branch = node["inputs"].get("on_true")
+        if _is_link(branch) and branch[0] == unet:
+            node["inputs"]["on_true"] = [TURBO_LORA_ID, 0]
+            repointed += 1
+    if not repointed:
+        raise GraphError("no ComfySwitchNode.on_true fed by the UNETLoader")
+    prompt[_turbo_boolean_id(prompt)]["inputs"]["value"] = True
+    return TURBO_LORA_ID
+
+
+def strip_turbo_lora(prompt):
+    """Undo insert_turbo_lora, returning the baseline path."""
+    p = copy.deepcopy(prompt)
+    if TURBO_LORA_ID not in p:
+        return p
+    source = p[TURBO_LORA_ID]["inputs"]["model"]
+    for node in p.values():
+        for name, value in node["inputs"].items():
+            if _is_link(value) and value[0] == TURBO_LORA_ID:
+                node["inputs"][name] = list(source)
+    del p[TURBO_LORA_ID]
+    p[_turbo_boolean_id(p)]["inputs"]["value"] = False
+    return p
+
+
 def insert_reference_strength(prompt, strength):
     """Splice the H3StudioReferenceStrength node between the cached
     conditioning node and BasicGuider.
@@ -285,7 +379,8 @@ def preset_for(mode, quality):
 
 def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
           aspect_ratio=ASPECT_RATIOS[0], image=None, source_video=None,
-          reference_strength=None, ref_image_size="match",
+          reference_strength=None, ref_image_size="match", turbo=False,
+          turbo_lora=None, turbo_strength=TURBO_LORA_STRENGTH,
           filename_prefix="video/H3Studio", overrides=None):
     """Return (api_prompt, resolved_params) for one generation."""
     if mode not in MODES:
@@ -306,9 +401,14 @@ def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
         if ref_image_size not in ("match", "max"):
             raise GraphError("ref_image_size must be 'match' or 'max'")
 
+    if turbo and mode not in TURBO_MODES:
+        raise GraphError("turbo is not available for %s (Ref2VA turbo is out of scope)" % mode)
+
     preset = preset_for(mode, quality)
     if overrides:
         preset.update({k: v for k, v in overrides.items() if v is not None})
+    steps = int(preset["turbo_steps"] if turbo else preset["steps"]) \
+        if (turbo and preset.get("turbo_steps")) else int(preset["steps"])
 
     p = load_template(mode)
     cached = cached_node_id(p)
@@ -321,9 +421,20 @@ def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
     p[one_id(p, "RandomNoise")]["inputs"]["noise_seed"] = int(seed)
     p[one_id(p, "KSamplerSelect")]["inputs"]["sampler_name"] = preset["sampler"]
 
+    # Turbo must be spliced in BEFORE the step count is written: it flips the
+    # boolean, which is what decides whether resolve_source() lands on the
+    # baseline PrimitiveInt or the Turbo one.
+    lora_file = None
+    if turbo:
+        spec = turbo_lora_for(mode) or {}
+        lora_file = turbo_lora or spec.get("file")
+        if not lora_file:
+            raise GraphError("no Turbo LoRA is defined for %s" % mode)
+        insert_turbo_lora(p, lora_file, turbo_strength)
+
     sched = one_id(p, "BasicScheduler")
     p[sched]["inputs"]["scheduler"] = preset["scheduler"]
-    _set_scalar_source(p, sched, "steps", int(preset["steps"]))
+    _set_scalar_source(p, sched, "steps", steps)
 
     # duration (seconds) -> ComfyMathExpression -> frame count on the 17k+5 grid
     _set_scalar_source(p, cached, "length", float(duration))
@@ -347,7 +458,9 @@ def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
     params = {
         "mode": mode, "quality": quality, "prompt": prompt_text, "seed": int(seed),
         "duration": float(duration), "aspect_ratio": aspect_ratio,
-        "megapixels": float(preset["megapixels"]), "steps": int(preset["steps"]),
+        "megapixels": float(preset["megapixels"]), "steps": steps,
+        "turbo": bool(turbo), "turbo_lora": lora_file,
+        "turbo_strength": float(turbo_strength) if turbo else None,
         "sampler": preset["sampler"], "scheduler": preset["scheduler"],
         "image": image, "source_video": source_video,
         "reference_strength": strength,

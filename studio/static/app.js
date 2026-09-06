@@ -18,6 +18,7 @@ const state = {
   sourceVideo: null,
   sourceVideoMeta: null,
   refImageSize: "match",
+  draftQuality: "standard",
   cfg: null,
   batch: null,       // current batch shown in RESULTS
   selected: null,
@@ -68,6 +69,18 @@ async function loadConfig() {
 
   $("auto-stop").innerHTML = cfg.auto_stop_choices
     .map((m) => `<option value="${m}">${m === 0 ? "OFF" : m + " min"}</option>`).join("");
+
+  const dq = cfg.draft_quality || { choices: [] };
+  $("draftq-seg").innerHTML = dq.choices.map((c) => {
+    const off = c.available === false;
+    return `<button data-dq="${c.value}" ${off ? "disabled" : ""}
+      class="${c.value === state.draftQuality && !off ? "on" : ""}"
+      title="${c.reason || ""}">${c.label}<span class="sub">${c.sub}</span></button>`;
+  }).join("");
+  const turbo = dq.choices.find((c) => c.value === "turbo") || {};
+  $("draftq-hint").textContent = turbo.available === false
+    ? turbo.reason
+    : "「高速」は Turbo LoRA を使い、Draft のステップ数を下げます。仕上げ（Final）は常に高品質です。";
 
   $("finish-options").innerHTML = cfg.finish_options.map((o) => `
     <label class="opt" title="${o.note}">
@@ -299,7 +312,11 @@ function genTiming(g, now) {
   }
   const rate = g.sampler && g.sampler.seconds_per_step
     ? ` · ${g.sampler.seconds_per_step}秒/step` : "";
-  return `${fmtDuration(elapsed)}経過${eta}${rate}`;
+  /* Say where the estimate came from: a median of comparable past runs, or a
+     formula because nothing comparable has been measured here yet. */
+  const src = g.expected_source && g.expected_source.indexOf("history") === 0
+    ? "" : "（目安）";
+  return `${fmtDuration(elapsed)}経過${eta}${src}${rate}`;
 }
 
 /* Re-render only the changing numbers, once a second, so the screen visibly
@@ -335,7 +352,12 @@ function tickResults() {
     }
     const left = !busy ? "" : total != null
       ? ` · 全体の残り約${fmtDuration(total)}` : "";
-    head.textContent = `${b.done_count}/${b.total_count} 本 完了${left}`;
+    const JP_ST = { done: "完了", running: "生成中", queued: "待機",
+                    error: "エラー", cancelled: "中止" };
+    const per = b.generations
+      .map((g, i) => `${i + 1}/${b.total_count} ${JP_ST[g.status] || g.status}`)
+      .join(" · ");
+    head.textContent = `${per}${left}`;
     head.hidden = false;
   } else if (head) {
     head.hidden = true;
@@ -363,7 +385,7 @@ function renderResults(batch) {
         <span>${tag}</span>
       </div>
       <div class="meta">
-        <span class="stage">${esc(g.progress_text || g.status)}</span>
+        <span class="stage">${esc(g.phase_label ? g.phase_label + " · " : "")}${esc(g.progress_text || g.status)}</span>
         <span class="timing">${genTiming(g, Date.now())}</span>
       </div>
       <div class="acts">
@@ -410,6 +432,14 @@ $("mode-seg").addEventListener("click", (e) => {
   [...$("mode-seg").children].forEach((c) => c.classList.toggle("on", c === b));
   renderModeHints();
   maybeSuggestTags();
+});
+
+$("draftq-seg").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b || b.disabled) return;
+  state.draftQuality = b.dataset.dq;
+  [...$("draftq-seg").children].forEach((c) => c.classList.toggle("on", c === b));
+  renderCacheHint();
 });
 
 $("refsize-seg").addEventListener("click", (e) => {
@@ -541,6 +571,11 @@ $("btn-generate").addEventListener("click", async () => {
     payload.source_video_meta = state.sourceVideoMeta;
   }
   if (inputs.indexOf("ref_image_size") >= 0) payload.ref_image_size = state.refImageSize;
+  /* Turbo only applies to a Draft, and only in the FL2VA modes. Final is never
+     Turbo -- the server enforces that too. */
+  const turboModes = (state.cfg.draft_quality || {}).turbo_modes || [];
+  payload.turbo = state.quality === "draft" && state.draftQuality === "turbo" &&
+                  turboModes.indexOf(state.mode) >= 0;
   if (inputs.indexOf("reference_strength") >= 0 && !$("refstrength").disabled) {
     payload.reference_strength = Number($("refstrength").value);
   }

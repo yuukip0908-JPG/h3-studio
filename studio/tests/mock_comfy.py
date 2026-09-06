@@ -35,8 +35,10 @@ KNOWN_NODES = {
     "SamplerCustomAdvanced", "BasicGuider", "ComfySwitchNode", "PrimitiveInt",
     "PrimitiveFloat", "PrimitiveBoolean", "ComfyMathExpression",
     "MiniMaxH3CLIPCachedRef2VA", "MiniMaxH3ReferenceToVideo", "LoadVideo",
-    "GetVideoComponents",
+    "GetVideoComponents", "LoraLoaderModelOnly",
 }
+
+TURBO_LORA = "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
 
 CACHED_CLASSES = ("MiniMaxH3CLIPCachedFL2VA", "MiniMaxH3CLIPCachedRef2VA")
 
@@ -72,6 +74,10 @@ class MockState:
         # on to reproduce that, so the Studio's handling of it stays covered.
         self.pod_stopped = False
         self.cancelled = set()   # prompt ids removed from the queue
+        # Which LoRA files ComfyUI can load. Empty by default so the Studio has
+        # to prove it checked before sending a lora_name -- ComfyUI validates
+        # that COMBO and rejects the whole prompt when the file is absent.
+        self.loras = []
         self.submitted = []        # every api prompt we received, for assertions
         # Real ComfyUI drains its prompt queue with a SINGLE worker: job N+1
         # does not start until job N has finished. That serialisation is what
@@ -214,7 +220,8 @@ def run_job(prompt_id, prompt):
                     STATE.cache[fp] = {"fingerprint": fp, "created": time.time(),
                                        "prompt": node["inputs"].get("prompt", "")[:120]}
         elif node["class_type"] == "SamplerCustomAdvanced":
-            steps = 8
+            turbo = any(v["class_type"] == "LoraLoaderModelOnly" for v in prompt.values())
+            steps = 5 if turbo else 8
             for i in range(1, steps + 1):
                 # ComfyUI 0.34.2 sends progress_state with a per-node map, not
                 # the flat "progress" older builds used.
@@ -342,6 +349,10 @@ class Handler(BaseHTTPRequestHandler):
                 if name == "ResolutionSelector":
                     spec["input"]["required"]["aspect_ratio"] = [
                         list(ASPECT_RATIO_OPTIONS), {"default": "1:1 (Square)"}]
+                if name == "LoraLoaderModelOnly":
+                    spec["input"]["required"]["lora_name"] = [list(STATE.loras), {}]
+                    spec["input"]["required"]["strength_model"] = [
+                        "FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0}]
                 if name == "UNETLoader":
                     spec["input"]["required"]["unet_name"] = [
                         ["minimax_h3_fl2va_pruned_int8_convrot.safetensors",
@@ -387,6 +398,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/prompt":
             body = json.loads(raw)
             prompt = body["prompt"]
+            bad_lora = [v["inputs"].get("lora_name") for v in prompt.values()
+                        if v["class_type"] == "LoraLoaderModelOnly"
+                        and v["inputs"].get("lora_name") not in STATE.loras]
+            if bad_lora:
+                # Exactly what ComfyUI answers for a LoRA file it cannot see.
+                return self._json({"error": {"type": "prompt_outputs_failed_validation",
+                                             "message": "Prompt outputs failed validation"},
+                                   "node_errors": {"h3s_turbo_lora": {"errors": [
+                                       {"type": "value_not_in_list",
+                                        "message": "Value not in list: lora_name: '%s'"
+                                                   % bad_lora[0]}]}}}, 400)
             bad = [v["inputs"]["aspect_ratio"] for v in prompt.values()
                    if v["class_type"] == "ResolutionSelector"
                    and v["inputs"].get("aspect_ratio") not in ASPECT_RATIO_OPTIONS]

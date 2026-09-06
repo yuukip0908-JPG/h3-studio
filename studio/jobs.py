@@ -51,7 +51,11 @@ class Generation:
         self.sampler_value = None
         self.sampler_max = None
         self.expected_seconds = None
+        self.expected_source = None
         self.step_times = []          # wall clock of each observed step advance
+        self.phase = None             # transfer | encode | sampling | decode | save
+        self.phase_started = None
+        self.phase_seconds = {}       # phase -> accumulated seconds
 
     def _sampler_dict(self):
         """Live sampling rate, so the ETA comes from this run rather than a guess.
@@ -88,6 +92,10 @@ class Generation:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "expected_seconds": self.expected_seconds,
+            "expected_source": self.expected_source,
+            "phase": self.phase,
+            "phase_label": PHASE_LABELS.get(self.phase),
+            "phase_seconds": dict(self.phase_seconds),
             "sampler": self._sampler_dict(),
         }
 
@@ -137,6 +145,7 @@ class JobManager:
         self._poller = None
         self._stop = threading.Event()
         self._ref_node_available = None
+        self._turbo_available = None
         # ComfyUI filename -> {"local": path, "kind": image|video, "sent": bool}
         # Files are accepted whenever the operator picks them and forwarded to
         # ComfyUI lazily, so choosing an image while the GPU is still booting
@@ -238,6 +247,26 @@ class JobManager:
             self.inputs[name] = {"local": local_path, "kind": kind, "sent": sent}
         return name, subfolder, sent
 
+    def turbo_available(self):
+        """True / False / None, where None means ComfyUI is unreachable.
+
+        Asks ComfyUI which LoRA files it can actually load. That is the same
+        list /prompt validates lora_name against, so a True here means the node
+        will not be rejected -- checking the filesystem would not prove that.
+        """
+        if self._turbo_available is None:
+            if not self.client.is_alive():
+                return None
+            try:
+                info = self.client.object_info(graph.TURBO_LORA_NODE) or {}
+            except comfy_client.ComfyError:
+                return None
+            spec = (info.get(graph.TURBO_LORA_NODE) or {}).get("input", {}).get("required", {})
+            options = (spec.get("lora_name") or [[]])[0]
+            wanted = graph.TURBO_LORAS["fl2va"]["file"]
+            self._turbo_available = bool(options) and wanted in options
+        return self._turbo_available
+
     def upload_source_image(self, local_path):
         name, subfolder, _sent = self.accept_input(local_path, "image")
         return name, subfolder
@@ -280,7 +309,8 @@ class JobManager:
     def submit_batch(self, *, mode, prompt_text, quality, variations, duration,
                      aspect_ratio, image=None, image_source=None, reference_strength=None,
                      seeds=None, parent_generation=None, kind=None,
-                     source_video=None, source_video_meta=None, ref_image_size="match"):
+                     source_video=None, source_video_meta=None, ref_image_size="match",
+                     turbo=False, quality_overrides=None):
         kind = kind or ("final" if quality != "draft" else "draft")
         # Fail fast and once. Without this every variation is submitted, fails
         # on its own, and the operator gets four identical error cards instead
@@ -289,6 +319,16 @@ class JobManager:
             raise comfy_client.ComfyUnavailable("ComfyUI is not running")
         # Anything picked while the GPU was booting is forwarded now.
         self._ensure_inputs_uploaded(image, source_video)
+
+        # Never send a lora_name ComfyUI cannot load: it validates the COMBO and
+        # rejects the whole prompt with value_not_in_list, which is exactly the
+        # failure the baseline removed the node to avoid.
+        if turbo:
+            available = self.turbo_available()
+            if available is not True:
+                turbo = False
+                self.notice("warn", "Turbo LoRA が Pod にないため、通常設定で生成します。"
+                                    "（scripts/download_models_v2.sh で導入できます）")
         batch_id = _short_id("b")
         seeds = list(seeds) if seeds else [int.from_bytes(os.urandom(4), "big") for _ in range(variations)]
         variations = len(seeds)
@@ -300,6 +340,7 @@ class JobManager:
                 mode, prompt_text, seed, quality=quality, duration=duration,
                 aspect_ratio=aspect_ratio, image=image, source_video=source_video,
                 reference_strength=reference_strength, ref_image_size=ref_image_size,
+                turbo=turbo, overrides=quality_overrides,
                 filename_prefix="video/H3Studio_%s_%d" % (batch_id, idx))
             if graph.REF_STRENGTH_ID in api_prompt and self.reference_node_available() is False:
                 api_prompt = graph.strip_reference_strength(api_prompt)
@@ -310,8 +351,8 @@ class JobManager:
             expected = graph.expected_cache(mode, prev if idx == 0 else gens[0].params, params)
             gen_id = _short_id("g")
             generation = Generation(gen_id, batch_id, idx, seed, params, api_prompt, expected)
-            generation.expected_seconds = self._estimate_seconds(
-                mode, quality, expected, duration)
+            generation.expected_seconds, generation.expected_source = \
+                self._estimate_seconds(mode, quality, expected, params)
             gens.append(generation)
             prev = params if idx == 0 else prev
 
@@ -368,25 +409,39 @@ class JobManager:
     }
     _MISS_EXTRA_SECONDS = 70      # the Qwen3-VL encode a cache MISS pays for
 
-    def _estimate_seconds(self, mode, quality, cache_expected, duration=2.0):
-        """Placeholder estimate, in seconds, until the run reports its own rate.
+    def _estimate_seconds(self, mode, quality, cache_expected, params=None):
+        """(seconds, source) estimate for one generation.
 
-        Scaled by duration because the frame count drives everything: the
-        baselines below were measured at 2 s, and an 18 s clip is nine times the
-        frames. Without the scaling an 18 s Motion Trace was estimated at ~2
-        minutes and actually took ~43.
+        Layer 3 of the progress display: measured history first, matched as
+        specifically as the data allows, falling back to a duration-scaled
+        baseline only when nothing comparable has been run here yet. `source`
+        says which it was, so the UI can be honest about confidence.
         """
-        scale = max(0.25, float(duration or 2.0) / 2.0)
-        measured = history.typical_seconds(mode, quality, cache_expected)
+        params = params or {}
+        duration = params.get("duration", 2.0)
+        measured, keys = history.typical_seconds(
+            mode=mode, cache_result=cache_expected,
+            turbo_enabled=1 if params.get("turbo") else 0,
+            resolution_mp=params.get("megapixels"), steps=params.get("steps"),
+            duration=duration, aspect_ratio=params.get("aspect_ratio"))
         if measured:
-            return round(measured)
+            return round(measured), "history:%d" % len(keys or ())
+        # Super-linear in duration: attention cost grows faster than the frame
+        # count. Anchored on the only two points measured here -- a 2 s Motion
+        # Trace at ~70 s and an 18 s one at 2778 s, a 9x duration for ~40x the
+        # time -- so the exponent is a rough shape, not a fitted law. Any
+        # recorded history overrides it.
+        scale = max(0.25, (float(duration or 2.0) / 2.0) ** 1.7)
         base = self._BASE_SECONDS.get((mode, quality))
         if base is None:
             base = self._BASE_SECONDS.get((mode, "draft"), 60)
+        if params.get("turbo") and params.get("steps"):
+            # Turbo trades steps for speed; scale the baseline by the ratio.
+            base *= float(params["steps"]) / 12.0
         seconds = base * scale
         if cache_expected == "MISS":
             seconds += self._MISS_EXTRA_SECONDS
-        return round(seconds)
+        return round(seconds), "baseline"
 
     def _last_encoder_params(self, mode):
         """Encoder-visible params of the most recent batch in the same mode,
@@ -411,6 +466,9 @@ class JobManager:
             image_source=None, reference_strength=p.get("reference_strength"),
             source_video=p.get("source_video"),
             ref_image_size=p.get("ref_image_size") or "match",
+            # Final is never Turbo: "speed over Final quality" is the one
+            # trade-off this project refuses to make.
+            turbo=False,
             seeds=[src.seed], parent_generation=gen_id, kind="final")
         batch.meta["finish_options"] = finish_options or {}
         for g in batch.generations:
@@ -469,6 +527,7 @@ class JobManager:
                 cls = (gen.api_prompt.get(node) or {}).get("class_type", node)
                 gen.progress_text = _friendly_stage(cls)
                 gen.status = "running"
+                self._enter_phase(gen, _NODE_PHASE.get(cls))
         elif mtype in ("progress_state", "progress"):
             # ComfyUI 0.34.2 emits BOTH: the legacy flat "progress" from
             # comfy.utils.ProgressBar and "progress_state" with a per-node map
@@ -531,6 +590,23 @@ class JobManager:
                 continue
             self._complete(gen, h)
 
+    @staticmethod
+    def _enter_phase(gen, phase):
+        """Accumulate time against the phase the graph is currently in.
+
+        Recorded per generation so the ETA can say more than one number -- an
+        encode that costs ~70 s on a MISS and 0 on a HIT is the difference
+        between a useful estimate and a misleading one.
+        """
+        if phase is None or phase == gen.phase:
+            return
+        now = time.time()
+        if gen.phase and gen.phase_started:
+            gen.phase_seconds[gen.phase] = round(
+                gen.phase_seconds.get(gen.phase, 0.0) + (now - gen.phase_started), 2)
+        gen.phase = phase
+        gen.phase_started = now
+
     def _refresh_queue_positions(self):
         """Tell a waiting generation how many jobs are ahead of it.
 
@@ -586,16 +662,28 @@ class JobManager:
         # status -- the UI's poll, a caller waiting on the batch -- observe a
         # finished generation whose cache_result is still None. status is the
         # completion signal, so everything it implies must be set first.
+        self._enter_phase(gen, "done")          # closes the last open phase
         gen.cache_result = self._classify_cache(gen)
         gen.progress_text = "完了（%s）" % ({"HIT": "キャッシュ再利用", "MISS": "解析あり"}.get(gen.cache_result, gen.cache_result or "?"))
         # The durable row is written BEFORE the in-memory status flips, for the
         # same reason cache_result is computed first: `status == "done"` is the
         # completion signal, so everything it implies -- including the history
         # row a caller may immediately read back -- must already be true.
+        p = gen.params
         history.update_generation(
             gen.id, status="done", finished_at=gen.finished_at,
             generation_seconds=round(gen.finished_at - gen.started_at, 2),
-            output_path=dest, output_filename=f["filename"], cache_result=gen.cache_result)
+            output_path=dest, output_filename=f["filename"], cache_result=gen.cache_result,
+            # Everything the ETA learns from, recorded at completion.
+            turbo_enabled=1 if p.get("turbo") else 0,
+            turbo_lora=p.get("turbo_lora"), lora_strength=p.get("turbo_strength"),
+            resolution_mp=p.get("megapixels"), steps=p.get("steps"),
+            duration=p.get("duration"), aspect_ratio=p.get("aspect_ratio"),
+            queue_seconds=round(max(0.0, gen.started_at - gen.queued_at), 2),
+            encode_seconds=gen.phase_seconds.get("encode"),
+            sampling_seconds=gen.phase_seconds.get("sampling"),
+            decode_seconds=gen.phase_seconds.get("decode"),
+            gpu=config.load_runpod_state().get("plannedGpuTypeId"))
         gen.status = "done"
 
     def _fail(self, gen, message):
@@ -678,6 +766,22 @@ class JobManager:
 
 # Shown verbatim in the UI, so these are the operator's language. Widely
 # understood technical names (Qwen3-VL, H3, VAE) stay as they are.
+# Which coarse phase each node belongs to. The phase is what the operator sees
+# and what gets recorded for the ETA; the node class is an implementation detail.
+_NODE_PHASE = {
+    "LoadImage": "transfer", "LoadVideo": "transfer", "GetVideoComponents": "transfer",
+    "MiniMaxH3CLIPCachedFL2VA": "encode", "MiniMaxH3CLIPCachedRef2VA": "encode",
+    "UNETLoader": "encode", "VAELoader": "encode", "LoraLoaderModelOnly": "encode",
+    "SamplerCustomAdvanced": "sampling",
+    "VAEDecode": "decode", "VAEDecodeAudio": "decode",
+    "CreateVideo": "save", "SaveVideo": "save",
+}
+
+PHASE_LABELS = {
+    "transfer": "素材転送", "encode": "Encoding", "sampling": "Sampling",
+    "decode": "VAE Decode", "save": "Save",
+}
+
 _STAGE_NAMES = {
     "MiniMaxH3CLIPCachedFL2VA": "プロンプトを解析中（Qwen3-VL）",
     "MiniMaxH3CLIPCachedRef2VA": "参照を解析中（Qwen3-VL）",

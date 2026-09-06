@@ -88,6 +88,50 @@ def _migrate(conn):
                          ("ref_image_size", "TEXT")):
         if column not in have:
             conn.execute("ALTER TABLE batches ADD COLUMN %s %s" % (column, decl))
+    # Per-generation columns added for the Turbo/resolution A/B and the
+    # history-driven ETA. Added by migration so an existing database keeps its
+    # rows instead of having to be deleted.
+    have_gen = {row[1] for row in conn.execute("PRAGMA table_info(generations)")}
+    added = []
+    for column, decl in (("turbo_enabled", "INTEGER"), ("turbo_lora", "TEXT"),
+                         ("lora_strength", "REAL"), ("resolution_mp", "REAL"),
+                         ("steps", "INTEGER"), ("duration", "REAL"),
+                         ("aspect_ratio", "TEXT"), ("queue_seconds", "REAL"),
+                         ("encode_seconds", "REAL"), ("sampling_seconds", "REAL"),
+                         ("decode_seconds", "REAL"), ("gpu", "TEXT")):
+        if column not in have_gen:
+            conn.execute("ALTER TABLE generations ADD COLUMN %s %s" % (column, decl))
+            added.append(column)
+    # Unconditional: the columns may have been added by an earlier run that
+    # predates this backfill, leaving rows that are queryable but empty.
+    # It only touches rows where resolution_mp IS NULL, so it is a no-op once
+    # everything is filled.
+    _backfill_from_params(conn)
+
+
+def _backfill_from_params(conn):
+    """Populate the new columns for rows written before they existed.
+
+    Every generation already stores its resolved params as JSON, so the values
+    are there -- they were just not queryable. Without this the ETA can only
+    match on (mode, cache_result) for old rows, which would return an 18 s
+    estimate for a 2 s request.
+    """
+    rows = conn.execute(
+        "SELECT id, params FROM generations WHERE resolution_mp IS NULL AND params IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        try:
+            p = json.loads(row["params"])
+        except (ValueError, TypeError):
+            continue
+        conn.execute(
+            "UPDATE generations SET resolution_mp = ?, steps = ?, duration = ?,"
+            " aspect_ratio = ?, turbo_enabled = ?, turbo_lora = ?, lora_strength = ?"
+            " WHERE id = ?",
+            (p.get("megapixels"), p.get("steps"), p.get("duration"), p.get("aspect_ratio"),
+             1 if p.get("turbo") else 0, p.get("turbo_lora"), p.get("turbo_strength"),
+             row["id"]))
 
 
 def create_batch(batch_id, *, kind, mode, prompt, image=None, image_source=None,
@@ -181,23 +225,63 @@ def stats():
             "cache_misses": row["misses"] or 0, "gpu_seconds": round(row["secs"] or 0.0, 1)}
 
 
-def typical_seconds(mode, quality, cache_result):
-    """Median run time of comparable finished generations, or None.
+# Match keys for the ETA, most specific first. Each row is relaxed in turn
+# until enough comparable history exists, so a brand-new combination still
+# gets an estimate from the nearest thing this machine has actually measured.
+_ETA_KEYS = [
+    ("mode", "cache_result", "turbo_enabled", "resolution_mp", "steps", "duration", "aspect_ratio"),
+    ("mode", "cache_result", "turbo_enabled", "resolution_mp", "steps", "duration"),
+    ("mode", "cache_result", "turbo_enabled", "resolution_mp", "steps"),
+    ("mode", "cache_result", "turbo_enabled", "resolution_mp"),
+]
+# The ladder deliberately stops there. Relaxing further would answer a
+# "1.0 MP with Turbo" request with 0.4 MP non-Turbo history -- it did, returning
+# 31 s for a combination never run here. Resolution and Turbo change the cost
+# too much to be dropped; without a comparable row the caller falls back to its
+# own formula, which at least scales with duration and step count.
 
-    Used for the ETA. Keyed on mode + quality + cache result because those are
-    what actually drive the cost: a MISS pays for the ~60 s Qwen3-VL encode, and
-    Motion Trace carries its reference tokens through every sampling step
-    (measured ~69 s vs ~30 s for Image Trace at the same settings).
+# Duration dominates cost -- 9x the duration measured ~40x the time -- so once
+# the ladder stops matching duration exactly, comparable rows are still
+# restricted to a band around the request. Without this a 2 s estimate happily
+# returned the 2778 s an 18 s clip took, because everything else matched.
+_DURATION_BAND = (0.7, 1.4)
+
+
+def typical_seconds(**criteria):
+    """Median run time of comparable finished generations, or (None, None).
+
+    Returns (seconds, matched_keys) so a caller can say how confident the
+    estimate is. Cost is dominated by mode, cache result, Turbo, resolution,
+    steps and duration -- measured: a 2 s Motion Trace runs ~70 s while an 18 s
+    one runs 2778 s, so an estimate that ignores duration is useless.
     """
-    rows = connect().execute(
-        "SELECT g.generation_seconds s FROM generations g JOIN batches b ON b.id = g.batch_id"
-        " WHERE g.status = 'done' AND g.generation_seconds > 0 AND b.mode = ?"
-        "   AND b.quality = ? AND g.cache_result = ?"
-        " ORDER BY g.created_at DESC LIMIT 9", (mode, quality, cache_result)).fetchall()
-    values = sorted(r["s"] for r in rows if r["s"])
-    if not values:
-        return None
-    return values[len(values) // 2]
+    conn = connect()
+    for keys in _ETA_KEYS:
+        where, args = [], []
+        usable = True
+        for k in keys:
+            v = criteria.get(k)
+            if v is None:
+                usable = False
+                break
+            where.append("g.%s = ?" % k if k != "mode" else "b.mode = ?")
+            args.append(int(v) if k == "turbo_enabled" else v)
+        if not usable:
+            continue
+        want_duration = criteria.get("duration")
+        if want_duration and "duration" not in keys:
+            where.append("(g.duration IS NULL OR (g.duration >= ? AND g.duration <= ?))")
+            args.extend([want_duration * _DURATION_BAND[0], want_duration * _DURATION_BAND[1]])
+        rows = conn.execute(
+            "SELECT g.generation_seconds s FROM generations g"
+            " JOIN batches b ON b.id = g.batch_id"
+            " WHERE g.status = 'done' AND g.generation_seconds > 0 AND "
+            + " AND ".join(where) +
+            " ORDER BY g.created_at DESC LIMIT 9", args).fetchall()
+        values = sorted(r["s"] for r in rows if r["s"])
+        if values:
+            return values[len(values) // 2], keys
+    return None, None
 
 
 def export_batch_metadata(batch_id, dest_dir):

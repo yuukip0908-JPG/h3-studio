@@ -307,6 +307,146 @@ class MotionTraceGraphTests(unittest.TestCase):
         self.assertEqual(graph.expected_cache(graph.MODE_MOTION_TRACE, mt, mt2), "MISS")
 
 
+class TurboLoraGraphTests(unittest.TestCase):
+    """Turbo must never reach ComfyUI as an unloadable lora_name."""
+
+    def test_turbo_off_leaves_the_baseline_path_untouched(self):
+        p, params = graph.build(graph.MODE_IMAGE_TRACE, "x", 1, image="a.png")
+        self.assertNotIn(graph.TURBO_LORA_ID, p)
+        self.assertEqual(graph.find_ids(p, graph.TURBO_LORA_NODE), [])
+        self.assertFalse(params["turbo"])
+        self.assertEqual(params["steps"], 12)
+        self.assertIs(p[graph._turbo_boolean_id(p)]["inputs"]["value"], False)
+
+    def test_turbo_on_inserts_the_lora_and_takes_the_turbo_branch(self):
+        p, params = graph.build(graph.MODE_IMAGE_TRACE, "x", 1, image="a.png", turbo=True)
+        lora = p[graph.TURBO_LORA_ID]
+        self.assertEqual(lora["class_type"], "LoraLoaderModelOnly")
+        self.assertEqual(lora["inputs"]["lora_name"], graph.TURBO_LORAS["fl2va"]["file"])
+        self.assertEqual(lora["inputs"]["strength_model"], 1.0)
+        unet = graph.one_id(p, "UNETLoader")
+        self.assertEqual(lora["inputs"]["model"], [unet, 0])
+        self.assertIs(p[graph._turbo_boolean_id(p)]["inputs"]["value"], True)
+        self.assertEqual(params["steps"], 8)
+        self.assertTrue(params["turbo"])
+
+    def test_turbo_keeps_the_baseline_branch_reachable(self):
+        """on_false must still be the plain UNETLoader, not the LoRA."""
+        p, _ = graph.build(graph.MODE_IMAGE_TRACE, "x", 1, image="a.png", turbo=True)
+        unet = graph.one_id(p, "UNETLoader")
+        model_switch = [k for k, v in p.items()
+                        if v["class_type"] == "ComfySwitchNode"
+                        and v["inputs"].get("on_false") == [unet, 0]]
+        self.assertEqual(len(model_switch), 1)
+        self.assertEqual(p[model_switch[0]]["inputs"]["on_true"], [graph.TURBO_LORA_ID, 0])
+
+    def test_steps_land_on_the_turbo_primitive_not_the_baseline_one(self):
+        p, _ = graph.build(graph.MODE_IMAGE_TRACE, "x", 1, image="a.png", turbo=True)
+        sched = graph.one_id(p, "BasicScheduler")
+        src = graph.resolve_source(p, sched, "steps")
+        self.assertEqual(p[src]["inputs"]["value"], 8)
+        others = [k for k in graph.find_ids(p, "PrimitiveInt") if k != src]
+        self.assertEqual(p[others[0]]["inputs"]["value"], 20,
+                         "the non-Turbo branch keeps the template default")
+
+    def test_strip_restores_the_baseline_wiring(self):
+        p, _ = graph.build(graph.MODE_IMAGE_TRACE, "x", 1, image="a.png", turbo=True)
+        stripped = graph.strip_turbo_lora(p)
+        self.assertNotIn(graph.TURBO_LORA_ID, stripped)
+        unet = graph.one_id(stripped, "UNETLoader")
+        for node in stripped.values():
+            if node["class_type"] == "ComfySwitchNode":
+                for branch in ("on_true", "on_false"):
+                    v = node["inputs"].get(branch)
+                    if isinstance(v, list) and v and isinstance(v[0], str):
+                        self.assertNotEqual(v[0], graph.TURBO_LORA_ID)
+        self.assertIs(stripped[graph._turbo_boolean_id(stripped)]["inputs"]["value"], False)
+
+    def test_motion_trace_cannot_use_turbo(self):
+        """Ref2VA turbo is 4-step v0.1 and out of scope."""
+        with self.assertRaises(graph.GraphError):
+            graph.build(graph.MODE_MOTION_TRACE, "x", 1, image="a.png",
+                        source_video="v.mp4", turbo=True)
+        self.assertIsNone(graph.turbo_lora_for(graph.MODE_MOTION_TRACE))
+        self.assertIsNotNone(graph.turbo_lora_for(graph.MODE_PROMPT_CINEMA))
+
+
+class TurboSafetyTests(StudioTestCase):
+    def test_turbo_is_unavailable_until_comfyui_lists_the_file(self):
+        m = self.make_manager()
+        self.assertFalse(m.turbo_available(), "no LoRA on the Pod -> not available")
+        mock_comfy.STATE.loras = [mock_comfy.TURBO_LORA]
+        m._turbo_available = None
+        self.assertTrue(m.turbo_available())
+
+    def test_unreachable_comfyui_reports_unknown_not_unavailable(self):
+        m = self.make_manager()
+        self.server.shutdown()
+        m._turbo_available = None
+        self.assertIsNone(m.turbo_available())
+
+    def test_requesting_turbo_without_the_file_falls_back_and_never_sends_lora(self):
+        """The failure the baseline removed the node to avoid."""
+        m = self.make_manager()
+        batch = m.submit_batch(mode=graph.MODE_IMAGE_TRACE, prompt_text="no lora",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0], image="a.png",
+                               turbo=True)
+        self.wait_batch(batch)
+        gen = batch.generations[0]
+        self.assertEqual(gen.status, "done", gen.error)
+        self.assertFalse(gen.params["turbo"])
+        self.assertNotIn(graph.TURBO_LORA_ID, mock_comfy.STATE.submitted[-1])
+        self.assertTrue(any("Turbo LoRA" in e["text"] for e in m.events))
+
+    def test_a_lora_comfyui_cannot_load_is_rejected_with_value_not_in_list(self):
+        """Proves the mock validates, so the fallback test above means something."""
+        m = self.make_manager()
+        p, _ = graph.build(graph.MODE_IMAGE_TRACE, "x", 1, image="a.png", turbo=True)
+        with self.assertRaises(comfy_client.ComfyError) as cm:
+            m.client.submit(p, "test-client")
+        self.assertIn("value_not_in_list", str(cm.exception))
+        self.assertIn("lora_name", str(cm.exception))
+
+    def test_turbo_runs_end_to_end_when_the_file_is_present(self):
+        m = self.make_manager()
+        mock_comfy.STATE.loras = [mock_comfy.TURBO_LORA]
+        m._turbo_available = None
+        batch = m.submit_batch(mode=graph.MODE_IMAGE_TRACE, prompt_text="turbo run",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0], image="a.png",
+                               turbo=True)
+        self.wait_batch(batch)
+        gen = batch.generations[0]
+        self.assertEqual(gen.status, "done", gen.error)
+        self.assertTrue(gen.params["turbo"])
+        self.assertEqual(gen.params["steps"], 8)
+        submitted = mock_comfy.STATE.submitted[-1]
+        self.assertEqual(submitted[graph.TURBO_LORA_ID]["inputs"]["lora_name"],
+                         mock_comfy.TURBO_LORA)
+        row = history.get_generation(gen.id)
+        self.assertEqual(row["turbo_enabled"], 1)
+        self.assertEqual(row["turbo_lora"], mock_comfy.TURBO_LORA)
+        self.assertEqual(row["lora_strength"], 1.0)
+        self.assertEqual(row["steps"], 8)
+        self.assertEqual(row["resolution_mp"], 0.4)
+
+    def test_final_is_never_turbo(self):
+        m = self.make_manager()
+        mock_comfy.STATE.loras = [mock_comfy.TURBO_LORA]
+        m._turbo_available = None
+        draft = m.submit_batch(mode=graph.MODE_IMAGE_TRACE, prompt_text="final check",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0], image="a.png",
+                               turbo=True)
+        self.wait_batch(draft)
+        final = m.submit_final(draft.generations[0].id)
+        self.wait_batch(final)
+        self.assertFalse(final.generations[0].params["turbo"],
+                         "Final must not trade quality for speed")
+        self.assertNotIn(graph.TURBO_LORA_ID, mock_comfy.STATE.submitted[-1])
+
+
 class MediaProbeTests(unittest.TestCase):
     SAMPLE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))), "results", "sample_MiniMax_H3_00015_.mp4")
@@ -627,17 +767,30 @@ class EndToEndTests(StudioTestCase):
 
     def test_estimate_prefers_measured_history_over_the_fallback(self):
         m = self.make_manager()
-        fallback = m._estimate_seconds(graph.MODE_MOTION_TRACE, "draft", "HIT")  # noqa: SLF001
-        self.assertEqual(fallback, 70, "measured Motion Trace draft HIT baseline")
+        params = {"duration": 2.0, "megapixels": 0.4, "steps": 12, "turbo": False,
+                  "aspect_ratio": graph.ASPECT_RATIOS[0]}
+        seconds, source = m._estimate_seconds(                       # noqa: SLF001
+            graph.MODE_MOTION_TRACE, "draft", "HIT", params)
+        self.assertEqual((seconds, source), (70, "baseline"),
+                         "no history yet -> the measured Motion Trace baseline")
+
         batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="learn me",
                                quality="draft", variations=1, duration=2.0,
                                aspect_ratio=graph.ASPECT_RATIOS[0])
         self.wait_batch(batch)
-        cache = batch.generations[0].cache_result
-        measured = history.typical_seconds(graph.MODE_PROMPT_CINEMA, "draft", cache)
+        gen = batch.generations[0]
+        pc = {"duration": 2.0, "megapixels": gen.params["megapixels"],
+              "steps": gen.params["steps"], "turbo": False,
+              "aspect_ratio": graph.ASPECT_RATIOS[0]}
+        measured, keys = history.typical_seconds(
+            mode=graph.MODE_PROMPT_CINEMA, cache_result=gen.cache_result,
+            turbo_enabled=0, resolution_mp=pc["megapixels"], steps=pc["steps"],
+            duration=2.0, aspect_ratio=graph.ASPECT_RATIOS[0])
         self.assertIsNotNone(measured, "a finished run must feed the estimate")
-        self.assertEqual(m._estimate_seconds(graph.MODE_PROMPT_CINEMA, "draft", cache),  # noqa: SLF001
-                         round(measured))
+        seconds, source = m._estimate_seconds(                       # noqa: SLF001
+            graph.MODE_PROMPT_CINEMA, "draft", gen.cache_result, pc)
+        self.assertEqual(seconds, round(measured))
+        self.assertTrue(source.startswith("history"), source)
 
     def test_live_sampling_rate_is_measured_from_the_run(self):
         """The ETA must come from this run, not a fixed guess.
@@ -663,10 +816,36 @@ class EndToEndTests(StudioTestCase):
     def test_estimate_scales_with_duration(self):
         """An 18 s clip is ~9x the frames of the 2 s baseline, not the same."""
         m = self.make_manager()
-        short = m._estimate_seconds(graph.MODE_MOTION_TRACE, "draft", "HIT", 2.0)   # noqa: SLF001
-        long_ = m._estimate_seconds(graph.MODE_MOTION_TRACE, "draft", "HIT", 18.0)  # noqa: SLF001
-        self.assertGreater(long_, short * 5,
+
+        def est(duration):
+            return m._estimate_seconds(                              # noqa: SLF001
+                graph.MODE_MOTION_TRACE, "draft", "HIT",
+                {"duration": duration, "megapixels": 0.4, "steps": 12,
+                 "turbo": False, "aspect_ratio": graph.ASPECT_RATIOS[0]})[0]
+
+        self.assertGreater(est(18.0), est(2.0) * 5,
                            "a 9x longer clip must not be estimated at the same cost")
+
+    def test_estimate_never_borrows_a_different_duration_from_history(self):
+        """A 2 s request must not inherit an 18 s measurement."""
+        m = self.make_manager()
+        common = dict(mode=graph.MODE_PROMPT_CINEMA, prompt_text="long one",
+                      quality="draft", variations=1,
+                      aspect_ratio=graph.ASPECT_RATIOS[0])
+        long_batch = m.submit_batch(duration=18.0, **common)
+        self.wait_batch(long_batch)
+        long_gen = long_batch.generations[0]
+        self.assertEqual(long_gen.status, "done")
+
+        short_params = {"duration": 2.0, "megapixels": long_gen.params["megapixels"],
+                        "steps": long_gen.params["steps"], "turbo": False,
+                        "aspect_ratio": graph.ASPECT_RATIOS[0]}
+        measured, _ = history.typical_seconds(
+            mode=graph.MODE_PROMPT_CINEMA, cache_result=long_gen.cache_result,
+            turbo_enabled=0, resolution_mp=short_params["megapixels"],
+            steps=short_params["steps"], duration=2.0,
+            aspect_ratio=graph.ASPECT_RATIOS[0])
+        self.assertIsNone(measured, "an 18 s row must not match a 2 s request")
 
     def test_cancel_stops_the_whole_batch_not_one_job_at_a_time(self):
         """Interrupting alone lets the next queued prompt start immediately."""

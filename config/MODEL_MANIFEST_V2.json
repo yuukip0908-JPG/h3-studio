@@ -15,6 +15,17 @@
       "size_bytes": 20970379616,
       "sha256": "9255f52b6677845ad238f20dfaafa94727053694127ab7f255c048f0f9365779",
       "verified_on_pod": "2026-09-06 (sha256sum on ufhtfdg9ulv3fj matched exactly)"
+    },
+    {
+      "role": "turbo_lora_fl2va",
+      "used_by": "Draft speed for Image Trace / Prompt Cinema (LoraLoaderModelOnly). Optional: the Studio disables Turbo when this file is absent.",
+      "remote_path": "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+      "local_subdir": "models/loras",
+      "filename": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+      "size": "1.96 GB",
+      "size_bytes": 1956193000,
+      "sha256": "2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e",
+      "note": "8-step. The 4-step ref2v turbo is deliberately NOT included: the community reports block noise in hands from that version, and Motion Trace turbo is out of scope for this round."
     }
   ]
 }
