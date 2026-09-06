@@ -1,38 +1,39 @@
 # H3 Studio v2 — 既知の制約
 
-## 1. 実機（GPU）検証の状態
+## 1. 実機（GPU）検証の状態 — **完了**
 
-2026-09-06 のスモークテスト（Pod ufhtfdg9ulv3fj）で実測済み:
+2026-09-06、新 Pod `3lbxf2rnkjsqte`（RTX 6000 Ada 48GB, US-WA-1）で
+`scripts/v2_validate.sh` を実行し **PASS=29 / FAIL=0**。
+`results/V2_READY` 作成済み。証跡: `results/v2_validation/run_20260906T100944Z.log`
 
-| 項目 | 状態 |
+| 項目 | 結果 |
 |---|---|
-| Studio ↔ ComfyUI（実 Pod / RunPod proxy 経由） | **PASS** |
-| WebSocket が RunPod proxy を通るか | **PASS**（`ws_connected: true`、ノード単位の進捗が届く） |
-| START GPU の全経路（Pod 起動 → SSH → ComfyUI → health） | **PASS** |
-| STOP GPU の実 Pod 停止 + Volume 保持 | **PASS** |
-| Reference Strength ノードの Pod 上での登録 | **PASS**（`install_h3studio_node.sh`） |
-| 実 H3 生成 Image Trace ×1 | **PASS**（175.3s、MISS） |
-| 実 H3 生成 Prompt Cinema ×1 | **PASS**（233.2s、MISS） |
-| Ref2VA モデル導入 + sha256 検証 | **PASS**（20.97 GB、`9255f5…`） |
-| Ref2VA / LoadVideo / GetVideoComponents ノード登録 | **PASS** |
-| **3モード ×4 / HIT / Final の通し検証** | **未了** — RunPod のホスト空き待ちで実行できていない（下記 §1.1） |
-| Face Refine / SageAttention / RTX VSR | **未導入・未検証** |
+| Pod 移行（別ホスト・同一 Volume） | **PASS** |
+| Pod 側 baseline `doctor.sh` | **PASS FAIL=0 WARN=0** |
+| Image Trace ×4 → Select → Final | **PASS**（MISS + HIT×3、Final HIT 61.0s / 30steps） |
+| Prompt Cinema ×4 → Select → Final | **PASS**（MISS 75.2s + HIT×3 ~16s、Final HIT） |
+| Motion Trace ×4 → Select → Final | **PASS**（MISS + HIT×3 ~69.5s、Final HIT） |
+| CLIPCached 実 HIT | **PASS** — 15本中 HIT 12 / MISS 3 |
+| Final が 1 本だけ・cache HIT | **3モードとも PASS** |
+| EXPORT | 3モードとも PASS |
+| GPU STOP + Volume 保持 | **PASS** |
 
-### 1.1 未了の理由（コードの問題ではない）
+### 実測された生成時間（0.4MP / 2s / RTX 6000 Ada）
 
-`bash scripts/v2_validate.sh` を実行したところ、RunPod が
+| モード | Draft HIT (12 steps) | Final HIT (30 steps) | 備考 |
+|---|---|---|---|
+| Prompt Cinema | **~16s** | — | 参照なしで最速 |
+| Image Trace | **~30s** | **61.0s** | keyframe 1 枚 |
+| Motion Trace | **~69.5s** | — | **Image Trace の約 2.3 倍** |
 
-```
-start pod: There are not enough free GPUs on the host machine to start this pod.
-```
+Motion Trace が重いのは仕様どおり: 参照トークン（識別画像 + 動画フレーム）が
+**全サンプリングステップを通る**ため。`ref_image_size=max` にするとさらに遅くなる。
 
-を返した。停止中の Pod は**元のホストでしか再起動できない**ため、
-そのホストが埋まっている間は起動できない。Pod・コンテナディスク・
-Network Volume はすべて無事で、空きが出れば通常どおり起動する。
+MISS（Qwen3-VL エンコード込み）は Prompt Cinema で **75.2s**。
 
-→ 空いたタイミングで `bash scripts/v2_validate.sh` を実行すれば、
-   3モード ×4 / HIT / Select / Final / EXPORT / STOP まで自動で測定し、
-   FAIL=0 のときだけ `results/V2_READY` を作成する。
+### 未実施（core 検証の対象外）
+
+Face Refine / SageAttention / RTX VSR、および `docs/V2_AB_TESTS.md` の A/B 一式。
 
 ## 2. Motion Trace 固有の制約
 

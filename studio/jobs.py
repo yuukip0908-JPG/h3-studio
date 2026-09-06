@@ -37,6 +37,7 @@ class Generation:
         self.api_prompt = api_prompt
         self.cache_expected = cache_expected
         self.prompt_id = None
+        self.queued_at = time.time()
         self.status = "queued"
         self.progress = 0.0
         self.progress_text = "queued"
@@ -374,7 +375,12 @@ class JobManager:
         gen.output_path = dest
         gen.output_filename = f["filename"]
         gen.finished_at = time.time()
-        gen.started_at = gen.started_at or gen.finished_at
+        # started_at comes from the WebSocket execution_start event. If that
+        # event was missed (a reconnect, or a job that completed between
+        # polls), falling back to finished_at reports a 0.0s generation for a
+        # job that plainly ran -- seen on the real Pod. Fall back to when the
+        # job was queued instead, which is never later than when it started.
+        gen.started_at = gen.started_at or gen.queued_at or gen.finished_at
         gen.progress = 1.0
         # Classify BEFORE flipping the status. _classify_cache() makes an HTTP
         # call, so publishing "done" first would let anything watching the

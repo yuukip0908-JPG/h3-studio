@@ -1,0 +1,6 @@
+H3 STUDIO V2 READY
+created: 2026-09-06T10:27:58Z
+commit: 59d5d0c
+checks: PASS=29 FAIL=0
+log: results/v2_validation/run_20260906T100944Z.log
+baseline: results/BASELINE_READY unchanged; Pod doctor.sh FAIL=0

@@ -417,3 +417,58 @@ start pod: There are not enough free GPUs on the host machine to start this pod.
 baseline への影響: **なし**（ComfyUI / CLIPCached / モデル4点 / baseline workflow /
 Pod venv すべて無変更。追加は Ref2VA モデル1本と custom node 1ファイルのみ、
 どちらも削除可能）。
+
+---
+
+## Session 2026-09-06 (final) — 別ホストへの Pod 移行と 3モード core 検証 **PASS**
+
+### 移行の必要性
+Pod `ufhtfdg9ulv3fj` は machine `bkwan6a3ct4i` に固定されており、そのホストに
+空き GPU が無いため起動できなかった。Network Volume は Pod から独立しているので、
+**同じ Volume をマウントする新 Pod を別ホストに作る**ことで回避した。
+
+### 事前調査（GPU 未起動）
+| 調査 | 結果 |
+|---|---|
+| 再作成 spec | `results/pod_migration/recreate_spec.json` に保存 |
+| /workspace 外の必須ファイル | **なし**。ComfyUI・venv（torch cu130 込み）・モデル5点・CLIPCached cache・repo すべて Volume 上。`install_comfyui.sh` は venv にしか入れず system 側は触らない |
+| imageName | **ハード制約**。venv はこの image の Python 3.12.3 で作られている |
+| 実測 peak VRAM | **48392 MiB (47.3 GiB)** / 49140 MiB（MISS 時に Qwen3-VL 27GB が常駐）→ 48GB 未満は候補外 |
+| US-WA-1 SECURE の購入可能 GPU | **RTX 6000 Ada 48G $0.84/hr (Low)** と A100-SXM4-80GB 80G $1.59/hr (Low) の 2 種のみ。GPU 種別自体は空いており、満杯なのは特定ホストだけだった |
+
+### 新 Pod
+`scripts/pod_migrate.sh --create` が RTX 6000 Ada 単独で**1回目の試行で成功**。
+
+| 項目 | 値 |
+|---|---|
+| 新 Pod | `3lbxf2rnkjsqte` (`h3-clipcached-baseline-2`) |
+| GPU | NVIDIA RTX 6000 Ada Generation 48GB / driver **570.124.06** |
+| cost | $0.84/hr（旧 Pod と同額） |
+| Volume | `olmj77x4pc` → `/workspace`（同一） |
+| 旧 Pod | `ufhtfdg9ulv3fj` **EXITED のまま保持・未削除**（`previousPodId` に記録） |
+
+移行後の検証: venv `3.12.3 / torch 2.14.0+cu130 / cuda True`、モデル 5 点、
+h3studio ノード、**CLIPCached cache 6 エントリも生存**。
+Pod 側 `doctor.sh` **FAIL=0 WARN=0**。
+
+### 3モード core 検証 — `scripts/v2_validate.sh`
+**PASS=29 / FAIL=0**（`results/v2_validation/run_20260906T100944Z.log`）
+
+| モード | Draft ×4 | Select | Final | Export |
+|---|---|---|---|---|
+| Image Trace | MISS + HIT×3（~30s） | PASS | **HIT 61.0s / 30steps** | PASS |
+| Prompt Cinema | MISS 75.2s + HIT×3（~16s） | PASS | **HIT** | PASS |
+| Motion Trace | MISS + HIT×3（~69.5s） | PASS | **HIT** | PASS |
+
+合計 15 本 / **cache HIT 12 · MISS 3** / GPU 483.8s。
+Final は 3モードとも **1 本だけ**投入され、**全て cache HIT**（再エンコードなし）。
+STOP GPU → 両 Pod EXITED、Volume 保持を確認。
+→ **`results/V2_READY` 作成**（PASS=29 FAIL=0 のときのみ作られる）。
+
+### この検証で見つけた不具合（修正済み）
+WS の `execution_start` を取りこぼした場合、`started_at` が `finished_at` に
+フォールバックして **生成時間が 0.0s と記録**されていた（15 本中 4 本）。
+キュー投入時刻 `queued_at` にフォールバックするよう修正し、回帰テストを追加。
+
+baseline への影響: **なし**。ComfyUI / CLIPCached / baseline モデル 4 点 /
+baseline workflow / venv すべて無変更。旧 Pod も無変更で保持。

@@ -1,0 +1,101 @@
+== H3 Studio v2 end-to-end validation ==
+date: 2026-09-06T10:09:44Z
+commit: 59d5d0c
+
+PASS  Studio responds on http://127.0.0.1:8010
+initial Pod state: RUNNING
+starting GPU (this is where billing resumes)
+{"ok": true, "steps": ["Pod already RUNNING", "ComfyUI already healthy"], "comfy_url": "https://3lbxf2rnkjsqte-8188.proxy.runpod.net"}
+PASS  START GPU: Pod RUNNING + ComfyUI healthy
+  pod=RUNNING comfy_ready=True ws=True cost/hr=0.84
+  PASS  runpod api key (Keychain)  h3-runpod-api-key
+  PASS  pod id recorded  3lbxf2rnkjsqte
+  PASS  t2v template  /Users/user/Downloads/H3_CLOUD_REPRO/studio/templates/t2v_base.json
+  PASS  i2v template  /Users/user/Downloads/H3_CLOUD_REPRO/studio/templates/i2v_base.json
+  PASS  comfyui reachable  https://3lbxf2rnkjsqte-8188.proxy.runpod.net
+  PASS  CLIPCached node registered  MiniMaxH3CLIPCachedFL2VA
+  PASS  Ref2VA node registered (Motion Trace)  MiniMaxH3CLIPCachedRef2VA
+  PASS  Ref2VA checkpoint present  minimax_h3_ref2va_pruned_int8_convrot.safetensors
+  PASS  Reference Strength node  H3StudioReferenceStrength
+  PASS  history db writable  /Users/user/Downloads/H3_CLOUD_REPRO/results/studio/history.sqlite3
+PASS  Studio doctor: no FAIL
+== H3 doctor 2026-09-06 10:09:53 ==
+project=/workspace/H3_CLOUD_REPRO
+workspace=/workspace comfyui=/workspace/ComfyUI
+PASS  GPU: NVIDIA RTX 6000 Ada Generation, 49140 MiB, 570.124.06;
+PASS  venv python: /workspace/ComfyUI/.venv/bin/python (Python 3.12.3)
+PASS  torch 2.14.0+cu130 cuda=13.0 available on NVIDIA RTX 6000 Ada Generation
+PASS  ComfyUI present: version=0.34.2 commit=169fcf3 ref=v0.34.2
+PASS  model diffusion: minimax_h3_fl2va_pruned_int8_convrot.safetensors size OK (20970379616 bytes)
+PASS  model encoder: qwen3vl_32b_minimax_h3_int8_convrot.safetensors size OK (27141342152 bytes)
+PASS  model video_vae: minimax_h3_video_vae_fp16.safetensors size OK (5207808496 bytes)
+PASS  model audio_vae: minimax_h3_audio_vae_fp32.safetensors size OK (605254808 bytes)
+PASS  CLIPCached present: commit=f17ba8f369740a02a2138031517f853eb67b9d43 branch=HEAD
+PASS  cache dir: /workspace/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache (6 entries, 21M) writable=yes
+PASS  free disk on /workspace: 161274 GiB
+PASS  workflow: /workspace/H3_CLOUD_REPRO/workflows/READY_TO_USE_H3_CLIPCACHED.json
+PASS  ComfyUI process running (pid 207)
+PASS  port 8188 listening (pid '207')
+PASS  HTTP health OK: http://127.0.0.1:8188/system_stats
+PASS  node registered: MiniMaxH3ImageToVideo
+PASS  node registered: MiniMaxH3CLIPCachedFL2VA
+== summary: FAIL=0 WARN=0 ==
+PASS  Pod baseline doctor.sh: FAIL=0
+motion trace source video: 1788689398_sample_MiniMax_H3_00015_.mp4
+
+-- PIPELINE A: Image Trace --
+batch b_f0b10ffec7 queued (4 variations)
+  #1 seed=2229018283  done   cache=MISS     0.0s
+  #2 seed=643545730   done   cache=HIT      30.6s
+  #3 seed=109627449   done   cache=HIT      29.7s
+  #4 seed=3408763277  done   cache=HIT      30.7s
+PASS  PIPELINE A: Image Trace: 4/4 generated
+PASS  PIPELINE A: Image Trace: cache MISS then 3x HIT
+PASS  PIPELINE A: Image Trace: SELECT
+PASS  PIPELINE A: Image Trace: FINAL submitted exactly 1 job
+  FINAL seed=643545730 done cache=HIT 61.0s steps=30
+PASS  PIPELINE A: Image Trace: FINAL rendered
+PASS  PIPELINE A: Image Trace: FINAL was a cache HIT (no re-encode)
+{"ok": true, "path": "/Users/user/Downloads/H3_CLOUD_REPRO/results/studio/exports/H3_image_trace_g_93c9f01b3e_seed643545730.mp4"}PASS  PIPELINE A: Image Trace: EXPORT
+
+-- PIPELINE C: Prompt Cinema --
+batch b_19652633b5 queued (4 variations)
+  #1 seed=1380836911  done   cache=MISS     75.2s
+  #2 seed=215765890   done   cache=HIT      15.8s
+  #3 seed=2813632636  done   cache=HIT      15.7s
+  #4 seed=2577550959  done   cache=HIT      16.7s
+PASS  PIPELINE C: Prompt Cinema: 4/4 generated
+PASS  PIPELINE C: Prompt Cinema: cache MISS then 3x HIT
+PASS  PIPELINE C: Prompt Cinema: SELECT
+PASS  PIPELINE C: Prompt Cinema: FINAL submitted exactly 1 job
+  FINAL seed=215765890 done cache=HIT 0.0s steps=30
+PASS  PIPELINE C: Prompt Cinema: FINAL rendered
+PASS  PIPELINE C: Prompt Cinema: FINAL was a cache HIT (no re-encode)
+{"ok": true, "path": "/Users/user/Downloads/H3_CLOUD_REPRO/results/studio/exports/H3_prompt_cinema_g_54fb7ea3b5_seed215765890.mp4"}PASS  PIPELINE C: Prompt Cinema: EXPORT
+
+-- PIPELINE B: Motion Trace --
+batch b_f257ecdf99 queued (4 variations)
+  #1 seed=3899050689  done   cache=MISS     0.0s
+  #2 seed=3093174925  done   cache=HIT      69.6s
+  #3 seed=2044021321  done   cache=HIT      69.4s
+  #4 seed=2204650329  done   cache=HIT      69.5s
+PASS  PIPELINE B: Motion Trace: 4/4 generated
+PASS  PIPELINE B: Motion Trace: cache MISS then 3x HIT
+PASS  PIPELINE B: Motion Trace: SELECT
+PASS  PIPELINE B: Motion Trace: FINAL submitted exactly 1 job
+  FINAL seed=3093174925 done cache=HIT 0.0s steps=30
+PASS  PIPELINE B: Motion Trace: FINAL rendered
+PASS  PIPELINE B: Motion Trace: FINAL was a cache HIT (no re-encode)
+{"ok": true, "path": "/Users/user/Downloads/H3_CLOUD_REPRO/results/studio/exports/H3_motion_trace_g_c4f8d754c5_seed3093174925.mp4"}PASS  PIPELINE B: Motion Trace: EXPORT
+  generations=15 hits=12 misses=3 gpu_s=483.8
+PASS  history records full provenance
+
+stopping the GPU
+{"ok": true, "steps": ["stop_h3.sh exit=0", "Pod desiredStatus=EXITED"], "network_volume_preserved": true, "network_volume": "olmj77x4pc"}PASS  STOP GPU
+  pod_state=EXITED volume=olmj77x4pc
+PASS  Pod stopped (billing halted)
+PASS  Network Volume preserved
+
+== summary: PASS=29 FAIL=0 ==
+wrote results/V2_READY
+log: /Users/user/Downloads/H3_CLOUD_REPRO/results/v2_validation/run_20260906T100944Z.log

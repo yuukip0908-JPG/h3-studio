@@ -568,6 +568,25 @@ class EndToEndTests(StudioTestCase):
         self.assertEqual(g.status, "done", "generation did not complete: %s" % g.error)
         self.assertEqual(g.cache_result, "UNKNOWN")
 
+    def test_generation_time_is_never_zero_when_the_start_event_is_missed(self):
+        """A missed WebSocket execution_start must not report a 0.0s run."""
+        m = self.make_manager()
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="timed",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        gen = batch.generations[0]
+        # simulate the event never arriving
+        gen.started_at = None
+        original = m._on_ws_event
+        m._on_ws_event = lambda msg: None
+        try:
+            self.wait_batch(batch)
+        finally:
+            m._on_ws_event = original
+        self.assertEqual(gen.status, "done")
+        self.assertGreater(gen.as_dict()["seconds"], 0.0)
+        self.assertGreater(history.get_generation(gen.id)["generation_seconds"], 0.0)
+
     def test_export_writes_the_video_and_its_metadata(self):
         m = self.make_manager()
         batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="export me",
