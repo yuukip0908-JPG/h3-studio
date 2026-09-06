@@ -33,6 +33,7 @@ SEED="${AB_SEED:-42}"
 DURATION="${AB_DURATION:-2.0}"
 IMAGE="${AB_IMAGE:-transparent_rgb_gaming_mouse.png}"
 VIDEO="${AB_VIDEO:-sample_MiniMax_H3_00015_.mp4}"
+ASPECT="${AB_ASPECT:-}"          # empty = whatever the workflow already carries
 NAME="${AB_NAME:-${VAR}_$(date -u +%Y%m%dT%H%M%SZ)}"
 DRY="${AB_DRY_RUN:-0}"
 
@@ -91,12 +92,29 @@ case "$VAR" in
   *) die "unknown variable '$VAR' (steps|megapixels|sampler|scheduler|duration|refstrength|refsize)" ;;
 esac
 
-# Motion Trace needs both references present on the Pod before either arm runs.
-if [[ "$MODE" == "motion_trace" ]]; then
+# Aspect ratio is held fixed across both arms; it exists so a portrait
+# reference is not squashed into a 16:9 frame, which would corrupt exactly the
+# thing a Reference Strength A/B is trying to see. Checked against the node's
+# own COMBO options, because an invented name is a 400 after billing starts.
+if [[ -n "$ASPECT" ]]; then
+  RES_ID="$(node_id_for aspect_ratio)"
+  [[ -n "$RES_ID" ]] || die "no single ResolutionSelector in $WF_NAME"
+  python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from studio import graph; sys.exit(0 if sys.argv[2] in graph.ASPECT_RATIOS else 1)' \
+      "$DIR" "$ASPECT" || die "AB_ASPECT '$ASPECT' is not a ResolutionSelector option"
+fi
+
+# Every reference the run needs has to be on the Pod before either arm starts:
+# --image and --set name files in ComfyUI's input dir, they do not upload one.
+UPLOADS=()
+if [[ "$MODE" != "prompt_cinema" ]]; then
   IMG_LOCAL="$DIR/workflows/input/$IMAGE"
+  [[ -f "$IMG_LOCAL" ]] || die "identity image not found: $IMG_LOCAL (set AB_IMAGE to a file in workflows/input/)"
+  UPLOADS+=("$IMG_LOCAL:$IMAGE")
+fi
+if [[ "$MODE" == "motion_trace" ]]; then
   VID_LOCAL="$DIR/results/$VIDEO"
-  [[ -f "$IMG_LOCAL" ]] || die "identity image not found: $IMG_LOCAL (set AB_IMAGE)"
   [[ -f "$VID_LOCAL" ]] || die "source video not found: $VID_LOCAL (set AB_VIDEO)"
+  UPLOADS+=("$VID_LOCAL:$VIDEO")
   ID_NODE="$(node_id_for image)"; VID_NODE="$(node_id_for file)"
   [[ -n "$ID_NODE" && -n "$VID_NODE" ]] || die "could not locate the LoadImage / LoadVideo nodes in $WF_NAME"
 fi
@@ -118,10 +136,11 @@ arm_extra(){  # arm_extra <value>
 
 remote_cmd(){  # remote_cmd <arm> <value>
   local arm="$1" value="$2" refs=""
+  [[ -z "$ASPECT" ]] || refs="--set '$RES_ID.aspect_ratio=\"$ASPECT\"'"
   if [[ "$MODE" == "image_trace" ]]; then
-    refs="--image $IMAGE"
+    refs="$refs --image $IMAGE"
   elif [[ "$MODE" == "motion_trace" ]]; then
-    refs="--set '$ID_NODE.image=\"$IMAGE\"' --set '$VID_NODE.file=\"$VIDEO\"'"
+    refs="$refs --set '$ID_NODE.image=\"$IMAGE\"' --set '$VID_NODE.file=\"$VIDEO\"'"
   fi
   echo "cd $REMOTE_PROJ && $REMOTE_COMFY/.venv/bin/python scripts/h3_run.py \
       --api '$REMOTE_PROJ/workflows/$WF_NAME' --name 'ab/$NAME/$arm' \
@@ -138,7 +157,7 @@ remote_cmd(){  # remote_cmd <arm> <value>
 pod(){ bash "$DIR/scripts/pod_ssh.sh" "$1" </dev/null; }
 
 echo "A/B '$NAME': $VAR  A=$A  B=$B"
-echo "fixed: mode=$MODE workflow=$WF_NAME seed=$SEED duration=$DURATION"
+echo "fixed: mode=$MODE workflow=$WF_NAME seed=$SEED duration=$DURATION${ASPECT:+ aspect=$ASPECT}"
 if [[ "$MODE" != "prompt_cinema" ]]; then echo "       image=$IMAGE"; fi
 if [[ "$MODE" == "motion_trace" ]];  then echo "       source video=$VIDEO"; fi
 echo "prompt: $PROMPT"
@@ -153,10 +172,10 @@ if [[ "$DRY" == "1" ]]; then
   exit 0
 fi
 
-# Upload Motion Trace's references, idempotently: the Pod keeps ComfyUI's input
-# dir on the network volume, so this is usually a no-op after the first run.
-if [[ "$MODE" == "motion_trace" ]]; then
-  for pair in "$IMG_LOCAL:$IMAGE" "$VID_LOCAL:$VIDEO"; do
+# Upload the references, idempotently: the Pod keeps ComfyUI's input dir on the
+# network volume, so this is usually a no-op after the first run.
+if [[ ${#UPLOADS[@]} -gt 0 ]]; then
+  for pair in "${UPLOADS[@]}"; do
     src="${pair%:*}"; dst="${pair##*:}"
     want=$(wc -c < "$src" | tr -d ' ')
     have=$(pod "stat -c %s '$REMOTE_COMFY/input/$dst' 2>/dev/null || echo 0" | tr -d '\r')
