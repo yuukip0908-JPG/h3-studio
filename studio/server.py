@@ -250,8 +250,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._static(path)
         except (ValueError, graph.GraphError) as e:
             self._error(400, str(e))
-        except comfy_client.ComfyUnavailable as e:
-            self._error(503, "ComfyUI is not reachable (%s). Start the GPU first." % e)
+        except comfy_client.ComfyUnavailable:
+            self._error(503, "GPU が停止しています。右上の START GPU を押して、"
+                             "ComfyUI が「準備OK」になってからもう一度お試しください。")
         except (comfy_client.ComfyError, runpod_ctl.RunPodError) as e:
             self._error(502, str(e))
         except Exception:  # noqa: BLE001
@@ -360,6 +361,10 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     def _upload(self, kind="image"):
+        # Checked before the body is read: uploading to a stopped Pod can only
+        # fail, and reading a large video first just makes the failure slower.
+        if MANAGER and not MANAGER.client.is_alive():
+            raise comfy_client.ComfyUnavailable("ComfyUI is not running")
         """Accept one image from the browser and forward it to ComfyUI /input.
 
         multipart is parsed here rather than with cgi.FieldStorage so the file

@@ -27,7 +27,14 @@ class ComfyError(RuntimeError):
 
 
 class ComfyUnavailable(ComfyError):
-    """The server did not answer at all (Pod stopped, ComfyUI not started)."""
+    """ComfyUI is not there: the Pod is stopped, or ComfyUI is not running.
+
+    This is NOT limited to connection errors. When the Pod is EXITED, RunPod's
+    Cloudflare proxy still answers every path with HTTP 404 and an empty body
+    (measured 2026-09-06 against https://<pod>-8188.proxy.runpod.net). Treating
+    that as an ordinary HTTP error surfaces a meaningless "404" to the operator
+    when the real cause is simply that the GPU is off, so it is classified here.
+    """
 
 
 # RunPod serves the Pod's HTTP proxy through Cloudflare, which rejects the
@@ -39,15 +46,40 @@ class ComfyUnavailable(ComfyError):
 USER_AGENT = "H3Studio/2.0 (+https://github.com/Comfy-Org/ComfyUI)"
 
 
+def _is_proxy_pod_down(status, body, headers):
+    """Is this the RunPod proxy telling us the Pod is not running?
+
+    A stopped Pod's proxy returns 404 with an empty body and Cloudflare's own
+    Server header, for every path including ones ComfyUI would never 404 on.
+    Requiring all three keeps a genuine ComfyUI 404 distinguishable.
+    """
+    if status != 404 or body:
+        return False
+    server = ""
+    for key, value in (headers or {}).items():
+        if key.lower() == "server":
+            server = (value or "").lower()
+    return "cloudflare" in server
+
+
 def _request(url, data=None, headers=None, method=None, timeout=30):
     headers = dict(headers or {})
     headers.setdefault("User-Agent", USER_AGENT)
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, r.read(), dict(r.headers)
+            return r.status, r.read(), {k: v for k, v in r.headers.items()}
     except urllib.error.HTTPError as e:
-        return e.code, e.read(), dict(e.headers or {})
+        # dict(HTTPMessage) keeps the FIRST value for a repeated header name,
+        # which can hide the one that matters; items() gives every pair, so a
+        # comprehension keeps the last -- what a proxy in front actually set.
+        status, body = e.code, e.read()
+        head = {k: v for k, v in (e.headers or {}).items()}
+        if _is_proxy_pod_down(status, body, head):
+            raise ComfyUnavailable(
+                "the RunPod proxy returned 404 for %s, which means the Pod is not running"
+                % url) from e
+        return status, body, head
     except (urllib.error.URLError, socket.timeout, ssl.SSLError, ConnectionError, OSError) as e:
         raise ComfyUnavailable(str(e)) from e
 

@@ -58,6 +58,10 @@ class MockState:
         self.extra_nodes = set()   # e.g. H3StudioReferenceStrength once "installed"
         self.fail_next = None      # set to a message to make the next job fail
         self.cache_route = True    # flip off to simulate a Pod without the route
+        # When the Pod is EXITED, RunPod's Cloudflare proxy answers every path
+        # with 404 + empty body rather than refusing the connection. Flip this
+        # on to reproduce that, so the Studio's handling of it stays covered.
+        self.pod_stopped = False
         self.submitted = []        # every api prompt we received, for assertions
         # Real ComfyUI drains its prompt queue with a SINGLE worker: job N+1
         # does not start until job N has finished. That serialisation is what
@@ -251,6 +255,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def _pod_stopped_gate(self):
+        """Reproduce a stopped Pod: 404, empty body, Cloudflare Server header."""
+        if not STATE.pod_stopped:
+            return True
+        # send_response_only, not send_response: the latter also emits its own
+        # Server header, which real Cloudflare would not do.
+        self.send_response_only(404)
+        self.send_header("Server", "cloudflare")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
     def _cloudflare_gate(self):
         """Reject the default Python User-Agent, exactly as RunPod's proxy does.
 
@@ -289,6 +305,8 @@ class Handler(BaseHTTPRequestHandler):
     # ---- GET ----
     def do_GET(self):
         if not self._cloudflare_gate():
+            return
+        if not self._pod_stopped_gate():
             return
         u = urllib.parse.urlparse(self.path)
         path, q = u.path, urllib.parse.parse_qs(u.query)
@@ -331,6 +349,8 @@ class Handler(BaseHTTPRequestHandler):
     # ---- POST ----
     def do_POST(self):
         if not self._cloudflare_gate():
+            return
+        if not self._pod_stopped_gate():
             return
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n) if n else b""

@@ -22,6 +22,7 @@ const state = {
   batch: null,       // current batch shown in RESULTS
   selected: null,
   busy: false,
+  comfyReady: false,
   lastEncoder: {},   // mode -> {prompt, image, aspect_ratio, megapixels}
 };
 
@@ -151,9 +152,13 @@ async function pollStatus() {
       const fresh = s.batches.find((b) => b.id === state.batch.id);
       if (fresh) renderResults(fresh);
     }
+      state.comfyReady = Boolean(s.gpu.comfy_ready);
+    renderReadiness();
     state.busy = s.gpu.active_jobs > 0;
     $("btn-cancel").hidden = !state.busy;
     $("btn-generate").disabled = state.busy;
+    state.comfyReady = false;
+    renderReadiness();
   } catch (e) {
     /* The Studio backend itself is unreachable (stopped, or never started).
        That is a different condition from "RunPod said no", and the UI must not
@@ -217,6 +222,18 @@ function renderGpu(g) {
   else if (unknown && g.pod_error) why = "RunPod に問い合わせできません: " + g.pod_error;
   $("gpu-why").textContent = why;
   $("gpu-why").hidden = !why;
+}
+
+/* Uploading goes straight through to ComfyUI, so it can only work while the
+   GPU is up. Say that up front instead of letting the picker fail. */
+function renderReadiness() {
+  const ready = state.comfyReady;
+  ["image-file", "video-file"].forEach((id) => {
+    const el = $(id);
+    if (el) el.disabled = !ready;
+  });
+  const note = $("upload-blocked");
+  if (note) note.hidden = ready;
 }
 
 function renderStats(s) {
@@ -354,7 +371,7 @@ $("video-file").addEventListener("change", async (e) => {
     renderCacheHint();
   } catch (err) {
     $("video-status").textContent = "";
-    notice("error", "動画アップロード失敗: " + err.message);
+    notice("error", err.message);
   }
 });
 
@@ -374,7 +391,7 @@ $("image-file").addEventListener("change", async (e) => {
     renderCacheHint();
   } catch (err) {
     $("image-status").textContent = "";
-    notice("error", "アップロード失敗: " + err.message);
+    notice("error", err.message);
   }
 });
 

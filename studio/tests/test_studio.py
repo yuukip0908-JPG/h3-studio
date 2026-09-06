@@ -784,6 +784,25 @@ class ApiServerTests(StudioTestCase):
         self.assertEqual(len(final["generations"]), 1)
         self.assertEqual(final["generations"][0]["params"]["mode"], "motion_trace")
 
+    def test_upload_with_the_gpu_off_returns_a_clear_503(self):
+        import urllib.error
+        import urllib.request
+        mock_comfy.STATE.pod_stopped = True
+        self.manager._ref_node_available = None
+        boundary = "----h3test"
+        body = (("--%s\r\nContent-Disposition: form-data; name=\"image\"; "
+                 "filename=\"a.png\"\r\n\r\n" % boundary).encode()
+                + b"\x89PNG\r\n\x1a\n" + ("\r\n--%s--\r\n" % boundary).encode())
+        req = urllib.request.Request(
+            self.base + "/api/upload", data=body, method="POST",
+            headers={"Content-Type": "multipart/form-data; boundary=%s" % boundary})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=30)
+        self.assertEqual(cm.exception.code, 503)
+        message = json.loads(cm.exception.read())["error"]
+        self.assertIn("START GPU", message)
+        self.assertNotIn("404", message)
+
     def test_motion_trace_without_a_video_is_rejected(self):
         with self.assertRaises(Exception) as cm:
             self.post("/api/generate", {"mode": "motion_trace", "prompt": "x",
@@ -860,6 +879,44 @@ class RealPodRegressionTests(StudioTestCase):
             f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
         name, _ = comfy_client.ComfyClient(self.url).upload_image(src)
         self.assertIn("ua.png", name)
+
+
+class StoppedPodUploadTests(StudioTestCase):
+    """Uploading with the GPU off must say so, not surface a bare 404.
+
+    A stopped Pod's RunPod proxy answers 404 with an empty body for every path,
+    so the upload used to fail with "upload failed HTTP 404" and a 502.
+    """
+
+    def test_proxy_404_is_classified_as_unavailable(self):
+        mock_comfy.STATE.pod_stopped = True
+        c = comfy_client.ComfyClient(self.url)
+        self.assertFalse(c.is_alive())
+        with self.assertRaises(comfy_client.ComfyUnavailable):
+            c.system_stats()
+
+    def test_upload_to_a_stopped_pod_raises_unavailable_not_a_generic_error(self):
+        mock_comfy.STATE.pod_stopped = True
+        src = os.path.join(self.tmp, "x.png")
+        with open(src, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        with self.assertRaises(comfy_client.ComfyUnavailable):
+            comfy_client.ComfyClient(self.url).upload_image(src)
+
+    def test_a_real_comfyui_404_is_still_an_ordinary_error(self):
+        """Only an empty-bodied Cloudflare 404 means 'Pod down'."""
+        c = comfy_client.ComfyClient(self.url)
+        with self.assertRaises(comfy_client.ComfyError) as cm:
+            c._json("/definitely/not/a/route")          # noqa: SLF001
+        self.assertNotIsInstance(cm.exception, comfy_client.ComfyUnavailable)
+
+    def test_classifier_requires_all_three_signals(self):
+        f = comfy_client._is_proxy_pod_down                      # noqa: SLF001
+        self.assertTrue(f(404, b"", {"Server": "cloudflare"}))
+        self.assertFalse(f(404, b"not empty", {"Server": "cloudflare"}))
+        self.assertFalse(f(404, b"", {"Server": "nginx"}))
+        self.assertFalse(f(500, b"", {"Server": "cloudflare"}))
+        self.assertFalse(f(404, b"", {}))
 
 
 class TimestampTests(unittest.TestCase):
