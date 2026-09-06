@@ -24,27 +24,27 @@
 
 <main>
   <section class="panel" id="panel-input">
-    <h2>1 · INPUT</h2>
+    <h2>1 · 入力</h2>
 
     <div class="field">
-      <label>MODE</label>
+      <label>モード</label>
       <div class="seg" id="mode-seg">
-        <button data-mode="image_trace" class="on">Image Trace</button>
-        <button data-mode="motion_trace">Motion Trace</button>
-        <button data-mode="prompt_cinema">Prompt Cinema</button>
+        <button data-mode="image_trace" class="on">Image Trace<span class="sub">画像から</span></button>
+        <button data-mode="motion_trace">Motion Trace<span class="sub">動きをまねる</span></button>
+        <button data-mode="prompt_cinema">Prompt Cinema<span class="sub">文章から</span></button>
       </div>
       <p class="hint" id="mode-hint"></p>
     </div>
 
     <div class="field" id="field-image">
-      <label id="image-label">SOURCE IMAGE</label>
+      <label id="image-label">元画像</label>
       <input type="file" id="image-file" accept="image/*">
       <div id="image-status" class="hint"></div>
       <img id="image-preview" alt="" hidden>
     </div>
 
     <div class="field" id="field-video">
-      <label>SOURCE VIDEO <span class="dim">(motion / timing / camera)</span></label>
+      <label>元動画 <span class="dim">動き・テンポ・カメラを借りる</span></label>
       <input type="file" id="video-file" accept="video/mp4,video/quicktime,video/*">
       <div id="video-status" class="hint"></div>
       <div id="video-notes" class="hint warn"></div>
@@ -52,27 +52,26 @@
     </div>
 
     <div class="field" id="field-refsize">
-      <label>IDENTITY FIDELITY</label>
+      <label>人物の再現精度</label>
       <div class="seg" id="refsize-seg">
-        <button data-refsize="match" class="on">match (fast)</button>
-        <button data-refsize="max">max (2048px)</button>
+        <button data-refsize="match" class="on">標準<span class="sub">速い</span></button>
+        <button data-refsize="max">高精度<span class="sub">2048px・数倍遅い</span></button>
       </div>
-      <p class="hint">max は参照画像を 2048px で扱い同一性が上がりますが、参照トークンが
-        全サンプリングステップを通るため数倍遅くなります。</p>
+      <p class="hint">「高精度」は人物をより正確に再現しますが、生成時間が数倍になります。ふだんは「標準」で十分です。</p>
     </div>
 
     <div class="field">
-      <label>PROMPT</label>
-      <textarea id="prompt" rows="4" placeholder="what should happen in the video"></textarea>
+      <label>プロンプト（どんな動画にしたいか）</label>
+      <textarea id="prompt" rows="4" placeholder="どんな動きにしたいかを書いてください"></textarea>
     </div>
 
     <div class="row">
       <div class="field">
-        <label>ASPECT</label>
+        <label>縦横比</label>
         <select id="aspect"></select>
       </div>
       <div class="field">
-        <label>DURATION (s)</label>
+        <label>長さ（秒）</label>
         <input type="number" id="duration" value="2" min="0.5" max="10" step="0.5">
       </div>
     </div>
@@ -80,22 +79,22 @@
     <div class="field" id="field-refstrength">
       <label id="refstrength-label">REFERENCE STRENGTH <span id="ref-value">0.999</span></label>
       <input type="range" id="refstrength" min="0.90" max="1.0" step="0.001" value="0.999">
-      <p class="hint">高いほど元画像に忠実。低くすると動きの自由度が上がる代わりに人物の同一性が崩れやすい。<br>
-        キャッシュには影響しない（常に HIT）。</p>
+      <p class="hint">高いほど元画像そっくりになります。下げると動きは自由になりますが、顔や服が変わりやすくなります。<br>
+        この値を変えても再エンコードは起きません（キャッシュはそのまま使えます）。</p>
       <p class="hint warn" id="ref-unavailable" hidden></p>
     </div>
 
-    <h2>2 · QUALITY</h2>
+    <h2>2 · 画質</h2>
     <div class="field">
       <div class="seg" id="quality-seg">
-        <button data-quality="draft" class="on">Draft</button>
-        <button data-quality="final">Final</button>
+        <button data-quality="draft" class="on">下書き<span class="sub">安く速く候補を出す</span></button>
+        <button data-quality="final">仕上げ<span class="sub">選んだ1本を高画質に</span></button>
       </div>
       <p class="hint" id="quality-hint"></p>
     </div>
 
     <div class="field">
-      <label>VARIATIONS</label>
+      <label>生成本数</label>
       <div class="seg" id="var-seg">
         <button data-var="1">1</button>
         <button data-var="4" class="on">4</button>
@@ -104,19 +103,19 @@
       <p class="hint" id="cache-hint"></p>
     </div>
 
-    <button id="btn-generate" class="btn btn-primary btn-big">GENERATE</button>
-    <button id="btn-cancel" class="btn btn-ghost" hidden>CANCEL</button>
+    <button id="btn-generate" class="btn btn-primary btn-big">生成する</button>
+    <button id="btn-cancel" class="btn btn-ghost" hidden>中止</button>
   </section>
 
   <section class="panel" id="panel-results">
-    <h2>3 · RESULTS</h2>
+    <h2>3 · 結果</h2>
     <div id="results" class="grid"></div>
 
     <div id="finish" hidden>
-      <h2>4 · FINISH SELECTED</h2>
+      <h2>4 · 選んだ1本を仕上げる</h2>
       <div id="finish-options" class="opts"></div>
-      <button id="btn-finalize" class="btn btn-primary">FINALIZE</button>
-      <p class="hint">Final は選択した 1 本にだけ実行されます。</p>
+      <button id="btn-finalize" class="btn btn-primary">この設定で仕上げる</button>
+      <p class="hint">仕上げは選んだ1本だけに実行されます（他の候補にはGPUを使いません）。</p>
     </div>
   </section>
 
@@ -125,11 +124,11 @@
     <dl id="gpu-info" class="kv"></dl>
     <p class="hint warn" id="gpu-why" hidden></p>
     <div class="field">
-      <label>AUTO STOP</label>
+      <label>自動停止</label>
       <select id="auto-stop"></select>
-      <p class="hint">無操作かつジョブ無しでPodを自動停止します。Network Volume は消えません。</p>
+      <p class="hint">操作がなく生成もしていないとき、GPUを自動で止めます。保存したデータ（Network Volume）は消えません。</p>
     </div>
-    <h2>HISTORY</h2>
+    <h2>履歴</h2>
     <div id="stats" class="hint"></div>
     <div id="history"></div>
   </section>

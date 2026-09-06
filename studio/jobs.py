@@ -151,7 +151,16 @@ class JobManager:
 
     # ---------- submission ----------
     def reference_node_available(self):
+        """True / False / None, where None means "cannot tell right now".
+
+        has_node() reports False for an unreachable server as well as for a
+        genuinely absent node. Reporting that as False makes a merely stopped
+        ComfyUI look like a missing install in the UI, so probe liveness first
+        and answer None when the Pod is down.
+        """
         if self._ref_node_available is None:
+            if not self.client.is_alive():
+                return None
             try:
                 self._ref_node_available = self.client.has_node(graph.REF_STRENGTH_NODE)
             except comfy_client.ComfyError:
@@ -240,7 +249,7 @@ class JobManager:
                 g.prompt_id = self.client.submit(g.api_prompt, self.client_id)
                 with self.lock:
                     self.by_prompt_id[g.prompt_id] = g.id
-                g.progress_text = "queued on ComfyUI"
+                g.progress_text = "順番待ち"
                 history.update_generation(g.id, prompt_id=g.prompt_id)
             except comfy_client.ComfyError as e:
                 self._fail(g, str(e))
@@ -281,7 +290,7 @@ class JobManager:
             for g in self.generations.values():
                 if g.status in ACTIVE_STATES:
                     g.status = "cancelled"
-                    g.progress_text = "cancelled"
+                    g.progress_text = "中止しました"
                     history.update_generation(g.id, status="cancelled")
         return ok
 
@@ -304,7 +313,7 @@ class JobManager:
         if mtype == "execution_start":
             gen.status = "running"
             gen.started_at = gen.started_at or time.time()
-            gen.progress_text = "starting"
+            gen.progress_text = "開始中"
             history.update_generation(gen.id, status="running", started_at=gen.started_at)
         elif mtype == "executing":
             node = data.get("node")
@@ -316,7 +325,7 @@ class JobManager:
             value, maximum = data.get("value"), data.get("max")
             if maximum:
                 gen.progress = max(0.0, min(1.0, float(value) / float(maximum)))
-                gen.progress_text = "sampling %d/%d" % (value, maximum)
+                gen.progress_text = "生成中 %d/%d" % (value, maximum)
         elif mtype == "execution_error":
             self._fail(gen, data.get("exception_message") or "execution error")
         elif mtype in ("execution_success", "executed"):
@@ -388,21 +397,26 @@ class JobManager:
         # finished generation whose cache_result is still None. status is the
         # completion signal, so everything it implies must be set first.
         gen.cache_result = self._classify_cache(gen)
-        gen.progress_text = "done (%s)" % (gen.cache_result or "?")
-        gen.status = "done"
+        gen.progress_text = "完了（%s）" % ({"HIT": "キャッシュ再利用", "MISS": "解析あり"}.get(gen.cache_result, gen.cache_result or "?"))
+        # The durable row is written BEFORE the in-memory status flips, for the
+        # same reason cache_result is computed first: `status == "done"` is the
+        # completion signal, so everything it implies -- including the history
+        # row a caller may immediately read back -- must already be true.
         history.update_generation(
             gen.id, status="done", finished_at=gen.finished_at,
             generation_seconds=round(gen.finished_at - gen.started_at, 2),
             output_path=dest, output_filename=f["filename"], cache_result=gen.cache_result)
+        gen.status = "done"
 
     def _fail(self, gen, message):
         # Same ordering rule as _complete(): status is the terminal signal, so
         # the reason must already be readable when a watcher sees "error".
         gen.error = str(message)[:2000]
         gen.finished_at = time.time()
-        gen.progress_text = "error"
+        gen.progress_text = "エラー"
+        history.update_generation(gen.id, status="error", error=gen.error,
+                                  finished_at=gen.finished_at)
         gen.status = "error"
-        history.update_generation(gen.id, status="error", error=gen.error, finished_at=gen.finished_at)
         self.notice("error", "%s: %s" % (gen.id, gen.error[:200]))
 
     # ---------- cache classification ----------
@@ -472,20 +486,22 @@ class JobManager:
         return dest
 
 
+# Shown verbatim in the UI, so these are the operator's language. Widely
+# understood technical names (Qwen3-VL, H3, VAE) stay as they are.
 _STAGE_NAMES = {
-    "MiniMaxH3CLIPCachedFL2VA": "encoding prompt (Qwen3-VL / cache)",
-    "MiniMaxH3CLIPCachedRef2VA": "encoding references (Qwen3-VL / cache)",
-    "LoadVideo": "loading source video",
-    "GetVideoComponents": "extracting video frames",
-    "UNETLoader": "loading H3 diffusion model",
-    "VAELoader": "loading VAE",
-    "SamplerCustomAdvanced": "sampling",
-    "VAEDecode": "decoding video",
-    "VAEDecodeAudio": "decoding audio",
-    "CreateVideo": "muxing video + audio",
-    "SaveVideo": "saving",
-    "LoadImage": "loading source image",
-    "H3StudioReferenceStrength": "applying reference strength",
+    "MiniMaxH3CLIPCachedFL2VA": "プロンプトを解析中（Qwen3-VL）",
+    "MiniMaxH3CLIPCachedRef2VA": "参照を解析中（Qwen3-VL）",
+    "LoadVideo": "元動画を読み込み中",
+    "GetVideoComponents": "動画をフレームに分解中",
+    "UNETLoader": "H3 モデルを読み込み中",
+    "VAELoader": "VAE を読み込み中",
+    "SamplerCustomAdvanced": "生成中",
+    "VAEDecode": "映像を書き出し中",
+    "VAEDecodeAudio": "音声を書き出し中",
+    "CreateVideo": "映像と音声を合成中",
+    "SaveVideo": "保存中",
+    "LoadImage": "画像を読み込み中",
+    "H3StudioReferenceStrength": "忠実度を適用中",
 }
 
 

@@ -91,3 +91,7 @@ input[type=file]{font-size:12px;color:var(--dim)}
 .dim{color:var(--dim);font-weight:400;letter-spacing:0}
 #video-preview{margin-top:8px;max-width:100%;border-radius:6px;border:1px solid var(--line);background:#000}
 #video-notes{white-space:pre-line}
+/* two-line segmented buttons: English name on top, plain-Japanese hint below */
+.seg button{flex-direction:column;display:flex;align-items:center;gap:1px;line-height:1.25}
+.seg button .sub{font-size:9px;letter-spacing:0;opacity:.75;font-weight:400}
+.seg button.on .sub{opacity:.9}

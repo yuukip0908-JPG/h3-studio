@@ -3,6 +3,12 @@
 // this file can be read and fixed by whoever is standing in front of the Pod.
 
 const $ = (id) => document.getElementById(id);
+
+/* Japanese labels for values that come from the backend. Widely understood
+   technical words (GPU, Pod, ComfyUI, seed, MP) are deliberately left as-is. */
+const JP_STATE = { RUNNING: "起動中", EXITED: "停止中", STOPPED: "停止中", UNKNOWN: "不明" };
+const JP_MODE = { image_trace: "画像から", motion_trace: "動きをまねる", prompt_cinema: "文章から" };
+const JP_KIND = { draft: "下書き", final: "仕上げ" };
 const state = {
   mode: "image_trace",
   quality: "draft",
@@ -47,11 +53,12 @@ async function loadConfig() {
   $("refstrength").max = rs.max;
   $("refstrength").value = rs.default;
   $("ref-value").textContent = rs.default;
+  /* null means "ComfyUI is not reachable, so we cannot tell" -- only an
+     explicit false means the node really is missing from the Pod. */
   if (rs.available === false) {
     $("ref-unavailable").hidden = false;
     $("ref-unavailable").textContent =
-      "H3StudioReferenceStrength ノードが Pod に未導入のため無効です " +
-      "(scripts/install_h3studio_node.sh)。生成はそのまま実行できます。";
+      "この機能のノードが Pod に入っていないため、今は使えません。生成はそのまま行えます。";
     $("refstrength").disabled = true;
   }
 
@@ -61,7 +68,7 @@ async function loadConfig() {
   $("finish-options").innerHTML = cfg.finish_options.map((o) => `
     <label class="opt" title="${o.note}">
       <input type="checkbox" data-finish="${o.key}" ${o.available ? "" : "disabled"}>
-      <span>${o.label}${o.available ? "" : " (未導入)"}</span>
+      <span>${o.label}${o.available ? "" : "（未導入）"}</span>
     </label>`).join("");
 
   renderModeHints();
@@ -82,19 +89,19 @@ function renderModeHints() {
   $("field-refstrength").hidden = !has("reference_strength");
 
   $("image-label").textContent =
-    mode === "motion_trace" ? "IDENTITY IMAGE (person / appearance)" : "SOURCE IMAGE";
+    mode === "motion_trace" ? "人物画像（顔・服・雰囲気をここから）" : "元画像";
   $("refstrength-label").firstChild.nodeValue =
-    mode === "motion_trace" ? "REFERENCE STRENGTH (identity + motion) " : "REFERENCE STRENGTH ";
+    mode === "motion_trace" ? "元の素材への忠実度（人物と動きの両方） " : "元画像への忠実度 ";
 
   $("mode-hint").textContent =
     mode === "image_trace"
-      ? "1枚の画像を元に、人物・顔・服・雰囲気を保ったまま動画化します。"
+      ? "1枚の画像から、人物・顔・服・雰囲気をそのままに動画にします。"
       : mode === "motion_trace"
-      ? "Source Video から動き・テンポ・カメラを、Identity Image から人物・見た目を取ります。Prompt では「何を保ち、何を変えるか」を書いてください。"
-      : "画像なし。Prompt だけで世界観・カメラワークを探索します。Reference Strength は T2V では効果がありません。";
+      ? "元動画から動き・テンポ・カメラを、人物画像から顔・服・雰囲気を取ります。プロンプトには「何を残して、何を変えたいか」を書いてください。"
+      : "画像は使いません。プロンプトだけで世界観やカメラワークを探します（忠実度の設定はこのモードでは効きません）。";
   const p = preset();
   $("quality-hint").textContent = p.megapixels
-    ? `${p.megapixels} MP / ${p.steps} steps — ${p.note || ""}`
+    ? `${p.megapixels} MP・${p.steps} ステップ`
     : "";
   renderCacheHint();
 }
@@ -128,9 +135,9 @@ function renderCacheHint() {
   }
   const n = state.variations;
   $("cache-hint").innerHTML = verdict === "HIT"
-    ? `予測: 1本目から <span class="tag HIT">HIT</span> — エンコード再実行なし。`
-    : `予測: 1本目 <span class="tag MISS">MISS</span>（Qwen3-VL エンコード ~60s）、` +
-      `残り ${Math.max(0, n - 1)} 本は <span class="tag HIT">HIT</span>。`;
+    ? `1本目から <span class="tag HIT">キャッシュ再利用</span> — 待ち時間の長い解析は起きません。`
+    : `1本目だけ <span class="tag MISS">解析あり</span>（約60秒）、` +
+      `残り ${Math.max(0, n - 1)} 本は <span class="tag HIT">キャッシュ再利用</span>で速く出ます。`;
 }
 
 // ---------------------------------------------------------------- status
@@ -161,31 +168,32 @@ function renderGpu(g) {
   const chip = $("gpu-chip");
   const st = g.pod_state || "UNKNOWN";
   chip.textContent = g.studio_down
-    ? "H3 STUDIO OFFLINE"
-    : "GPU: " + st + (g.comfy_ready ? " · ComfyUI READY" : "");
+    ? "H3 Studio に接続できません"
+    : "GPU: " + (JP_STATE[st] || st) + (g.comfy_ready ? " · ComfyUI 準備OK" : "");
   chip.className = "chip " + (g.studio_down ? "chip-unknown"
     : st === "RUNNING" ? "chip-running"
     : st === "EXITED" || st === "STOPPED" ? "chip-exited" : "chip-unknown");
   $("offline-banner").hidden = !g.studio_down;
 
   const cost = [];
-  if (g.hourly_usd) cost.push(`$${Number(g.hourly_usd).toFixed(3)}/hr`);
+  if (g.hourly_usd) cost.push(`$${Number(g.hourly_usd).toFixed(3)}/時`);
   if (g.session_cost_usd != null) {
     const m = Math.round((g.session_seconds || 0) / 60);
-    cost.push(`this session: $${g.session_cost_usd.toFixed(2)} (${m}分)`);
+    cost.push(`今回の料金: $${g.session_cost_usd.toFixed(2)}（${m}分）`);
   }
   $("cost").textContent = cost.join("\n");
 
   const rows = [
-    ["Pod", g.pod_id], ["State", st], ["GPU", g.gpu],
-    ["Previous Pod", g.previous_pod_id],
-    ["Cost/hr", g.hourly_usd ? "$" + Number(g.hourly_usd).toFixed(3) : "-"],
-    ["Volume", g.network_volume], ["ComfyUI", g.comfy_ready ? "ready" : "down"],
-    ["Progress WS", g.ws_connected ? "connected" : "polling"],
-    ["Active jobs", g.active_jobs],
+    ["Pod", g.pod_id], ["状態", JP_STATE[st] || st], ["GPU", g.gpu],
+    ["予備のPod", g.previous_pod_id],
+    ["料金", g.hourly_usd ? "$" + Number(g.hourly_usd).toFixed(3) + "/時" : "-"],
+    ["保存領域", g.network_volume],
+    ["ComfyUI", g.comfy_ready ? "準備OK" : "停止中"],
+    ["進捗の受信", g.ws_connected ? "接続済み" : "ポーリング"],
+    ["実行中", g.active_jobs + " 本"],
   ];
   if (g.auto_stop && g.auto_stop.enabled) {
-    rows.push(["Auto stop in", Math.round(g.auto_stop.remaining_seconds / 60) + " min"]);
+    rows.push(["自動停止まで", Math.round(g.auto_stop.remaining_seconds / 60) + " 分"]);
   }
   $("gpu-info").innerHTML = rows
     .filter(([, v]) => v !== undefined && v !== null && v !== "")
@@ -214,7 +222,8 @@ function renderGpu(g) {
 function renderStats(s) {
   if (!s) return;
   $("stats").textContent =
-    `${s.generations} 本生成 / cache HIT ${s.cache_hits} · MISS ${s.cache_misses} / GPU ${Math.round(s.gpu_seconds)}s`;
+    `${s.generations} 本生成 ／ キャッシュ再利用 ${s.cache_hits}・再計算 ${s.cache_misses}` +
+    ` ／ GPU ${Math.round(s.gpu_seconds)} 秒`;
 }
 
 // ---------------------------------------------------------------- results
@@ -226,10 +235,10 @@ function renderResults(batch) {
   $("results").innerHTML = batch.generations.map((g, i) => {
     const body = g.output_url
       ? `<video src="${g.output_url}" controls preload="metadata" playsinline></video>`
-      : `<div class="ph">${g.status === "error" ? "ERROR<br>" + esc(g.error || "") : esc(g.progress_text || g.status)}</div>`;
+      : `<div class="ph">${g.status === "error" ? "エラー<br>" + esc(g.error || "") : esc(g.progress_text || g.status)}</div>`;
     const tag = g.cache_result
       ? `<span class="tag ${g.cache_result}">${g.cache_result}</span>`
-      : (g.status === "error" ? `<span class="tag err">ERROR</span>` : "");
+      : (g.status === "error" ? `<span class="tag err">エラー</span>` : "");
     return `<div class="card ${g.selected ? "sel" : ""}" data-gen="${g.id}">
       ${body}
       <div class="bar-progress"><i style="width:${Math.round((g.progress || 0) * 100)}%"></i></div>
@@ -239,8 +248,8 @@ function renderResults(batch) {
       </div>
       <div class="acts">
         <button class="btn ${g.selected ? "btn-primary" : ""}" data-act="select" ${g.status !== "done" ? "disabled" : ""}>
-          ${g.selected ? "★ SELECTED" : "SELECT"}</button>
-        <button class="btn" data-act="export" ${g.status !== "done" ? "disabled" : ""}>EXPORT</button>
+          ${g.selected ? "★ 選択中" : "これを選ぶ"}</button>
+        <button class="btn" data-act="export" ${g.status !== "done" ? "disabled" : ""}>書き出し</button>
       </div>
     </div>`;
   }).join("");
@@ -468,10 +477,10 @@ async function loadHistory() {
     $("history").innerHTML = h.batches.map((b) => {
       const done = b.generations.filter((g) => g.status === "done").length;
       const sel = b.generations.find((g) => g.selected);
-      return `<div class="h-item"><b>${b.kind.toUpperCase()} · ${b.mode}</b><br>
+      return `<div class="h-item"><b>${JP_KIND[b.kind] || b.kind} · ${JP_MODE[b.mode] || b.mode}</b><br>
         ${esc((b.prompt || "").slice(0, 70))}<br>
-        ${done}/${b.generations.length} 本${sel ? " · ★選択済" : ""}
-        ${b.reference_strength ? " · ref " + b.reference_strength : ""}</div>`;
+        ${done}/${b.generations.length} 本${sel ? " · ★選択済み" : ""}
+        ${b.reference_strength ? " · 忠実度 " + b.reference_strength : ""}</div>`;
     }).join("") || "<div class='hint'>まだ履歴はありません。</div>";
   } catch (e) { /* history is non-critical */ }
 }

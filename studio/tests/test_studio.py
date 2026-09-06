@@ -528,6 +528,14 @@ class EndToEndTests(StudioTestCase):
         self.assertAlmostEqual(
             submitted[graph.REF_STRENGTH_ID]["inputs"]["visual_cond_noise_aug"], 0.93)
 
+    def test_unreachable_comfyui_reports_unknown_not_missing(self):
+        """A stopped Pod must not look like an uninstalled node."""
+        m = self.make_manager()
+        self.server.shutdown()          # ComfyUI goes away
+        m._ref_node_available = None
+        self.assertIsNone(m.reference_node_available(),
+                          "an unreachable server means 'unknown', not 'absent'")
+
     def test_missing_custom_node_falls_back_instead_of_failing(self):
         """A Pod without the Studio node must still generate."""
         m = self.make_manager()
@@ -554,7 +562,10 @@ class EndToEndTests(StudioTestCase):
         g = batch.generations[0]
         self.assertEqual(g.status, "error")
         self.assertIn("out of memory", g.error)
-        self.assertEqual(history.get_generation(g.id)["status"], "error")
+        # seeing "error" must imply the durable row is already written
+        row = history.get_generation(g.id)
+        self.assertEqual(row["status"], "error")
+        self.assertIn("out of memory", row["error"])
 
     def test_cache_result_is_unknown_when_the_route_is_missing(self):
         """No silent lying: an unavailable probe reports UNKNOWN, not HIT."""
