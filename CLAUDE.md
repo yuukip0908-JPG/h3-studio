@@ -77,6 +77,11 @@ Motion Traceは `MiniMaxH3CLIPCachedRef2VA` + `minimax_h3_ref2va_pruned_int8_con
 - Pod venv: `scripts/venv_snapshot.sh` → `scripts/venv_rollback.sh <label>`
 - 実験導入は `scripts/install_experiment.sh`（スナップショット必須、torchはconstraintsで固定）
 
+## 次にやること
+`docs/V2_NEXT_SESSION_PLAN.md` — GPU1回で解像度(0.4→1.0MP)とTurbo LoRA(Draft 8step)を確定する。
+Turbo は**スイッチだけでは効かない**（baselineがLoRAノードを除去済み。`LoraLoaderModelOnly`の
+追加が必要）。判定基準とロールバックも同ファイルに記載。
+
 ## 完了条件
 - v1: Stock成功 / MISS成功 / persistent cache / full restart / HIT / matrix / snapshot → **達成済み**
 - v2: 3モードすべてを実機で通す（`bash scripts/v2_validate.sh`）。FAIL=0のときだけ
