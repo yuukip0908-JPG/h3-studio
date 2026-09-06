@@ -66,7 +66,10 @@ if mode != "--create":
 # Try the validated GPU on its own first. Only if that fails do we widen to the
 # fallback list, because the fallback (A100 80GB, $1.59/hr) costs nearly twice
 # as much as the RTX 6000 Ada ($0.84/hr) the baseline was measured on.
-attempts = [[r["gpuTypeIds"][0]]]
+# Each candidate on its own, in preference order, then the whole list. RunPod
+# refuses the request outright when none of the listed types is free, so asking
+# for one at a time is what reveals which is actually obtainable.
+attempts = [[g] for g in r["gpuTypeIds"]]
 if len(r["gpuTypeIds"]) > 1:
     attempts.append(r["gpuTypeIds"])
 
@@ -84,7 +87,6 @@ for n, gpus in enumerate(attempts, 1):
         if n == len(attempts):
             sys.exit("could not create a Pod with any candidate GPU. Nothing was created; "
                      "the old Pod is untouched.")
-        print("  widening to the fallback GPU list ...")
 print("  new Pod id    :", info.get("podId"))
 print("  desiredStatus :", info.get("desiredStatus"))
 print("  gpu           :", info.get("gpu"))

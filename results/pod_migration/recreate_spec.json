@@ -14,7 +14,17 @@
     "imageName_note": "MUST match. The venv at /workspace/ComfyUI/.venv was built by this image's interpreter (Python 3.12.3, Ubuntu 24.04.4, GCC 13.3.0). A different image with a different Python minor version breaks it.",
     "gpuTypeIds": [
       "NVIDIA RTX 6000 Ada Generation",
-      "NVIDIA A100-SXM4-80GB"
+      "NVIDIA L40S",
+      "NVIDIA L40",
+      "NVIDIA RTX A6000",
+      "NVIDIA A40",
+      "NVIDIA RTX PRO 5000 Blackwell",
+      "NVIDIA A100-SXM4-80GB",
+      "NVIDIA A100 80GB PCIe",
+      "NVIDIA H100 PCIe",
+      "NVIDIA H100 80GB HBM3",
+      "NVIDIA H100 NVL",
+      "NVIDIA RTX PRO 6000 Blackwell Server Edition"
     ],
     "gpuTypePriority": "availability",
     "gpuCount": 1,
@@ -31,7 +41,8 @@
       "22/tcp"
     ],
     "allowedCudaVersions": "OMITTED ON PURPOSE - requiring 13.0 returns 'no instances currently available' even on machines reporting CUDA 13.0",
-    "env": "PUBLIC_KEY is injected by RunPod from the account SSH keys; not set by us"
+    "env": "PUBLIC_KEY is injected by RunPod from the account SSH keys; not set by us",
+    "gpuTypeIds_note": "Ordered by preference: the baseline RTX 6000 Ada first, then other 48 GB cards, then larger. 48 GB is the floor because the measured cache-MISS peak is 47.3 GiB. If a non-Ada card is used, absolute times and VRAM are NOT comparable to the baseline measurements -- only the A/B/C comparison among themselves is."
   },
   "measured_requirements": {
     "peak_vram_mib": 48392,
