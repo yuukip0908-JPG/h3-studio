@@ -56,8 +56,8 @@ Podに触れずに remote コマンドを表示する。壊れた比較は**課�
 |---|---|---|---|---|---|
 | -1 | **解像度 0.40 vs 1.00 MP** | `megapixels` | **完了** | **実測済** | 0.40 のまま（1.0 MP は候補・§0） |
 | -0.5 | **Turbo LoRA 8step（Draft）** | LoRA有無 + steps | **完了** | **実測済** | OFF のまま（候補・§0） |
-| 0 | Motion Trace `ref_image_size` | `match` vs `max` | **完了** | **未実施** | `match`（速い方。`max` は数倍遅い） |
-| 1 | Reference Strength | `minimax_visual_cond_noise_aug` | **完了** | **未実施** | 既定 0.999（= stock 値、実質無変更） |
+| 0 | Motion Trace `ref_image_size` | `match` vs `max` | **完了** | **実測済** | `match` のまま（`max` は VRAM 1.8倍・§7） |
+| 1 | Reference Strength | `minimax_visual_cond_noise_aug` | **完了** | **実測済** | 既定 0.999 のまま（§1・§8） |
 | 2 | Draft steps | `steps` 12 vs 20 | 完了 | 未実施 | Draft=12 は暫定 |
 | 3 | Final 解像度 | `megapixels` 0.4 vs 0.6 | 完了 | 未実施 | 0.4（実測済み baseline 値） |
 | 4 | SageAttention | attention backend | 導入スクリプトのみ | 未実施 | **不採用**（未検証） |
@@ -155,9 +155,25 @@ bash scripts/ab_test.sh refstrength 0.999 0.93 image_trace
 その代わりに動きが増えるか。Image Trace の目的は同一性維持なので、
 **同一性が崩れたら下げすぎ**。
 
-| 日付 | A | B | cache | time A/B | VRAM A/B | 同一性 | 動き | 判定 |
+### 実測（2026-09-07 / A100-SXM4-80GB / US-WA-1 / $1.59時）
+
+計測: `results/ab/rs_image_20260906T160732Z/`。固定: Image Trace / 人物画像
+`ab_identity_gym_woman.png` / 2:3 縦 / 0.4 MP (544×800) / 2.0秒 / seed 42 / 12 steps。
+
+| 日付 | A | B | cache | time A/B | conditioning | peak VRAM A/B | 同一性 | 判定 |
 |---|---|---|---|---|---|---|---|---|
-| — | 0.999 | 0.93 | 未実施 | | | | | |
+| 2026-09-07 | 0.999 | 0.93 | A=MISS / **B=`NODE_NOT_EXECUTED`** | 172.6 s / **22.1 s** | A=83.5 s / B=なし | 27.1 / 26.5 GiB | **両方とも保たれる** | **0.999 据え置き。0.93 も安全域** |
+
+**期待より強い結果。** B は cache HIT ですらなく、cached node の入力が1つも
+変わらなかったので **ComfyUI が実行自体を省いた**（`scripts/h3_run.py:372`）。
+Reference Strength の挿入位置は正しく、値を変えてもエンコードに一切触れない。
+
+出力は別物（sha256 `0f06a0…` / `2eafa8…`）なので、パラメータは効いている。
+
+目視（フレーム 8 / 28 / 47）: **0.93 で顔・髪・服・場所の同一性は崩れていない。**
+差は軌道と寄り（0.93 側がやや寄り）で、conditioning が変われば別サンプルになる以上
+当然の差。**この1カットでは「同一性を犠牲にして動きを増やす」効果は観測できなかった。**
+1画像・1プロンプト・2秒の1点なので、既定は 0.999 のまま変更しない。
 
 ## 2. Draft steps
 
@@ -247,15 +263,39 @@ AB_NAME=refsize bash scripts/ab_test.sh refsize match max motion_trace
 ```
 
 `match` は識別画像を生成解像度の画素数に、`max` は 2048px short edge に合わせる。
-`max` は参照トークンが全サンプリングステップを通るため**数倍遅い**が、
-同一性は上がるはず。Image Trace 相当の人物再現が必要なときだけの選択肢。
+**注意:** `match` と `max` は encoder 入力が変わるので**両方 MISS**になる（想定どおり）。
 
-**注意:** `match` と `max` は encoder 入力が変わるので**両方 MISS**になる。
-これは想定どおり（速度比較のみ意味がある）。
+### 実測（2026-09-07 / A100-SXM4-80GB）— 「数倍遅い」は再現しなかった
+
+計測: `results/ab/refsize_20260906T162203Z_p{1,2}/`。2パス実行。
+**パス1のアームAだけが 21 GB Ref2VA チェックポイントの読み込みを負担する**ので、
+判定は両アーム warm のパス2で行う。
+
+| パス | arm | cache | 総時間 | conditioning | sampling+decode | peak VRAM |
+|---|---|---|---|---|---|---|
+| 1（cold） | match | MISS | 176.4 s | 68.6 s | 107.8 s ※model load 込 | **28.8 GiB** |
+| 1 | max | MISS | 120.1 s | 60.7 s | 59.4 s | **53.2 GiB** |
+| **2（warm）** | **match** | MISS | **112.1 s** | 61.8 s | **50.3 s** | *(汚染・下記)* |
+| **2（warm）** | **max** | MISS | **120.1 s** | 60.5 s | **59.6 s** | *(汚染・下記)* |
+
+- **時間: max は 1.07倍**（sampling だけなら 1.18倍）。**「数倍」ではない。**
+  max の sampling は 59.4 / 59.6 / 59.0 s と3回とも再現している
+- **VRAM: max は 1.8倍**（28.8 → 53.2 GiB）。**ここが本当の代償**
+- パス2の peak VRAM は無効。PyTorch のキャッシュアロケータは解放しないので、
+  パス1で max が 53.2 GiB まで伸ばした後は**何を測っても 54.5 GiB を下回らない**。
+  有効なのは各条件の初回値（パス1）だけ
+
+**48 GB の baseline カード（RTX 6000 Ada）には 53.2 GiB は載らない。**
+その環境では offload が発生し、時間差は 1.07倍では済まない可能性が高い
+— おそらく「数倍遅い」の出所はこれ。**80GBカードでしか測れていない。**
+
+**同一性は評価できていない。** 手持ちの参照動画 `sample_MiniMax_H3_00015_.mp4` は
+baseline の車のサンプルで**人物が写っていない**ため、識別画像の解像度を上げる効果を
+見る対象が存在しない（出力は4本とも夕陽の海岸道路を走る赤い車）。
 
 | 日付 | match | max | time | VRAM | 同一性 | 判定 |
 |---|---|---|---|---|---|---|
-| — | | | 未実施 | | | |
+| 2026-09-07 | 112.1 s / 28.8 GiB | 120.1 s / 53.2 GiB | **max 1.07倍**（数倍ではない） | **max 1.8倍** | **未評価**（人物の参照動画が無い） | **`match` 据え置き。理由は速度ではなく VRAM** |
 
 ## 8. Motion Trace: Reference Strength
 
@@ -269,9 +309,24 @@ AB_NAME=mt_refstrength bash scripts/ab_test.sh refstrength 0.999 0.95 motion_tra
 
 期待: **両方 HIT**（cached node の下流なので）。
 
-| 日付 | A | B | cache | 同一性 | 動き追従 | 判定 |
-|---|---|---|---|---|---|---|
-| — | 0.999 | 0.95 | 未実施 | | | |
+### 実測（2026-09-07 / A100-SXM4-80GB）
+
+計測: `results/ab/rs_motion_20260906T160732Z/`。
+
+| 日付 | A | B | cache | time A/B | 同一性 | 動き追従 | 判定 |
+|---|---|---|---|---|---|---|---|
+| 2026-09-07 | 0.999 | 0.95 | A=MISS / **B=`NODE_NOT_EXECUTED`** | 174.2 s / **50.1 s** | **未評価** | **未評価** | **cache 面は確定。目視は再測定が要る** |
+
+**cache は Image Trace と同じ結論**（§1）。Ref2VA でも Reference Strength は
+cached node の下流にあり、エンコードに触れない。出力は別物
+（sha256 `654ed6…` / `ed5daa…`）なのでパラメータは効いている。
+
+**目視判定は不可能だった。** 参照動画に人物が写っていないため（§7 と同じ理由）、
+「識別画像の人物をどれだけ保つか」を見る対象が存在しない。
+**人物の写った参照動画を用意してから測り直すこと。**
+
+余談だが、B（conditioning 再利用）の 50.1 s は Motion Trace の純粋な sampling コスト。
+同条件の Image Trace が 22.1 s なので **2.27倍**、既知の「約2.3倍」と一致する。
 
 ## 9. 2-pass / latent refine
 

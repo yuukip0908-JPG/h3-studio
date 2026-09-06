@@ -27,7 +27,8 @@
 | Motion Trace | **~69.5s** | — | **Image Trace の約 2.3 倍** |
 
 Motion Trace が重いのは仕様どおり: 参照トークン（識別画像 + 動画フレーム）が
-**全サンプリングステップを通る**ため。`ref_image_size=max` にするとさらに遅くなる。
+**全サンプリングステップを通る**ため。`ref_image_size=max` の追加コストは
+時間ではなく VRAM だった（§2）。
 
 MISS（Qwen3-VL エンコード込み）は Prompt Cinema で **75.2s**。
 
@@ -84,7 +85,10 @@ RTX 6000 Ada / A100 とも `stockStatus: "Low"`（=購入可能に見える）�
   30fps の動画は動きが約 25% 遅く見える。Studio は fps を解析して警告するが、
   リサンプルはしない（ffmpeg 依存を持ち込まないため）。
 - **元動画の音声は使っていない。** `ref_video_audio_0` は未接続。
-- `ref_image_size` は `match` / `max` のみ。`max` は数倍遅い。
+- `ref_image_size` は `match` / `max` のみ。**`max` の代償は時間ではなく VRAM**
+  （2026-09-07 実測・A100 80GB: 28.8 → 53.2 GiB で 1.8倍、時間は 1.07倍）。
+  53.2 GiB は **48 GB の baseline カードに載らない**ので、そこでは offload 分の
+  遅延が出るはず（未実測）。`docs/V2_AB_TESTS.md` §7。
 - 参照画像は最大 9 枚、参照動画は最大 3 本までノードが受けるが、
   Studio は各 1 つしか使わない。
 

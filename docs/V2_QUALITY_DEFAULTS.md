@@ -19,7 +19,7 @@
 | shift video / audio | 12.0 / 3.0 | 同左 | 同左 | **モデル既定**（`supported_models.py` の `sampling_settings`） |
 | frame grid | 17n+5 | 同左 | 同左 | ノード仕様 |
 | Reference Strength | 0.999 | 0.999 | 効果なし | stock 既定 `VISUAL_COND_TIMESTEP` |
-| ref_image_size | — | `match` | — | `max` は数倍遅い |
+| ref_image_size | — | `match` | — | `max` は VRAM 1.8倍（53 GiB）。時間は 1.07倍 |
 
 **未検証の値は既定にしていない。** A/B が終わるまで baseline 実測値のまま。
 

@@ -60,7 +60,7 @@ UI の VARIATIONS 下に予測が出る。
    - 2秒未満は生成前に拒否される（GPU 時間を無駄にしないため）
 4. **IDENTITY FIDELITY**
    - `match`（既定）— 速い。識別画像を生成解像度に合わせる
-   - `max` — 2048px で扱い同一性が上がるが**数倍遅い**
+   - `max` — 2048px で扱う。**VRAM を 1.8倍使う**（53 GiB）。48 GB 機では要注意
 5. **PROMPT** → 参照はタグで指す。placeholder が雛形を出す:
    ```
    keep the person of <Picture 1>, follow the motion and camera of <Video 1>;

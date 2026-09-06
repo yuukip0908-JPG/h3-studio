@@ -30,7 +30,7 @@
   "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
   "note_allowedCudaVersions": "omitted: requiring 13.0 returned \"no instances currently available\"",
   "publicIp": "195.26.233.82",
-  "sshPort": 28756,
+  "sshPort": 32315,
   "costPerHrTotal": 1.59,
   "gpuUsdPerHour": 0.74,
   "comfyUrl": "https://y9ts66clj5wml6-8188.proxy.runpod.net",

@@ -1,0 +1,667 @@
+{
+  "name": "ab/refsize_20260906T162203Z_p1/A",
+  "server": "http://127.0.0.1:8188",
+  "started": "2026-09-06T16:22:17+0000",
+  "argv": [
+    "--api",
+    "/workspace/H3_CLOUD_REPRO/workflows/MOTION_TRACE_DRAFT.api.json",
+    "--name",
+    "ab/refsize_20260906T162203Z_p1/A",
+    "--server",
+    "http://127.0.0.1:8188",
+    "--prompt",
+    "keep the person of <Picture 1>, follow the motion and camera of <Video 1> [ab:refsize_20260906T162203Z_p1]",
+    "--seed",
+    "42",
+    "--duration",
+    "2.0",
+    "--set",
+    "115.aspect_ratio=\"2:3 (Portrait Photo)\"",
+    "--set",
+    "mt_identity.image=\"ab_identity_gym_woman.png\"",
+    "--set",
+    "mt_video.file=\"sample_MiniMax_H3_00015_.mp4\"",
+    "--set",
+    "140:141.ref_image_size=\"match\"",
+    "--log",
+    "/workspace/H3_CLOUD_REPRO/results/logs/comfyui.log",
+    "--pid-file",
+    "/workspace/H3_CLOUD_REPRO/results/comfyui.pid",
+    "--cache-dir",
+    "/workspace/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache",
+    "--comfy-output-dir",
+    "/workspace/ComfyUI/output"
+  ],
+  "workflow": "/workspace/H3_CLOUD_REPRO/workflows/MOTION_TRACE_DRAFT.api.json",
+  "inputs": {
+    "140:141": {
+      "prompt": "keep the person of <Picture 1>, follow the motion and camera of <Video 1> [ab:refsize_20260906T162203Z_p1]",
+      "clip_name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "140:132",
+        1
+      ],
+      "cache_mode": "auto",
+      "first_frame": null,
+      "last_frame": null
+    },
+    "mt_identity": {
+      "image": "ab_identity_gym_woman.png"
+    },
+    "140:129": {
+      "noise_seed": 42
+    },
+    "115": {
+      "aspect_ratio": "2:3 (Portrait Photo)",
+      "megapixels": 0.4,
+      "multiple": 32
+    },
+    "140:133": {
+      "value": 2.0
+    },
+    "140:123": {
+      "sampler_name": "res_multistep"
+    },
+    "140:124": {
+      "model": [
+        "140:135",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": [
+        "140:136",
+        0
+      ],
+      "denoise": 1
+    }
+  },
+  "system_stats_before": {
+    "system": {
+      "os": "linux",
+      "ram_total": 1082008997888,
+      "ram_free": 1049057005568,
+      "comfyui_version": "0.34.2",
+      "required_frontend_version": "1.49.6",
+      "installed_templates_version": "0.11.50",
+      "required_templates_version": "0.11.50",
+      "comfy_package_versions": [
+        {
+          "name": "comfyui-frontend-package",
+          "installed": "1.49.6",
+          "required": "1.49.6"
+        },
+        {
+          "name": "comfyui-workflow-templates",
+          "installed": "0.11.50",
+          "required": "0.11.50"
+        },
+        {
+          "name": "comfyui-embedded-docs",
+          "installed": "0.5.10",
+          "required": "0.5.10"
+        },
+        {
+          "name": "comfy-kitchen",
+          "installed": "0.2.31",
+          "required": "0.2.31"
+        },
+        {
+          "name": "comfy-aimdo",
+          "installed": "0.4.15",
+          "required": "0.4.15"
+        }
+      ],
+      "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+      "pytorch_version": "2.14.0+cu130",
+      "embedded_python": false,
+      "deploy_environment": "local-git",
+      "argv": [
+        "main.py",
+        "--listen",
+        "0.0.0.0",
+        "--port",
+        "8188",
+        "--disable-auto-launch"
+      ]
+    },
+    "devices": [
+      {
+        "name": "cuda:0 NVIDIA A100-SXM4-80GB : cudaMallocAsync",
+        "type": "cuda",
+        "index": 0,
+        "vram_total": 84974239744,
+        "vram_free": 84527284224,
+        "torch_vram_total": 0,
+        "torch_vram_free": 0
+      }
+    ]
+  },
+  "prompt_id": "178f0089-654d-4106-977b-2ff17279a69e",
+  "node_errors_at_submit": {},
+  "total_seconds": 176.413,
+  "peak_vram_mib_nvidia_smi": 29457,
+  "peak_rss_kib_server": 29709588,
+  "events": [
+    {
+      "t": 1788711737.7112715,
+      "type": "ws_open"
+    },
+    {
+      "t": 1788711738.3562863,
+      "type": "execution_start",
+      "node": null,
+      "detail": {}
+    },
+    {
+      "t": 1788711738.790403,
+      "type": "execution_cached",
+      "node": null,
+      "detail": {
+        "nodes": []
+      }
+    },
+    {
+      "t": 1788711738.8004243,
+      "type": "executing",
+      "node": "140:120",
+      "detail": {}
+    },
+    {
+      "t": 1788711738.9307563,
+      "type": "executing",
+      "node": "mt_video",
+      "detail": {}
+    },
+    {
+      "t": 1788711738.936672,
+      "type": "executing",
+      "node": "mt_components",
+      "detail": {}
+    },
+    {
+      "t": 1788711739.4094417,
+      "type": "executing",
+      "node": "mt_identity",
+      "detail": {}
+    },
+    {
+      "t": 1788711739.473999,
+      "type": "executing",
+      "node": "140:133",
+      "detail": {}
+    },
+    {
+      "t": 1788711739.4742637,
+      "type": "executing",
+      "node": "140:132",
+      "detail": {}
+    },
+    {
+      "t": 1788711739.4753284,
+      "type": "executing",
+      "node": "115",
+      "detail": {}
+    },
+    {
+      "t": 1788711739.4772882,
+      "type": "executing",
+      "node": "140:119",
+      "detail": {}
+    },
+    {
+      "t": 1788711739.6713407,
+      "type": "executing",
+      "node": "140:141",
+      "detail": {}
+    },
+    {
+      "t": 1788711808.2519863,
+      "type": "executing",
+      "node": "140:139",
+      "detail": {}
+    },
+    {
+      "t": 1788711808.253043,
+      "type": "executing",
+      "node": "140:136",
+      "detail": {}
+    },
+    {
+      "t": 1788711808.2533817,
+      "type": "executing",
+      "node": "140:135",
+      "detail": {}
+    },
+    {
+      "t": 1788711808.2540164,
+      "type": "executing",
+      "node": "140:123",
+      "detail": {}
+    },
+    {
+      "t": 1788711808.254753,
+      "type": "executing",
+      "node": "h3s_refstrength",
+      "detail": {}
+    },
+    {
+      "t": 1788711808.2567391,
+      "type": "executing",
+      "node": "140:129",
+      "detail": {}
+    },
+    {
+      "t": 1788711808.2578592,
+      "type": "executing",
+      "node": "140:137",
+      "detail": {}
+    },
+    {
+      "t": 1788711808.2585785,
+      "type": "executing",
+      "node": "140:136",
+      "detail": {}
+    },
+    {
+      "t": 1788711808.2601774,
+      "type": "executing",
+      "node": "140:127",
+      "detail": {}
+    },
+    {
+      "t": 1788711809.1338825,
+      "type": "executing",
+      "node": "140:135",
+      "detail": {}
+    },
+    {
+      "t": 1788711809.1350317,
+      "type": "executing",
+      "node": "140:124",
+      "detail": {}
+    },
+    {
+      "t": 1788711809.136568,
+      "type": "executing",
+      "node": "140:126",
+      "detail": {}
+    },
+    {
+      "t": 1788711809.1378996,
+      "type": "executing",
+      "node": "140:125",
+      "detail": {}
+    },
+    {
+      "t": 1788711898.0111625,
+      "type": "executing",
+      "node": "140:121",
+      "detail": {}
+    },
+    {
+      "t": 1788711899.5267982,
+      "type": "executing",
+      "node": "140:122",
+      "detail": {}
+    },
+    {
+      "t": 1788711913.2421746,
+      "type": "executing",
+      "node": "140:130",
+      "detail": {}
+    },
+    {
+      "t": 1788711913.2424884,
+      "type": "executing",
+      "node": "92",
+      "detail": {}
+    },
+    {
+      "t": 1788711914.4220064,
+      "type": "executed",
+      "node": "92",
+      "detail": {}
+    },
+    {
+      "t": 1788711914.4225626,
+      "type": "execution_success",
+      "node": null,
+      "detail": {}
+    }
+  ],
+  "node_timings": [
+    {
+      "node": "140:120",
+      "class_type": "VAELoader",
+      "seconds": 0.13,
+      "ended_by": "executing"
+    },
+    {
+      "node": "mt_video",
+      "class_type": "LoadVideo",
+      "seconds": 0.006,
+      "ended_by": "executing"
+    },
+    {
+      "node": "mt_components",
+      "class_type": "GetVideoComponents",
+      "seconds": 0.473,
+      "ended_by": "executing"
+    },
+    {
+      "node": "mt_identity",
+      "class_type": "LoadImage",
+      "seconds": 0.065,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:133",
+      "class_type": "PrimitiveFloat",
+      "seconds": 0.0,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:132",
+      "class_type": "ComfyMathExpression",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "115",
+      "class_type": "ResolutionSelector",
+      "seconds": 0.002,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:119",
+      "class_type": "VAELoader",
+      "seconds": 0.194,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:141",
+      "class_type": "MiniMaxH3CLIPCachedRef2VA",
+      "seconds": 68.581,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:139",
+      "class_type": "PrimitiveBoolean",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:136",
+      "class_type": "ComfySwitchNode",
+      "seconds": 0.0,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:135",
+      "class_type": "ComfySwitchNode",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:123",
+      "class_type": "KSamplerSelect",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "h3s_refstrength",
+      "class_type": "H3StudioReferenceStrength",
+      "seconds": 0.002,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:129",
+      "class_type": "RandomNoise",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:137",
+      "class_type": "PrimitiveInt",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:136",
+      "class_type": "ComfySwitchNode",
+      "seconds": 0.002,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:127",
+      "class_type": "UNETLoader",
+      "seconds": 0.874,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:135",
+      "class_type": "ComfySwitchNode",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:124",
+      "class_type": "BasicScheduler",
+      "seconds": 0.002,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:126",
+      "class_type": "BasicGuider",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:125",
+      "class_type": "SamplerCustomAdvanced",
+      "seconds": 88.873,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:121",
+      "class_type": "VAEDecodeAudio",
+      "seconds": 1.516,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:122",
+      "class_type": "VAEDecode",
+      "seconds": 13.715,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:130",
+      "class_type": "CreateVideo",
+      "seconds": 0.0,
+      "ended_by": "executing"
+    },
+    {
+      "node": "92",
+      "class_type": "SaveVideo",
+      "seconds": 1.18,
+      "ended_by": "execution_success"
+    }
+  ],
+  "conditioning_seconds": 68.581,
+  "status": "success",
+  "status_messages": [
+    [
+      "execution_start",
+      {
+        "prompt_id": "178f0089-654d-4106-977b-2ff17279a69e",
+        "timestamp": 1788711738354
+      }
+    ],
+    [
+      "execution_cached",
+      {
+        "nodes": [],
+        "prompt_id": "178f0089-654d-4106-977b-2ff17279a69e",
+        "timestamp": 1788711738789
+      }
+    ],
+    [
+      "execution_success",
+      {
+        "prompt_id": "178f0089-654d-4106-977b-2ff17279a69e",
+        "timestamp": 1788711914421
+      }
+    ]
+  ],
+  "outputs": {
+    "92": {
+      "images": [
+        {
+          "filename": "MOTION_TRACE_DRAFT_00004_.mp4",
+          "subfolder": "video",
+          "type": "output"
+        }
+      ],
+      "animated": [
+        true
+      ]
+    }
+  },
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "MOTION_TRACE_DRAFT_00004_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/MOTION_TRACE_DRAFT_00004_.mp4",
+      "exists": true,
+      "bytes": 199722,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "199722",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ],
+  "system_stats_after": {
+    "system": {
+      "os": "linux",
+      "ram_total": 1082008997888,
+      "ram_free": 1019723776000,
+      "comfyui_version": "0.34.2",
+      "required_frontend_version": "1.49.6",
+      "installed_templates_version": "0.11.50",
+      "required_templates_version": "0.11.50",
+      "comfy_package_versions": [
+        {
+          "name": "comfyui-frontend-package",
+          "installed": "1.49.6",
+          "required": "1.49.6"
+        },
+        {
+          "name": "comfyui-workflow-templates",
+          "installed": "0.11.50",
+          "required": "0.11.50"
+        },
+        {
+          "name": "comfyui-embedded-docs",
+          "installed": "0.5.10",
+          "required": "0.5.10"
+        },
+        {
+          "name": "comfy-kitchen",
+          "installed": "0.2.31",
+          "required": "0.2.31"
+        },
+        {
+          "name": "comfy-aimdo",
+          "installed": "0.4.15",
+          "required": "0.4.15"
+        }
+      ],
+      "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+      "pytorch_version": "2.14.0+cu130",
+      "embedded_python": false,
+      "deploy_environment": "local-git",
+      "argv": [
+        "main.py",
+        "--listen",
+        "0.0.0.0",
+        "--port",
+        "8188",
+        "--disable-auto-launch"
+      ]
+    },
+    "devices": [
+      {
+        "name": "cuda:0 NVIDIA A100-SXM4-80GB : cudaMallocAsync",
+        "type": "cuda",
+        "index": 0,
+        "vram_total": 84974239744,
+        "vram_free": 57664128532,
+        "torch_vram_total": 100663296,
+        "torch_vram_free": 89441812
+      }
+    ]
+  },
+  "log_cache_lines": [
+    "\u001b[32m[INFO]\u001b[0m [CACHE MISS] 494d6dd78e5a"
+  ],
+  "encoder_load_lines": [
+    "\u001b[32m[INFO]\u001b[0m Requested to load MiniMaxH3TEModel_"
+  ],
+  "encoder_loaded": true,
+  "log_error_lines": [],
+  "log_prompt_executed": [
+    "\u001b[32m[INFO]\u001b[0m \u001b[32mPrompt executed in 176.07 seconds\u001b[0m"
+  ],
+  "cache_new_files": {
+    "494d6dd78e5a1a0faedfc0f789bbaa5c21e4721267ce850b33a28acda85769ee.verbose.json": {
+      "size": 1215,
+      "mtime": 1788711807.0
+    },
+    "494d6dd78e5a1a0faedfc0f789bbaa5c21e4721267ce850b33a28acda85769ee.json": {
+      "size": 189,
+      "mtime": 1788711807.0
+    },
+    "494d6dd78e5a1a0faedfc0f789bbaa5c21e4721267ce850b33a28acda85769ee.safetensors": {
+      "size": 35301064,
+      "mtime": 1788711807.0
+    }
+  },
+  "cache_changed_files": {},
+  "cache_entry_count": 18,
+  "cache_result": "MISS",
+  "encoder_reencoded": true
+}

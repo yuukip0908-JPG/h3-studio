@@ -1,0 +1,360 @@
+stopped pid 32857
+NOTE: the RunPod Pod is unaffected. Check billing with: bash scripts/runpod_status.sh
+H3 Studio READY -> http://127.0.0.1:8010/  (pid 34493, log /Users/user/Downloads/H3_CLOUD_REPRO/results/logs/studio.log)
+[16:20:19Z] studio: restarted
+[16:21:50Z] attempt 1: GPU up by restarting the existing Pod
+[16:21:50Z] === GPU acquired via restart ===
+  pod=y9ts66clj5wml6 gpu=NVIDIA A100-SXM4-80GB (81920 MiB) cost/hr=1.59 dc=US-WA-1
+  NOTE: not the baseline card. Absolute times and VRAM are NOT comparable
+        to earlier measurements; only A vs B vs C among themselves are.
+[16:21:54Z] === skipping model verify (AB_VERIFY_MODELS=0) ===
+[16:21:54Z] === baseline doctor on the Pod ===
+== H3 doctor 2026-09-06 16:21:56 ==
+project=/workspace/H3_CLOUD_REPRO
+workspace=/workspace comfyui=/workspace/ComfyUI
+PASS  GPU: NVIDIA A100-SXM4-80GB, 81920 MiB, 550.127.05;
+PASS  venv python: /workspace/ComfyUI/.venv/bin/python (Python 3.12.3)
+PASS  torch 2.14.0+cu130 cuda=13.0 available on NVIDIA A100-SXM4-80GB
+PASS  ComfyUI present: version=0.34.2 commit=169fcf3 ref=v0.34.2
+PASS  model diffusion: minimax_h3_fl2va_pruned_int8_convrot.safetensors size OK (20970379616 bytes)
+PASS  model encoder: qwen3vl_32b_minimax_h3_int8_convrot.safetensors size OK (27141342152 bytes)
+PASS  model video_vae: minimax_h3_video_vae_fp16.safetensors size OK (5207808496 bytes)
+PASS  model audio_vae: minimax_h3_audio_vae_fp32.safetensors size OK (605254808 bytes)
+PASS  CLIPCached present: commit=f17ba8f369740a02a2138031517f853eb67b9d43 branch=HEAD
+PASS  cache dir: /workspace/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache (17 entries, 452M) writable=yes
+PASS  free disk on /workspace: 160304 GiB
+PASS  workflow: /workspace/H3_CLOUD_REPRO/workflows/READY_TO_USE_H3_CLIPCACHED.json
+PASS  ComfyUI process running (pid 112)
+PASS  port 8188 listening (pid '112')
+PASS  HTTP health OK: http://127.0.0.1:8188/system_stats
+PASS  node registered: MiniMaxH3ImageToVideo
+PASS  node registered: MiniMaxH3CLIPCachedFL2VA
+== summary: FAIL=0 WARN=0 ==
+[16:22:03Z] doctor: FAIL=0
+[16:22:03Z] === running the payload: AB_ONLY=refsize AB_PASSES=2 bash scripts/ab_reference_session.sh (hard limit 45m) ===
+=== dry run: all three comparisons ===
+  ok: refsize_20260906T162203Z_p1 (refsize match vs max, motion_trace)
+  ok: refsize_20260906T162203Z_p2 (refsize match vs max, motion_trace)
+
+############################################################
+### refsize_20260906T162203Z_p1 : refsize match vs max on motion_trace
+############################################################
+A/B 'refsize_20260906T162203Z_p1': refsize  A=match  B=max
+fixed: mode=motion_trace workflow=MOTION_TRACE_DRAFT.api.json seed=42 duration=2.0 aspect=2:3 (Portrait Photo)
+       image=ab_identity_gym_woman.png
+       source video=sample_MiniMax_H3_00015_.mp4
+prompt: keep the person of <Picture 1>, follow the motion and camera of <Video 1> [ab:refsize_20260906T162203Z_p1]
+
+pushed MOTION_TRACE_DRAFT.api.json (5145 bytes)
+=== arm A: refsize=match ===
+queued prompt_id=178f0089-654d-4106-977b-2ff17279a69e
+{
+  "name": "ab/refsize_20260906T162203Z_p1/A",
+  "status": "success",
+  "total_seconds": 176.413,
+  "conditioning_seconds": 68.581,
+  "peak_vram_mib_nvidia_smi": 29457,
+  "peak_rss_kib_server": 29709588,
+  "cache_result": "MISS",
+  "cache_new_files": {
+    "494d6dd78e5a1a0faedfc0f789bbaa5c21e4721267ce850b33a28acda85769ee.verbose.json": {
+      "size": 1215,
+      "mtime": 1788711807.0
+    },
+    "494d6dd78e5a1a0faedfc0f789bbaa5c21e4721267ce850b33a28acda85769ee.json": {
+      "size": 189,
+      "mtime": 1788711807.0
+    },
+    "494d6dd78e5a1a0faedfc0f789bbaa5c21e4721267ce850b33a28acda85769ee.safetensors": {
+      "size": 35301064,
+      "mtime": 1788711807.0
+    }
+  },
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "MOTION_TRACE_DRAFT_00004_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/MOTION_TRACE_DRAFT_00004_.mp4",
+      "exists": true,
+      "bytes": 199722,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "199722",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ]
+}
+=== arm B: refsize=max ===
+queued prompt_id=25dbfb48-e338-4f2d-a03d-897f735cb101
+{
+  "name": "ab/refsize_20260906T162203Z_p1/B",
+  "status": "success",
+  "total_seconds": 120.136,
+  "conditioning_seconds": 60.735,
+  "peak_vram_mib_nvidia_smi": 54499,
+  "peak_rss_kib_server": 55928644,
+  "cache_result": "MISS",
+  "cache_new_files": {
+    "1f04fcc2af5aab2bf7eda4233b1e4ecda4b98654862e9493c97ea6a34871923a.verbose.json": {
+      "size": 1215,
+      "mtime": 1788711978.0
+    },
+    "1f04fcc2af5aab2bf7eda4233b1e4ecda4b98654862e9493c97ea6a34871923a.json": {
+      "size": 189,
+      "mtime": 1788711978.0
+    },
+    "1f04fcc2af5aab2bf7eda4233b1e4ecda4b98654862e9493c97ea6a34871923a.safetensors": {
+      "size": 58063232,
+      "mtime": 1788711978.0
+    }
+  },
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "MOTION_TRACE_DRAFT_00005_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/MOTION_TRACE_DRAFT_00005_.mp4",
+      "exists": true,
+      "bytes": 178524,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "178524",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ]
+}
+pulling MOTION_TRACE_DRAFT_00004_.mp4
+pulling MOTION_TRACE_DRAFT_00005_.mp4
+
+| arm | refsize | status | total s | cond s | cache | encoder reran | peak VRAM MiB |
+|---|---|---|---|---|---|---|---|
+| A | match | success | 176.413 | 68.581 | MISS | True | 29457 |
+| B | max | success | 120.136 | 60.735 | MISS | True | 54499 |
+
+measurements: /Users/user/Downloads/H3_CLOUD_REPRO/results/ab/refsize_20260906T162203Z_p1/summary.json
+videos:       /Users/user/Downloads/H3_CLOUD_REPRO/results/ab/refsize_20260906T162203Z_p1/{A,B}/
+Videos are NOT scored automatically -- open both and record the visual
+verdict in docs/V2_AB_TESTS.md before changing any default.
+
+############################################################
+### refsize_20260906T162203Z_p2 : refsize match vs max on motion_trace
+############################################################
+A/B 'refsize_20260906T162203Z_p2': refsize  A=match  B=max
+fixed: mode=motion_trace workflow=MOTION_TRACE_DRAFT.api.json seed=42 duration=2.0 aspect=2:3 (Portrait Photo)
+       image=ab_identity_gym_woman.png
+       source video=sample_MiniMax_H3_00015_.mp4
+prompt: keep the person of <Picture 1>, follow the motion and camera of <Video 1> [ab:refsize_20260906T162203Z_p2]
+
+pushed MOTION_TRACE_DRAFT.api.json (5145 bytes)
+=== arm A: refsize=match ===
+queued prompt_id=b8901b09-d290-4954-b0f6-fe53b1452f30
+{
+  "name": "ab/refsize_20260906T162203Z_p2/A",
+  "status": "success",
+  "total_seconds": 112.123,
+  "conditioning_seconds": 61.82,
+  "peak_vram_mib_nvidia_smi": 54499,
+  "peak_rss_kib_server": 56397836,
+  "cache_result": "MISS",
+  "cache_new_files": {
+    "c934ebc271258ae537363d84c7c20be39b95f3bfe813155948f048abeb975db0.verbose.json": {
+      "size": 1215,
+      "mtime": 1788712122.0
+    },
+    "c934ebc271258ae537363d84c7c20be39b95f3bfe813155948f048abeb975db0.json": {
+      "size": 189,
+      "mtime": 1788712122.0
+    },
+    "c934ebc271258ae537363d84c7c20be39b95f3bfe813155948f048abeb975db0.safetensors": {
+      "size": 35301064,
+      "mtime": 1788712122.0
+    }
+  },
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "MOTION_TRACE_DRAFT_00006_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/MOTION_TRACE_DRAFT_00006_.mp4",
+      "exists": true,
+      "bytes": 200384,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "200384",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ]
+}
+=== arm B: refsize=max ===
+queued prompt_id=082af199-c0b7-40b8-bdce-4a05661465fd
+{
+  "name": "ab/refsize_20260906T162203Z_p2/B",
+  "status": "success",
+  "total_seconds": 120.148,
+  "conditioning_seconds": 60.525,
+  "peak_vram_mib_nvidia_smi": 54503,
+  "peak_rss_kib_server": 57002884,
+  "cache_result": "MISS",
+  "cache_new_files": {
+    "9bf82d1e4d50d188228818eaddbe855e39cc9a97e9524cf7f7586616d34a926c.verbose.json": {
+      "size": 1215,
+      "mtime": 1788712236.0
+    },
+    "9bf82d1e4d50d188228818eaddbe855e39cc9a97e9524cf7f7586616d34a926c.json": {
+      "size": 189,
+      "mtime": 1788712236.0
+    },
+    "9bf82d1e4d50d188228818eaddbe855e39cc9a97e9524cf7f7586616d34a926c.safetensors": {
+      "size": 58063232,
+      "mtime": 1788712236.0
+    }
+  },
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "MOTION_TRACE_DRAFT_00007_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/MOTION_TRACE_DRAFT_00007_.mp4",
+      "exists": true,
+      "bytes": 179062,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "179062",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 544,
+            "height": 800,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ]
+}
+pulling MOTION_TRACE_DRAFT_00006_.mp4
+pulling MOTION_TRACE_DRAFT_00007_.mp4
+
+| arm | refsize | status | total s | cond s | cache | encoder reran | peak VRAM MiB |
+|---|---|---|---|---|---|---|---|
+| A | match | success | 112.123 | 61.82 | MISS | True | 54499 |
+| B | max | success | 120.148 | 60.525 | MISS | True | 54503 |
+
+measurements: /Users/user/Downloads/H3_CLOUD_REPRO/results/ab/refsize_20260906T162203Z_p2/summary.json
+videos:       /Users/user/Downloads/H3_CLOUD_REPRO/results/ab/refsize_20260906T162203Z_p2/{A,B}/
+Videos are NOT scored automatically -- open both and record the visual
+verdict in docs/V2_AB_TESTS.md before changing any default.
+
+=== results on this Mac ===
+  results/ab/refsize_20260906T162203Z_p1/A/MOTION_TRACE_DRAFT_00004_.mp4
+  results/ab/refsize_20260906T162203Z_p1/A/run.json
+  results/ab/refsize_20260906T162203Z_p1/B/MOTION_TRACE_DRAFT_00005_.mp4
+  results/ab/refsize_20260906T162203Z_p1/B/run.json
+  results/ab/refsize_20260906T162203Z_p2/A/MOTION_TRACE_DRAFT_00006_.mp4
+  results/ab/refsize_20260906T162203Z_p2/A/run.json
+  results/ab/refsize_20260906T162203Z_p2/B/MOTION_TRACE_DRAFT_00007_.mp4
+  results/ab/refsize_20260906T162203Z_p2/B/run.json
+[16:31:44Z] === stopping the GPU ===
+{"ok": true, "steps": ["stop_h3.sh exit=0", "Pod desiredStatus=EXITED"], "network_volume_preserved": true, "network_volume": "olmj77x4pc"}
+  y9ts66clj5wml6   h3-clipcached-baseline-3     EXITED
+  ttgvtu9fb864k4   h3-clipcached-baseline-3     EXITED
+  u3j83y0qfrdc56   h3-clipcached-baseline-3     EXITED
+  jqj722x4jkwcan   h3-clipcached-baseline-3     EXITED
+  otyu05x8yh2v96   h3-clipcached-baseline-3     EXITED
+  sgiaeck1hh0m1l   h3-clipcached-baseline-3     EXITED
+  3lbxf2rnkjsqte   h3-clipcached-baseline-2     EXITED
+  ufhtfdg9ulv3fj   h3-clipcached-baseline       EXITED
+[16:31:59Z] done (rc=0). log: results/ab_quality/refsize_redo_20260906T162015Z.log

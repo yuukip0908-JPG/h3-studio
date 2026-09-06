@@ -621,3 +621,62 @@ Pod のリポジトリが古いのではなく、**最初から置かれてい�
 
 損失: GPU 約2分（約 $0.03）と Pod が1つ増えたこと（`ttgvtu9fb864k4`、EXITED）。
 baseline・Network Volume・既存Podは無変更。
+
+### 2026-09-07 GPU 2回目・3回目 — 残り3本の A/B を実測
+
+**カードは A100-SXM4-80GB（$1.59時）。** RTX 6000 Ada は restart も新規作成も拒否され続け、
+`pod_migrate.sh --create` が確保できたのが A100 だった（新Pod `y9ts66clj5wml6`。
+これで Pod は8基、すべて EXITED）。`runpod_ctl.actual_gpu()` = nvidia-smi で確認済み。
+
+**絶対時間と peak VRAM は baseline カード（RTX 6000 Ada 48GB）の過去実測と比較できない。**
+今回の判定軸（cache 挙動・同一性の目視・match vs max の相対比）はいずれもセッション内で
+閉じているので有効。Pod側 `doctor.sh` は新Podでも FAIL=0。
+
+固定: 人物画像 `ab_identity_gym_woman.png`（1024×1536）/ 2:3 縦 / 0.4 MP (544×800) /
+2.0秒 / seed 42 / 12 steps / res_multistep / simple。
+
+#### 結果
+
+| A/B | arm | cache | 総時間 | conditioning | peak VRAM | 出力 sha256 |
+|---|---|---|---|---|---|---|
+| Reference Strength / Image Trace | 0.999 | MISS | 172.6 s | 83.5 s | 27.1 GiB | `0f06a0…` |
+| 〃 | 0.93 | **`NODE_NOT_EXECUTED`** | **22.1 s** | — | 26.5 GiB | `2eafa8…` |
+| Reference Strength / Motion Trace | 0.999 | MISS | 174.2 s | 77.0 s | 53.2 GiB | `654ed6…` |
+| 〃 | 0.95 | **`NODE_NOT_EXECUTED`** | **50.1 s** | — | 47.4 GiB | `ed5daa…` |
+| `ref_image_size`（warm・パス2） | match | MISS | **112.1 s** | 61.8 s | *(汚染)* | `1b0f8f…` |
+| 〃 | max | MISS | **120.1 s** | 60.5 s | *(汚染)* | `9b38ca…` |
+| `ref_image_size`（cold・パス1） | match | MISS | 176.4 s ※model load 込 | 68.6 s | **28.8 GiB** | `7815ac…` |
+| 〃 | max | MISS | 120.1 s | 60.7 s | **53.2 GiB** | `964320…` |
+
+1. **Reference Strength は cache に触れない — 期待より強い形で確定。**
+   B は HIT ですらなく `NODE_NOT_EXECUTED`（cached node の入力が1つも変わらないので
+   ComfyUI が実行を省いた）。172.6→22.1 s、174.2→50.1 s。挿入位置は正しい。
+   出力ハッシュが違うので、パラメータ自体は効いている。
+2. **Image Trace 0.93 で同一性は崩れない**（フレーム 8/28/47 を目視）。差は軌道と寄りだけ。
+3. **`max` は「数倍遅い」ではなかった。** warm 同士で 112.1 vs 120.1 s（**1.07倍**、
+   sampling だけなら 1.18倍）。**代償は VRAM で 28.8 → 53.2 GiB（1.8倍）**。
+   53.2 GiB は 48 GB カードに載らないので、baseline 環境では offload 分の遅延が
+   出るはず（未実測）。ドキュメント7箇所の「数倍遅い」を実測値に置き換えた。
+4. **peak VRAM はパス2側が無効。** PyTorch のキャッシュアロケータは解放しないため、
+   パス1で max が 53.2 GiB まで伸ばした後は何を測っても 54.5 GiB を下回らない。
+   有効なのは各条件の初回値だけ。**A/B の VRAM は「条件ごとに新しいプロセスで
+   初回に測る」必要がある** — 今後の測定設計に効く。
+5. **Motion Trace の目視判定はできなかった。** 参照動画 `sample_MiniMax_H3_00015_.mp4`
+   は baseline の車のサンプルで**人物が写っていない**。出力は4本とも夕陽の海岸道路を
+   走る赤い車で、「`<Picture 1>` の人物を保て」を判定する対象が存在しない。
+   §8 と §7 の同一性欄は **未評価**のまま。人物の写った参照動画が要る。
+
+#### 測定不良を1件出した（GPU 約11分）
+
+1回目のセッションで `ref_image_size` の match アームが **2.039 秒**で「成功」し、
+出力は直前の Motion Trace A/B のアームA と **sha256 完全一致**だった。
+同一プロンプト・同一入力だったので ComfyUI がグラフ全体を実行キャッシュから返した。
+`ab_quality.py` が既に持っていた「run固有 nonce」を `ab_test.sh` にも入れて対処し、
+2パス構成（1パス目でチェックポイントを載せ、2パス目で両アーム warm）で測り直した。
+
+その前に、3本とも `FileNotFoundError` で即死する回もあった（GPU 約2分）。
+Pod に v2 の `*.api.json` が存在しないため。詳細は上のセクション。
+**いずれも「Pod側の状態を仮定した」ことが原因**で、ワークフローを毎回 push する形に変えた。
+
+GPU 使用は3セッション合計で約 25 分（$0.03 + 約 $0.29 + 約 $0.29 ≒ **$0.6**）。
+baseline・Network Volume・既存Pod は無変更。終了時に全8基 EXITED を API で確認済み。
