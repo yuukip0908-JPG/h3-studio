@@ -148,7 +148,10 @@ async function pollStatus() {
     $("btn-cancel").hidden = !state.busy;
     $("btn-generate").disabled = state.busy;
   } catch (e) {
-    renderGpu({ pod_state: "UNKNOWN", pod_error: e.message });
+    /* The Studio backend itself is unreachable (stopped, or never started).
+       That is a different condition from "RunPod said no", and the UI must not
+       silently look like a missing API key. */
+    renderGpu({ pod_state: "UNKNOWN", studio_down: true, pod_error: e.message });
   } finally {
     statusTimer = setTimeout(pollStatus, state.busy ? 1500 : 5000);
   }
@@ -157,9 +160,13 @@ async function pollStatus() {
 function renderGpu(g) {
   const chip = $("gpu-chip");
   const st = g.pod_state || "UNKNOWN";
-  chip.textContent = "GPU: " + st + (g.comfy_ready ? " · ComfyUI READY" : "");
-  chip.className = "chip " + (st === "RUNNING" ? "chip-running"
+  chip.textContent = g.studio_down
+    ? "H3 STUDIO OFFLINE"
+    : "GPU: " + st + (g.comfy_ready ? " · ComfyUI READY" : "");
+  chip.className = "chip " + (g.studio_down ? "chip-unknown"
+    : st === "RUNNING" ? "chip-running"
     : st === "EXITED" || st === "STOPPED" ? "chip-exited" : "chip-unknown");
+  $("offline-banner").hidden = !g.studio_down;
 
   const cost = [];
   if (g.hourly_usd) cost.push(`$${Number(g.hourly_usd).toFixed(3)}/hr`);
@@ -171,6 +178,7 @@ function renderGpu(g) {
 
   const rows = [
     ["Pod", g.pod_id], ["State", st], ["GPU", g.gpu],
+    ["Previous Pod", g.previous_pod_id],
     ["Cost/hr", g.hourly_usd ? "$" + Number(g.hourly_usd).toFixed(3) : "-"],
     ["Volume", g.network_volume], ["ComfyUI", g.comfy_ready ? "ready" : "down"],
     ["Progress WS", g.ws_connected ? "connected" : "polling"],
@@ -183,12 +191,24 @@ function renderGpu(g) {
     .filter(([, v]) => v !== undefined && v !== null && v !== "")
     .map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
 
-  $("btn-gpu-start").disabled = st === "RUNNING";
-  $("btn-gpu-stop").disabled = st !== "RUNNING";
-  if (g.pod_error && !g.have_api_key) {
-    $("btn-gpu-start").disabled = true;
-    $("btn-gpu-stop").disabled = true;
-  }
+  /* START is enabled whenever the Pod is provably not already running.
+     It is disabled only for reasons we can actually name:
+       - the Studio backend is down, so there is nothing to ask;
+       - RunPod reports no usable API key, so a start would fail anyway;
+       - the Pod is already RUNNING.
+     A transient RunPod error with a valid key must NOT latch the button off --
+     that is exactly what made it unclickable while the backend was stopped. */
+  const noKey = g.have_api_key === false;
+  const unknown = st === "UNKNOWN";
+  $("btn-gpu-start").disabled = Boolean(g.studio_down) || noKey || st === "RUNNING";
+  $("btn-gpu-stop").disabled = Boolean(g.studio_down) || noKey || st !== "RUNNING";
+
+  let why = "";
+  if (g.studio_down) why = "H3 Studio backend が停止しています（bash scripts/start_studio.sh）。";
+  else if (noKey) why = "RunPod API キーを Keychain から読めません。";
+  else if (unknown && g.pod_error) why = "RunPod に問い合わせできません: " + g.pod_error;
+  $("gpu-why").textContent = why;
+  $("gpu-why").hidden = !why;
 }
 
 function renderStats(s) {

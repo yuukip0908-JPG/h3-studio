@@ -16,6 +16,10 @@
   <button id="btn-gpu-stop" class="btn btn-stop">STOP GPU</button>
 </header>
 
+<div id="offline-banner" class="notice error" hidden>
+  H3 Studio backend に接続できません。ブラウザは開いたままで構いません —
+  バックエンドが起動すれば自動的に復帰します。
+</div>
 <div id="notices"></div>
 
 <main>
@@ -119,6 +123,7 @@
   <section class="panel" id="panel-side">
     <h2>GPU</h2>
     <dl id="gpu-info" class="kv"></dl>
+    <p class="hint warn" id="gpu-why" hidden></p>
     <div class="field">
       <label>AUTO STOP</label>
       <select id="auto-stop"></select>

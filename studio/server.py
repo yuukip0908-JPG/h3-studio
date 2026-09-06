@@ -36,8 +36,12 @@ _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 # --------------------------------------------------------------------------
 def _gpu_status():
     """Pod + ComfyUI reachability, cost, and cost-guard state."""
+    state = config.load_runpod_state()
     out = {
         "pod_id": config.pod_id(),
+        # Surfaced so a migration is visible in the UI and a stale Pod cannot be
+        # mistaken for the active one.
+        "previous_pod_id": state.get("previousPodId"),
         "comfy_url": MANAGER.client.base if MANAGER else config.comfy_url(),
         "hourly_usd": config.gpu_hourly_usd(),
         "have_api_key": runpod_ctl.have_api_key(),

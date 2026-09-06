@@ -687,6 +687,19 @@ class ApiServerTests(StudioTestCase):
         self.assertEqual(s["gpu"]["hourly_usd"], 0.84)
         self.assertTrue(s["gpu"]["comfy_ready"])
 
+    def test_status_carries_what_the_start_button_needs(self):
+        """The UI decides START's enabled state from these fields alone.
+
+        A missing have_api_key used to read as "no key" and latched the button
+        off whenever the payload was synthesised client-side.
+        """
+        g = self.get("/api/status")["gpu"]
+        self.assertIn("have_api_key", g)
+        self.assertIs(g["have_api_key"], True)
+        self.assertIn("pod_state", g)
+        self.assertIn("pod_id", g)
+        self.assertNotIn("studio_down", g, "the server never reports itself down")
+
     def test_generate_select_finalize_over_http(self):
         batch = self.post("/api/generate", {
             "mode": "prompt_cinema", "prompt": "an empty highway at dawn",
