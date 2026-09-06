@@ -42,6 +42,8 @@ ComfyUI ログの `[CACHE HIT]`/`[CACHE MISS]`（ground truth）・ffprobe を�
 
 | # | 実験 | 変数 | 実装 | 実測 | 既定に採用 |
 |---|---|---|---|---|---|
+| -1 | **解像度 0.40 vs 1.00 MP** | `megapixels` | **完了** | **未実施** | 0.40（768pが本来の調整解像度） |
+| -0.5 | **Turbo LoRA 8step（Draft）** | LoRA有無 + steps | **完了** | **未実施** | OFF |
 | 0 | Motion Trace `ref_image_size` | `match` vs `max` | **完了** | **未実施** | `match`（速い方。`max` は数倍遅い） |
 | 1 | Reference Strength | `minimax_visual_cond_noise_aug` | **完了** | **未実施** | 既定 0.999（= stock 値、実質無変更） |
 | 2 | Draft steps | `steps` 12 vs 20 | 完了 | 未実施 | Draft=12 は暫定 |
@@ -55,6 +57,28 @@ ComfyUI ログの `[CACHE HIT]`/`[CACHE MISS]`（ground truth）・ffprobe を�
 Turbo off / encoder INT8 ConvRot）に留めてある。未検証の値を既定にしていない。
 
 ---
+
+## 0. 解像度 と Turbo LoRA（最優先・専用ランナーあり）
+
+```bash
+/opt/homebrew/bin/python3.12 scripts/ab_quality.py --plan   # 確認のみ
+/opt/homebrew/bin/python3.12 scripts/ab_quality.py --run    # GPU起動 → 測定 → 停止
+```
+
+| 条件 | 解像度 | steps | Turbo |
+|---|---|---|---|
+| A | 0.40 MP | 12 | OFF |
+| B | 1.00 MP | 12 | OFF |
+| C | 1.00 MP | 8 | ON |
+
+各条件を **MISS → HIT の2回**実行し、VRAM を工程別に分離する。
+判定基準は `docs/V2_QUALITY_DEFAULTS.md` §4。
+
+| 日付 | 条件 | cache | 生成時間 | peak VRAM | 顔/肌/手 | 判定 |
+|---|---|---|---|---|---|---|
+| — | A | | 未実施 | | | |
+| — | B | | 未実施 | | | |
+| — | C | | 未実施 | | | |
 
 ## 1. Reference Strength
 

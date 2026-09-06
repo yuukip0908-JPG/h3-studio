@@ -26,6 +26,7 @@ UI 右上の **START GPU** で Pod 起動 → ComfyUI 起動 → READY まで自
 | [docs/V2_RECOVERY.md](docs/V2_RECOVERY.md) | 復旧・ロールバック |
 | [docs/V2_IMPLEMENTATION_REPORT.md](docs/V2_IMPLEMENTATION_REPORT.md) | v2 実装レポート |
 | [docs/V2_NEXT_SESSION_PLAN.md](docs/V2_NEXT_SESSION_PLAN.md) | **次セッション計画**（解像度 / Turbo LoRA の確定） |
+| [docs/V2_QUALITY_DEFAULTS.md](docs/V2_QUALITY_DEFAULTS.md) | **既定値とその根拠**・外部情報の照合手順・ETAの仕組み |
 
 ### 3 つのパイプライン
 

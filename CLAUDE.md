@@ -77,10 +77,18 @@ Motion Traceは `MiniMaxH3CLIPCachedRef2VA` + `minimax_h3_ref2va_pruned_int8_con
 - Pod venv: `scripts/venv_snapshot.sh` → `scripts/venv_rollback.sh <label>`
 - 実験導入は `scripts/install_experiment.sh`（スナップショット必須、torchはconstraintsで固定）
 
+## 既定値の根拠
+`docs/V2_QUALITY_DEFAULTS.md` — 何をなぜその値にしているか、変えてはいけないもの、
+外部情報を採用する前の照合手順（ノード定義に実在するか→受理されるか→既定と違うか→A/B）。
+**外部記事の設定をそのまま入れない。** `identity_weight` / `CFG 3.5-5.0` のように
+実在しないパラメータを推奨している記事がある（照合で0件と判明）。
+
 ## 次にやること
 `docs/V2_NEXT_SESSION_PLAN.md` — GPU1回で解像度(0.4→1.0MP)とTurbo LoRA(Draft 8step)を確定する。
 Turbo は**スイッチだけでは効かない**（baselineがLoRAノードを除去済み。`LoraLoaderModelOnly`の
-追加が必要）。判定基準とロールバックも同ファイルに記載。
+追加が必要）。実装済み・既定OFF・`scripts/ab_quality.py --run` で判定する。
+VRAM 47.3GiB は MISS時にエンコーダが載ったピークで、サンプリング負荷(25.6GiB)ではない
+— これを768p不採用の根拠にしないこと。
 
 ## 完了条件
 - v1: Stock成功 / MISS成功 / persistent cache / full restart / HIT / matrix / snapshot → **達成済み**
