@@ -1,0 +1,13 @@
+[32m[INFO][0m got prompt
+[32m[INFO][0m [CACHE MISS] ed2ccf1a5113
+[32m[INFO][0m Found quantization metadata version 1
+[32m[INFO][0m Using MixedPrecisionOps for text encoder
+[32m[INFO][0m CLIP/text encoder model load device: cuda:0, offload device: cpu, current: cpu, dtype: torch.float16
+[32m[INFO][0m Requested to load MiniMaxH3TEModel_
+[32m[INFO][0m Model MiniMaxH3TEModel_ prepared for dynamic VRAM loading. 25882MB Staged. 0 patches attached. Force pre-loaded 310 weights: 1272 KB.
+[32m[INFO][0m Model MiniMaxH3VideoVAE prepared for dynamic VRAM loading. 4965MB Staged. 0 patches attached. Force pre-loaded 128 weights: 348 KB.
+[32m[INFO][0m Model MiniMaxH3 prepared for dynamic VRAM loading. 19995MB Staged. 0 patches attached. Force pre-loaded 210 weights: 1175 KB.
+  0%|          | 0/20 [00:00<?, ?it/s]  0%|          | 0/20 [00:00<?, ?it/s,   Model Initializing ...  ]  0%|          | 0/20 [00:01<?, ?it/s,  Model Initialization complete!  ]  5%|▌         | 1/20 [00:01<00:32,  1.73s/it,  Model Initialization complete!  ]  5%|▌         | 1/20 [00:03<00:32,  1.73s/it]                                    10%|█         | 2/20 [00:03<00:31,  1.76s/it] 15%|█▌        | 3/20 [00:05<00:29,  1.76s/it] 20%|██        | 4/20 [00:07<00:28,  1.81s/it] 25%|██▌       | 5/20 [00:08<00:26,  1.78s/it] 30%|███       | 6/20 [00:10<00:24,  1.78s/it] 35%|███▌      | 7/20 [00:12<00:23,  1.79s/it] 40%|████      | 8/20 [00:14<00:21,  1.79s/it] 45%|████▌     | 9/20 [00:16<00:19,  1.80s/it] 50%|█████     | 10/20 [00:17<00:18,  1.81s/it] 55%|█████▌    | 11/20 [00:19<00:16,  1.81s/it] 60%|██████    | 12/20 [00:21<00:14,  1.82s/it] 65%|██████▌   | 13/20 [00:23<00:12,  1.82s/it] 70%|███████   | 14/20 [00:25<00:10,  1.83s/it] 75%|███████▌  | 15/20 [00:26<00:09,  1.83s/it] 80%|████████  | 16/20 [00:28<00:07,  1.83s/it] 85%|████████▌ | 17/20 [00:30<00:05,  1.84s/it] 90%|█████████ | 18/20 [00:32<00:03,  1.84s/it] 95%|█████████▌| 19/20 [00:34<00:01,  1.84s/it]100%|██████████| 20/20 [00:36<00:00,  1.84s/it]100%|██████████| 20/20 [00:36<00:00,  1.81s/it]
+[32m[INFO][0m Model MiniMaxH3AudioVAE prepared for dynamic VRAM loading. 576MB Staged. 0 patches attached. Force pre-loaded 401 weights: 539 KB.
+[32m[INFO][0m Model MiniMaxH3VideoVAE prepared for dynamic VRAM loading. 4965MB Staged. 0 patches attached. Force pre-loaded 128 weights: 348 KB.
+[32m[INFO][0m [32mPrompt executed in 101.17 seconds[0m

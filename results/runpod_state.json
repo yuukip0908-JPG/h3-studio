@@ -1,0 +1,52 @@
+{
+  "account": "[email] (RunPod user_3IuKzQvGOf6YnlcRvsiGTrmH29I)",
+  "apiKeyName": "h3-cloud-repro",
+  "apiKeyStorage": "macOS Keychain, service h3-runpod-api-key (value never stored in this repo)",
+  "sshKeyName": "h3-cloud-repro-mac",
+  "sshKeyFingerprint": "SHA256:ZAaXMhNmwvzHZ9rLalrIhf4RQB2bMsqONoZ0UWCN3/I",
+  "sshPrivateKeyPath": "~/.ssh/runpod_h3_ed25519",
+  "plannedGpuTypeId": "NVIDIA RTX 6000 Ada Generation",
+  "plannedGpuVramGb": 48,
+  "plannedGpuUsdPerHour": 0.74,
+  "plannedDataCenterId": "US-WA-1",
+  "plannedNetworkVolume": {
+    "name": "h3-clipcached-baseline",
+    "sizeGb": 200,
+    "dataCenterId": "US-WA-1",
+    "usdPerMonth": 14.0
+  },
+  "plannedPod": {
+    "name": "h3-clipcached-baseline",
+    "gpuCount": 1,
+    "ports": "8188/http,22/tcp",
+    "volumeMountPath": "/workspace",
+    "containerDiskInGb": 60,
+    "cloudType": "SECURE"
+  },
+  "podId": "ufhtfdg9ulv3fj",
+  "networkVolumeId": "olmj77x4pc",
+  "status": "BASELINE_READY",
+  "lastUpdated": "2026-09-06",
+  "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
+  "note_allowedCudaVersions": "omitted: requiring 13.0 returned \"no instances currently available\"",
+  "publicIp": "195.26.233.84",
+  "sshPort": 25061,
+  "costPerHrTotal": 0.84,
+  "gpuUsdPerHour": 0.74,
+  "comfyUrl": "https://ufhtfdg9ulv3fj-8188.proxy.runpod.net",
+  "accountSpendRatePerHr": 0.867,
+  "comfyuiCommit": "169fcf35a2fc163fec31338b816503ddac0d3fcf",
+  "clipcachedCommit": "f17ba8f369740a02a2138031517f853eb67b9d43",
+  "readyWorkflow": "/workspace/H3_CLOUD_REPRO/workflows/READY_TO_USE_H3_CLIPCACHED.json",
+  "i2vWorkflow": "/workspace/H3_CLOUD_REPRO/workflows/READY_TO_USE_H3_CLIPCACHED_I2V.json",
+  "sampleOutput": "/workspace/ComfyUI/output/video/MiniMax_H3_00015_.mp4",
+  "cacheDir": "/workspace/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache",
+  "results": {
+    "stockH3": "PASS",
+    "clipcachedMiss": "PASS",
+    "clipcachedHitAfterRestart": "PASS",
+    "hitMatrix": "4/4 PASS",
+    "missMatrix": "3/3 PASS",
+    "doctor": "FAIL=0 WARN=0"
+  }
+}

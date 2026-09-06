@@ -1,0 +1,2 @@
+Created 2026-09-05
+Baseline ComfyUI v0.34.2

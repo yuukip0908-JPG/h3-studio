@@ -1,0 +1,2 @@
+[32m[INFO][0m got prompt
+[32m[INFO][0m [32mPrompt executed in 0.01 seconds[0m

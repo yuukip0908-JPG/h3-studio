@@ -1,0 +1,5 @@
+.env
+*.token
+results/environment_snapshot/
+__pycache__/
+.DS_Store

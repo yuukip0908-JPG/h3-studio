@@ -1,0 +1,419 @@
+{
+  "name": "hit_steps",
+  "server": "http://127.0.0.1:8188",
+  "started": "2026-09-05T17:14:58+0000",
+  "argv": [
+    "--name",
+    "hit_steps",
+    "--log",
+    "results/logs/comfyui.log",
+    "--pid-file",
+    "results/comfyui.pid",
+    "--cache-dir",
+    "/workspace/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache",
+    "--comfy-output-dir",
+    "/workspace/ComfyUI/output",
+    "--timeout",
+    "3600",
+    "--api",
+    "results/runs/test02_miss/api_prompt.json",
+    "--steps",
+    "8"
+  ],
+  "workflow": "/workspace/H3_CLOUD_REPRO/results/runs/test02_miss/api_prompt.json",
+  "inputs": {
+    "140:141": {
+      "prompt": "A red vintage car driving along a coastal road at sunset, cinematic, gentle waves, warm light",
+      "clip_name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "140:132",
+        1
+      ],
+      "cache_mode": "auto",
+      "first_frame": null,
+      "last_frame": null
+    },
+    "140:129": {
+      "noise_seed": 42
+    },
+    "115": {
+      "aspect_ratio": "16:9 (Widescreen)",
+      "megapixels": 0.4,
+      "multiple": 32
+    },
+    "140:133": {
+      "value": 2.0
+    },
+    "140:123": {
+      "sampler_name": "res_multistep"
+    },
+    "140:124": {
+      "model": [
+        "140:135",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": 8,
+      "denoise": 1
+    }
+  },
+  "system_stats_before": {
+    "system": {
+      "os": "linux",
+      "ram_total": 1623022477312,
+      "ram_free": 1479949611008,
+      "comfyui_version": "0.34.2",
+      "required_frontend_version": "1.49.6",
+      "installed_templates_version": "0.11.50",
+      "required_templates_version": "0.11.50",
+      "comfy_package_versions": [
+        {
+          "name": "comfyui-frontend-package",
+          "installed": "1.49.6",
+          "required": "1.49.6"
+        },
+        {
+          "name": "comfyui-workflow-templates",
+          "installed": "0.11.50",
+          "required": "0.11.50"
+        },
+        {
+          "name": "comfyui-embedded-docs",
+          "installed": "0.5.10",
+          "required": "0.5.10"
+        },
+        {
+          "name": "comfy-kitchen",
+          "installed": "0.2.31",
+          "required": "0.2.31"
+        },
+        {
+          "name": "comfy-aimdo",
+          "installed": "0.4.15",
+          "required": "0.4.15"
+        }
+      ],
+      "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+      "pytorch_version": "2.14.0+cu130",
+      "embedded_python": false,
+      "deploy_environment": "local-git",
+      "argv": [
+        "main.py",
+        "--listen",
+        "0.0.0.0",
+        "--port",
+        "8188",
+        "--disable-auto-launch"
+      ]
+    },
+    "devices": [
+      {
+        "name": "cuda:0 NVIDIA RTX 6000 Ada Generation : cudaMallocAsync",
+        "type": "cuda",
+        "index": 0,
+        "vram_total": 51002867712,
+        "vram_free": 23955621396,
+        "torch_vram_total": 33554432,
+        "torch_vram_free": 22595092
+      }
+    ]
+  },
+  "prompt_id": "e7087704-0044-4931-92de-e44c800cb2d7",
+  "node_errors_at_submit": {},
+  "total_seconds": 24.058,
+  "peak_vram_mib_nvidia_smi": 26712,
+  "peak_rss_kib_server": 29010436,
+  "events": [
+    {
+      "t": 1788628498.9879982,
+      "type": "ws_open"
+    },
+    {
+      "t": 1788628499.7251458,
+      "type": "execution_start",
+      "node": null,
+      "detail": {}
+    },
+    {
+      "t": 1788628499.7315898,
+      "type": "execution_cached",
+      "node": null,
+      "detail": {
+        "nodes": [
+          "140:129",
+          "140:126",
+          "140:135",
+          "140:139",
+          "140:127",
+          "140:141",
+          "140:119",
+          "115",
+          "140:132",
+          "140:133",
+          "140:123",
+          "140:136",
+          "140:137",
+          "140:120"
+        ]
+      }
+    },
+    {
+      "t": 1788628499.7316775,
+      "type": "executing",
+      "node": "140:124",
+      "detail": {}
+    },
+    {
+      "t": 1788628499.7332444,
+      "type": "executing",
+      "node": "140:125",
+      "detail": {}
+    },
+    {
+      "t": 1788628512.6307461,
+      "type": "executing",
+      "node": "140:121",
+      "detail": {}
+    },
+    {
+      "t": 1788628512.8196597,
+      "type": "executing",
+      "node": "140:122",
+      "detail": {}
+    },
+    {
+      "t": 1788628519.661054,
+      "type": "executing",
+      "node": "140:130",
+      "detail": {}
+    },
+    {
+      "t": 1788628519.662221,
+      "type": "executing",
+      "node": "92",
+      "detail": {}
+    },
+    {
+      "t": 1788628523.4087095,
+      "type": "executed",
+      "node": "92",
+      "detail": {}
+    },
+    {
+      "t": 1788628523.409392,
+      "type": "execution_success",
+      "node": null,
+      "detail": {}
+    }
+  ],
+  "node_timings": [
+    {
+      "node": "140:124",
+      "class_type": "BasicScheduler",
+      "seconds": 0.002,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:125",
+      "class_type": "SamplerCustomAdvanced",
+      "seconds": 12.898,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:121",
+      "class_type": "VAEDecodeAudio",
+      "seconds": 0.189,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:122",
+      "class_type": "VAEDecode",
+      "seconds": 6.841,
+      "ended_by": "executing"
+    },
+    {
+      "node": "140:130",
+      "class_type": "CreateVideo",
+      "seconds": 0.001,
+      "ended_by": "executing"
+    },
+    {
+      "node": "92",
+      "class_type": "SaveVideo",
+      "seconds": 3.747,
+      "ended_by": "execution_success"
+    }
+  ],
+  "conditioning_seconds": null,
+  "status": "success",
+  "status_messages": [
+    [
+      "execution_start",
+      {
+        "prompt_id": "e7087704-0044-4931-92de-e44c800cb2d7",
+        "timestamp": 1788628499723
+      }
+    ],
+    [
+      "execution_cached",
+      {
+        "nodes": [
+          "140:129",
+          "140:126",
+          "140:135",
+          "140:139",
+          "140:127",
+          "140:141",
+          "140:119",
+          "115",
+          "140:132",
+          "140:133",
+          "140:123",
+          "140:136",
+          "140:137",
+          "140:120"
+        ],
+        "prompt_id": "e7087704-0044-4931-92de-e44c800cb2d7",
+        "timestamp": 1788628499730
+      }
+    ],
+    [
+      "execution_success",
+      {
+        "prompt_id": "e7087704-0044-4931-92de-e44c800cb2d7",
+        "timestamp": 1788628523408
+      }
+    ]
+  ],
+  "outputs": {
+    "92": {
+      "images": [
+        {
+          "filename": "MiniMax_H3_00005_.mp4",
+          "subfolder": "video",
+          "type": "output"
+        }
+      ],
+      "animated": [
+        true
+      ]
+    }
+  },
+  "output_files": [
+    {
+      "node": "92",
+      "key": "images",
+      "filename": "MiniMax_H3_00005_.mp4",
+      "subfolder": "video",
+      "type": "output",
+      "path": "/workspace/ComfyUI/output/video/MiniMax_H3_00005_.mp4",
+      "exists": true,
+      "bytes": 279391,
+      "ffprobe": {
+        "duration": "2.333333",
+        "size": "279391",
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 864,
+            "height": 480,
+            "r_frame_rate": "24/1",
+            "nb_frames": "56",
+            "channels": null,
+            "sample_rate": null
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "width": null,
+            "height": null,
+            "r_frame_rate": "0/0",
+            "nb_frames": "74",
+            "channels": 2,
+            "sample_rate": "32000"
+          }
+        ]
+      }
+    }
+  ],
+  "system_stats_after": {
+    "system": {
+      "os": "linux",
+      "ram_total": 1623022477312,
+      "ram_free": 1485437018112,
+      "comfyui_version": "0.34.2",
+      "required_frontend_version": "1.49.6",
+      "installed_templates_version": "0.11.50",
+      "required_templates_version": "0.11.50",
+      "comfy_package_versions": [
+        {
+          "name": "comfyui-frontend-package",
+          "installed": "1.49.6",
+          "required": "1.49.6"
+        },
+        {
+          "name": "comfyui-workflow-templates",
+          "installed": "0.11.50",
+          "required": "0.11.50"
+        },
+        {
+          "name": "comfyui-embedded-docs",
+          "installed": "0.5.10",
+          "required": "0.5.10"
+        },
+        {
+          "name": "comfy-kitchen",
+          "installed": "0.2.31",
+          "required": "0.2.31"
+        },
+        {
+          "name": "comfy-aimdo",
+          "installed": "0.4.15",
+          "required": "0.4.15"
+        }
+      ],
+      "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+      "pytorch_version": "2.14.0+cu130",
+      "embedded_python": false,
+      "deploy_environment": "local-git",
+      "argv": [
+        "main.py",
+        "--listen",
+        "0.0.0.0",
+        "--port",
+        "8188",
+        "--disable-auto-launch"
+      ]
+    },
+    "devices": [
+      {
+        "name": "cuda:0 NVIDIA RTX 6000 Ada Generation : cudaMallocAsync",
+        "type": "cuda",
+        "index": 0,
+        "vram_total": 51002867712,
+        "vram_free": 23955621396,
+        "torch_vram_total": 33554432,
+        "torch_vram_free": 22595092
+      }
+    ]
+  },
+  "log_cache_lines": [],
+  "log_error_lines": [],
+  "log_prompt_executed": [
+    "\u001b[32m[INFO]\u001b[0m \u001b[32mPrompt executed in 23.69 seconds\u001b[0m"
+  ],
+  "cache_new_files": {},
+  "cache_changed_files": {},
+  "cache_entry_count": 1,
+  "cache_result": null
+}

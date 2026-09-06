@@ -1,0 +1,10 @@
+H3 CLOUD BASELINE READY
+created: 2026-09-05T17:51:16Z
+pod: ufhtfdg9ulv3fj (h3-clipcached-baseline) US-WA-1
+gpu: NVIDIA RTX 6000 Ada Generation 48GB @ $0.740/hr
+network volume: olmj77x4pc 200GB -> /workspace
+comfyui: v0.34.2 169fcf35a2fc163fec31338b816503ddac0d3fcf
+clipcached: f17ba8f369740a02a2138031517f853eb67b9d43
+url: https://ufhtfdg9ulv3fj-8188.proxy.runpod.net
+stock H3: PASS | MISS: PASS | persistent HIT after full restart: PASS | HIT matrix 4/4: PASS | MISS matrix 3/3: PASS
+doctor: FAIL=0 WARN=0

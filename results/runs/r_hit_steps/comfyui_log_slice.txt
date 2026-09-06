@@ -1,0 +1,18 @@
+[32m[INFO][0m got prompt
+[32m[INFO][0m VAE load device: cuda:0, offload device: cpu, dtype: torch.float32
+[32m[INFO][0m VAE load device: cuda:0, offload device: cpu, dtype: torch.float16
+[32m[INFO][0m [CACHE HIT] d31d2809bc59
+[32m[INFO][0m Found quantization metadata version 1
+[32m[INFO][0m Detected mixed precision quantization
+[32m[INFO][0m Using mixed precision operations
+[32m[INFO][0m Native ops: float8_e4m3fn, int8_tensorwise, asym_w4a8_int8, convrot_w4a4, float8_e5m2 , emulated ops: nvfp4, mxfp8
+[32m[INFO][0m model weight dtype torch.bfloat16, manual cast: torch.bfloat16
+[32m[INFO][0m model_type FLOW_AV
+[32m[INFO][0m Requested to load MiniMaxH3
+[32m[INFO][0m Model MiniMaxH3 prepared for dynamic VRAM loading. 19995MB Staged. 0 patches attached. Force pre-loaded 210 weights: 1175 KB.
+  0%|          | 0/6 [00:00<?, ?it/s]  0%|          | 0/6 [00:00<?, ?it/s,   Model Initializing ...  ]  0%|          | 0/6 [00:36<?, ?it/s,  Model Initialization complete!  ] 17%|█▋        | 1/6 [00:36<03:01, 36.22s/it,  Model Initialization complete!  ] 17%|█▋        | 1/6 [00:02<03:01, 36.22s/it]                                    33%|███▎      | 2/6 [00:02<00:05,  1.49s/it] 50%|█████     | 3/6 [00:04<00:04,  1.45s/it] 67%|██████▋   | 4/6 [00:05<00:02,  1.47s/it] 83%|████████▎ | 5/6 [00:07<00:01,  1.48s/it]100%|██████████| 6/6 [00:08<00:00,  1.48s/it]100%|██████████| 6/6 [00:08<00:00,  1.48s/it]
+[32m[INFO][0m Requested to load MiniMaxH3AudioVAE
+[32m[INFO][0m Model MiniMaxH3AudioVAE prepared for dynamic VRAM loading. 576MB Staged. 0 patches attached. Force pre-loaded 401 weights: 539 KB.
+[32m[INFO][0m Requested to load MiniMaxH3VideoVAE
+[32m[INFO][0m Model MiniMaxH3VideoVAE prepared for dynamic VRAM loading. 4965MB Staged. 0 patches attached. Force pre-loaded 128 weights: 348 KB.
+[32m[INFO][0m [32mPrompt executed in 67.68 seconds[0m
