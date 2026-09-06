@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 
-from . import comfy_client, config, graph, history
+from . import comfy_client, config, graph, history, mediaprobe
 
 ACTIVE_STATES = ("queued", "running")
 
@@ -161,9 +161,22 @@ class JobManager:
         name, subfolder = self.client.upload_image(local_path)
         return name, subfolder
 
+    def upload_source_video(self, local_path):
+        """Send a Motion Trace source video to ComfyUI's input directory.
+
+        ComfyUI's /upload/image endpoint is content-agnostic -- it writes the
+        raw bytes and LoadVideo then lists the file by extension -- so the same
+        transport carries video. The probe result rides along so the UI can warn
+        about a clip H3 will mishandle before any GPU time is spent.
+        """
+        meta = mediaprobe.describe_for_motion_trace(local_path)
+        name, subfolder = self.client.upload_image(local_path)
+        return name, subfolder, meta
+
     def submit_batch(self, *, mode, prompt_text, quality, variations, duration,
                      aspect_ratio, image=None, image_source=None, reference_strength=None,
-                     seeds=None, parent_generation=None, kind=None):
+                     seeds=None, parent_generation=None, kind=None,
+                     source_video=None, source_video_meta=None, ref_image_size="match"):
         kind = kind or ("final" if quality != "draft" else "draft")
         batch_id = _short_id("b")
         seeds = list(seeds) if seeds else [int.from_bytes(os.urandom(4), "big") for _ in range(variations)]
@@ -174,8 +187,8 @@ class JobManager:
         for idx, seed in enumerate(seeds):
             api_prompt, params = graph.build(
                 mode, prompt_text, seed, quality=quality, duration=duration,
-                aspect_ratio=aspect_ratio, image=image,
-                reference_strength=reference_strength,
+                aspect_ratio=aspect_ratio, image=image, source_video=source_video,
+                reference_strength=reference_strength, ref_image_size=ref_image_size,
                 filename_prefix="video/H3Studio_%s_%d" % (batch_id, idx))
             if graph.REF_STRENGTH_ID in api_prompt and self.reference_node_available() is False:
                 api_prompt = graph.strip_reference_strength(api_prompt)
@@ -191,23 +204,26 @@ class JobManager:
         meta = {"prompt": prompt_text, "mode": mode, "quality": quality, "duration": duration,
                 "aspect_ratio": aspect_ratio, "image": image, "image_source": image_source,
                 "reference_strength": reference_strength, "variations": variations,
-                "parent_generation": parent_generation}
+                "parent_generation": parent_generation, "source_video": source_video,
+                "source_video_meta": source_video_meta,
+                "ref_image_size": ref_image_size if mode == graph.MODE_MOTION_TRACE else None}
         batch = Batch(batch_id, kind, mode, gens, meta)
 
         history.create_batch(batch_id, kind=kind, mode=mode, prompt=prompt_text, image=image,
                              image_source=image_source, duration=duration,
                              aspect_ratio=aspect_ratio, quality=quality, variations=variations,
                              reference_strength=reference_strength,
-                             parent_generation=parent_generation, pod_id=config.pod_id())
+                             parent_generation=parent_generation, pod_id=config.pod_id(),
+                             source_video=source_video, source_video_meta=source_video_meta,
+                             ref_image_size=meta["ref_image_size"])
         with self.lock:
             self.batches.append(batch)
             for g in gens:
                 self.generations[g.id] = g
                 history.create_generation(g.id, batch_id, g.idx, g.seed, g.params,
                                           cache_expected=g.cache_expected,
-                                          workflow="studio/templates/%s" % (
-                                              "i2v_base.json" if mode == graph.MODE_IMAGE_TRACE
-                                              else "t2v_base.json"))
+                                          workflow="studio/templates/%s"
+                                          % os.path.basename(graph.TEMPLATES[mode]))
 
         # Snapshot the cache BEFORE anything is queued, and publish it before
         # the first submit. _classify_cache() advances this value from the
@@ -250,6 +266,8 @@ class JobManager:
             mode=p["mode"], prompt_text=p["prompt"], quality=quality, variations=1,
             duration=p["duration"], aspect_ratio=p["aspect_ratio"], image=p.get("image"),
             image_source=None, reference_strength=p.get("reference_strength"),
+            source_video=p.get("source_video"),
+            ref_image_size=p.get("ref_image_size") or "match",
             seeds=[src.seed], parent_generation=gen_id, kind="final")
         batch.meta["finish_options"] = finish_options or {}
         for g in batch.generations:
@@ -450,6 +468,9 @@ class JobManager:
 
 _STAGE_NAMES = {
     "MiniMaxH3CLIPCachedFL2VA": "encoding prompt (Qwen3-VL / cache)",
+    "MiniMaxH3CLIPCachedRef2VA": "encoding references (Qwen3-VL / cache)",
+    "LoadVideo": "loading source video",
+    "GetVideoComponents": "extracting video frames",
     "UNETLoader": "loading H3 diffusion model",
     "VAELoader": "loading VAE",
     "SamplerCustomAdvanced": "sampling",

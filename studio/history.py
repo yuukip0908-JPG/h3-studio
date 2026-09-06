@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS batches (
     prompt             TEXT NOT NULL,
     image              TEXT,                     -- ComfyUI input filename
     image_source       TEXT,                     -- local path the operator uploaded
+    source_video       TEXT,                     -- Motion Trace: ComfyUI input filename
+    source_video_meta  TEXT,                     -- probe result (duration/fps/frames)
+    ref_image_size     TEXT,                     -- Motion Trace: match | max
     duration           REAL,
     aspect_ratio       TEXT,
     quality            TEXT,
@@ -66,21 +69,42 @@ def connect():
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
+        _migrate(conn)
         conn.commit()
         _LOCAL.conn = conn
     return conn
 
 
+def _migrate(conn):
+    """Add columns introduced after a database was first created.
+
+    A v2.0 Studio wrote batches without the Motion Trace columns; opening that
+    file with CREATE TABLE IF NOT EXISTS leaves the old shape in place, so the
+    inserts below would fail. Adding them here keeps existing history readable
+    instead of forcing the operator to delete it.
+    """
+    have = {row[1] for row in conn.execute("PRAGMA table_info(batches)")}
+    for column, decl in (("source_video", "TEXT"), ("source_video_meta", "TEXT"),
+                         ("ref_image_size", "TEXT")):
+        if column not in have:
+            conn.execute("ALTER TABLE batches ADD COLUMN %s %s" % (column, decl))
+
+
 def create_batch(batch_id, *, kind, mode, prompt, image=None, image_source=None,
                  duration=None, aspect_ratio=None, quality=None, variations=1,
-                 reference_strength=None, parent_generation=None, pod_id=None):
+                 reference_strength=None, parent_generation=None, pod_id=None,
+                 source_video=None, source_video_meta=None, ref_image_size=None):
+    if source_video_meta is not None and not isinstance(source_video_meta, str):
+        source_video_meta = json.dumps(source_video_meta, ensure_ascii=False)
     conn = connect()
     conn.execute(
         "INSERT INTO batches (id, created_at, kind, mode, prompt, image, image_source, duration,"
-        " aspect_ratio, quality, variations, reference_strength, parent_generation, pod_id)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " aspect_ratio, quality, variations, reference_strength, parent_generation, pod_id,"
+        " source_video, source_video_meta, ref_image_size)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (batch_id, time.time(), kind, mode, prompt, image, image_source, duration,
-         aspect_ratio, quality, variations, reference_strength, parent_generation, pod_id))
+         aspect_ratio, quality, variations, reference_strength, parent_generation, pod_id,
+         source_video, source_video_meta, ref_image_size))
     conn.commit()
 
 

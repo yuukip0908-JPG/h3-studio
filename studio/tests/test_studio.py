@@ -187,6 +187,224 @@ class GraphBuilderTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
+class MotionTraceGraphTests(unittest.TestCase):
+    """Motion Trace is Ref2VA: identity image + source video -> one encode."""
+
+    def build(self, **kw):
+        kw.setdefault("image", "identity.png")
+        kw.setdefault("source_video", "source.mp4")
+        return graph.build(graph.MODE_MOTION_TRACE, kw.pop("prompt", "she turns"),
+                           kw.pop("seed", 7), **kw)
+
+    def test_uses_the_ref2va_node_and_checkpoint(self):
+        p, params = self.build()
+        cached = graph.cached_node_id(p)
+        self.assertEqual(p[cached]["class_type"], graph.CACHED_NODE_REF2VA)
+        self.assertEqual(p[graph.one_id(p, "UNETLoader")]["inputs"]["unet_name"],
+                         graph.REF2VA_MODEL)
+        self.assertEqual(params["mode"], graph.MODE_MOTION_TRACE)
+
+    def test_identity_and_motion_reach_the_right_slots(self):
+        p, _ = self.build(image="face.png", source_video="dance.mp4")
+        cached = p[graph.cached_node_id(p)]["inputs"]
+        identity = p[cached["ref_image_0"][0]]
+        self.assertEqual(identity["class_type"], "LoadImage")
+        self.assertEqual(identity["inputs"]["image"], "face.png")
+        components = p[cached["ref_video_0"][0]]
+        self.assertEqual(components["class_type"], "GetVideoComponents")
+        loader = p[components["inputs"]["video"][0]]
+        self.assertEqual(loader["class_type"], "LoadVideo")
+        self.assertEqual(loader["inputs"]["file"], "dance.mp4")
+
+    def test_ref2va_needs_the_audio_vae_wired(self):
+        """Ref2VA takes audio_vae as a required input; FL2VA does not."""
+        p, _ = self.build()
+        cached = p[graph.cached_node_id(p)]["inputs"]
+        audio_vae = p[cached["audio_vae"][0]]
+        self.assertEqual(audio_vae["class_type"], "VAELoader")
+        self.assertIn("audio", audio_vae["inputs"]["vae_name"])
+        video_vae = p[cached["vae"][0]]
+        self.assertIn("video", video_vae["inputs"]["vae_name"])
+        self.assertNotEqual(cached["vae"][0], cached["audio_vae"][0])
+
+    def test_soundtrack_is_deliberately_not_wired(self):
+        p, _ = self.build()
+        self.assertNotIn("ref_video_audio_0", p[graph.cached_node_id(p)]["inputs"])
+
+    def test_both_inputs_are_required(self):
+        with self.assertRaises(graph.GraphError):
+            graph.build(graph.MODE_MOTION_TRACE, "x", 1, source_video="v.mp4")
+        with self.assertRaises(graph.GraphError):
+            graph.build(graph.MODE_MOTION_TRACE, "x", 1, image="i.png")
+        with self.assertRaises(graph.GraphError):
+            self.build(ref_image_size="enormous")
+
+    def test_reference_strength_still_sits_downstream(self):
+        """model_base.py folds Ref2VA refs into cond_video_latents, so the
+        noise-aug knob applies here too -- and must not touch the encode."""
+        p, params = self.build(reference_strength=0.95)
+        self.assertEqual(params["reference_strength"], 0.95)
+        cached = graph.cached_node_id(p)
+        self.assertEqual(p[graph.REF_STRENGTH_ID]["inputs"]["conditioning"][0], cached)
+        self.assertEqual(p[graph.one_id(p, "BasicGuider")]["inputs"]["conditioning"][0],
+                         graph.REF_STRENGTH_ID)
+
+    def test_draft_and_final_share_resolution_so_final_hits(self):
+        d = graph.PRESETS[(graph.MODE_MOTION_TRACE, "draft")]
+        f = graph.PRESETS[(graph.MODE_MOTION_TRACE, "final")]
+        self.assertEqual(d["megapixels"], f["megapixels"])
+        self.assertGreater(f["steps"], d["steps"])
+
+    def test_cache_truth_table(self):
+        base = self.build()[1]
+        table = {
+            "seed only": (self.build(seed=99)[1], "HIT"),
+            "final (steps)": (self.build(quality="final")[1], "HIT"),
+            "prompt": (self.build(prompt="other")[1], "MISS"),
+            "identity image": (self.build(image="b.png")[1], "MISS"),
+            "source video": (self.build(source_video="w.mp4")[1], "MISS"),
+            # unlike the other two modes, duration truncates the reference video
+            "duration": (self.build(duration=5.0)[1], "MISS"),
+            "aspect": (self.build(aspect_ratio=graph.ASPECT_RATIOS[1])[1], "MISS"),
+            "ref_image_size": (self.build(ref_image_size="max")[1], "MISS"),
+        }
+        for label, (params, expected) in table.items():
+            self.assertEqual(
+                graph.expected_cache(graph.MODE_MOTION_TRACE, base, params), expected, label)
+
+    def test_duration_is_encoder_visible_only_for_motion_trace(self):
+        """The asymmetry that makes Motion Trace different from the others."""
+        it = graph.build(graph.MODE_IMAGE_TRACE, "p", 1, image="a.png")[1]
+        it2 = graph.build(graph.MODE_IMAGE_TRACE, "p", 2, image="a.png", duration=9.0)[1]
+        self.assertEqual(graph.expected_cache(graph.MODE_IMAGE_TRACE, it, it2), "HIT")
+        mt = self.build()[1]
+        mt2 = self.build(duration=9.0)[1]
+        self.assertEqual(graph.expected_cache(graph.MODE_MOTION_TRACE, mt, mt2), "MISS")
+
+
+class MediaProbeTests(unittest.TestCase):
+    SAMPLE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "results", "sample_MiniMax_H3_00015_.mp4")
+
+    def test_probe_matches_ffprobe_on_the_baseline_sample(self):
+        """Ground truth from ffprobe: 24 fps, 2.3333 s, 56 frames."""
+        from studio import mediaprobe
+        info = mediaprobe.probe(self.SAMPLE)
+        self.assertEqual(info["frames"], 56)
+        self.assertAlmostEqual(info["fps"], 24.0, delta=0.2)
+        self.assertAlmostEqual(info["duration"], 2.333, delta=0.01)
+
+    def test_picks_the_video_track_not_the_biggest_one(self):
+        """Selecting by sample count picks the audio track on this very file."""
+        from studio import mediaprobe
+        self.assertEqual(mediaprobe.probe(self.SAMPLE)["frames"], 56)
+
+    def test_unreadable_file_is_advisory_not_fatal(self):
+        from studio import mediaprobe
+        out = mediaprobe.describe_for_motion_trace(__file__)
+        self.assertTrue(out["ok"], "an unparseable container must not block generation")
+        self.assertTrue(out["notes"])
+        self.assertIsNone(out["duration"])
+
+    def test_too_short_a_clip_is_rejected_before_it_costs_gpu_time(self):
+        from studio import mediaprobe
+        out = dict(ok=True, notes=[], duration=0.5, fps=24.0, frames=12)
+        # exercise the real decision path with a stubbed probe
+        real = mediaprobe.probe
+        try:
+            mediaprobe.probe = lambda p: {"duration": 0.5, "fps": 24.0,
+                                          "frames": 12, "bytes": 10}
+            out = mediaprobe.describe_for_motion_trace(self.SAMPLE)
+        finally:
+            mediaprobe.probe = real
+        self.assertFalse(out["ok"])
+        self.assertTrue(any("2-15" in n for n in out["notes"]))
+
+    def test_off_rate_clip_warns_but_is_allowed(self):
+        from studio import mediaprobe
+        real = mediaprobe.probe
+        try:
+            mediaprobe.probe = lambda p: {"duration": 5.0, "fps": 60.0,
+                                          "frames": 300, "bytes": 10}
+            out = mediaprobe.describe_for_motion_trace(self.SAMPLE)
+        finally:
+            mediaprobe.probe = real
+        self.assertTrue(out["ok"])
+        self.assertTrue(any("fps" in n for n in out["notes"]))
+
+
+class MotionTraceEndToEndTests(StudioTestCase):
+    def _upload(self, m):
+        img = os.path.join(self.tmp, "identity.png")
+        with open(img, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 128)
+        name, _ = m.upload_source_image(img)
+        video, _, meta = m.upload_source_video(MediaProbeTests.SAMPLE)
+        return name, video, meta
+
+    def test_full_flow_four_variations_select_final(self):
+        m = self.make_manager()
+        identity, video, meta = self._upload(m)
+        self.assertIn("sample_MiniMax_H3", video)
+        self.assertEqual(meta["frames"], 56)
+
+        draft = m.submit_batch(mode=graph.MODE_MOTION_TRACE,
+                               prompt_text="keep the person of <Picture 1>, follow <Video 1>",
+                               quality="draft", variations=4, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0], image=identity,
+                               source_video=video, source_video_meta=meta,
+                               reference_strength=None)
+        self.wait_batch(draft)
+        self.assertEqual([g.status for g in draft.generations], ["done"] * 4)
+        self.assertEqual([g.cache_result for g in draft.generations],
+                         ["MISS", "HIT", "HIT", "HIT"])
+
+        chosen = draft.generations[1]
+        self.assertTrue(m.select(chosen.id))
+        before = len(mock_comfy.STATE.submitted)
+        final = m.submit_final(chosen.id)
+        self.wait_batch(final)
+        self.assertEqual(len(mock_comfy.STATE.submitted) - before, 1)
+        f = final.generations[0]
+        self.assertEqual(f.status, "done")
+        self.assertEqual(f.seed, chosen.seed)
+        self.assertEqual(f.params["steps"], 30)
+        self.assertEqual(f.cache_result, "HIT", "Motion Trace Final must not re-encode")
+        self.assertEqual(f.params["source_video"], video)
+
+    def test_duration_change_misses_but_seed_change_hits(self):
+        m = self.make_manager()
+        identity, video, meta = self._upload(m)
+        common = dict(mode=graph.MODE_MOTION_TRACE, prompt_text="p", quality="draft",
+                      variations=1, aspect_ratio=graph.ASPECT_RATIOS[0],
+                      image=identity, source_video=video)
+        a = m.submit_batch(duration=2.0, **common)
+        self.wait_batch(a)
+        self.assertEqual(a.generations[0].cache_result, "MISS")
+        b = m.submit_batch(duration=2.0, **common)
+        self.wait_batch(b)
+        self.assertEqual(b.generations[0].cache_result, "HIT")
+        c = m.submit_batch(duration=4.0, **common)
+        self.wait_batch(c)
+        self.assertEqual(c.generations[0].cache_result, "MISS",
+                         "duration truncates the reference video, so it re-encodes")
+
+    def test_history_records_the_motion_trace_inputs(self):
+        m = self.make_manager()
+        identity, video, meta = self._upload(m)
+        batch = m.submit_batch(mode=graph.MODE_MOTION_TRACE, prompt_text="tracked",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0], image=identity,
+                               source_video=video, source_video_meta=meta,
+                               ref_image_size="max")
+        self.wait_batch(batch)
+        row = history.get_batch(batch.id)
+        self.assertEqual(row["mode"], "motion_trace")
+        self.assertEqual(row["source_video"], video)
+        self.assertEqual(row["ref_image_size"], "max")
+        self.assertEqual(json.loads(row["source_video_meta"])["frames"], 56)
+
+
 class WebSocketClientTests(StudioTestCase):
     def test_client_receives_real_frames(self):
         got = []
@@ -471,6 +689,63 @@ class ApiServerTests(StudioTestCase):
         with self.urllib.urlopen(self.base + "/api/video/" + gid, timeout=20) as r:
             self.assertGreater(len(r.read()), 0)
             self.assertEqual(r.headers["Content-Type"], "video/mp4")
+
+    def test_config_exposes_all_three_modes(self):
+        cfg = self.get("/api/config")
+        self.assertEqual(cfg["modes"], ["image_trace", "motion_trace", "prompt_cinema"])
+        self.assertEqual(cfg["mode_inputs"]["prompt_cinema"], ["prompt"])
+        self.assertIn("source_video", cfg["mode_inputs"]["motion_trace"])
+        self.assertIn("motion_trace/draft", cfg["presets"])
+        self.assertEqual(cfg["motion_trace"]["identity_tag"], "<Picture 1>")
+        self.assertEqual(cfg["motion_trace"]["expected_fps"], 24)
+
+    def test_motion_trace_over_http_including_video_upload(self):
+        import urllib.request
+        boundary = "----h3test"
+        with open(MediaProbeTests.SAMPLE, "rb") as f:
+            content = f.read()
+        body = (("--%s\r\nContent-Disposition: form-data; name=\"image\"; "
+                 "filename=\"source.mp4\"\r\nContent-Type: video/mp4\r\n\r\n" % boundary).encode()
+                + content + ("\r\n--%s--\r\n" % boundary).encode())
+        req = urllib.request.Request(
+            self.base + "/api/upload?kind=video", data=body, method="POST",
+            headers={"Content-Type": "multipart/form-data; boundary=%s" % boundary})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            up = json.loads(r.read())
+        self.assertTrue(up["ok"])
+        self.assertIn("source.mp4", up["video"])
+        self.assertEqual(up["probe"]["frames"], 56)
+        self.assertTrue(up["probe"]["ok"])
+
+        img = os.path.join(self.tmp, "id.png")
+        with open(img, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        iname, _ = self.manager.upload_source_image(img)
+
+        batch = self.post("/api/generate", {
+            "mode": "motion_trace", "prompt": "keep <Picture 1>, follow <Video 1>",
+            "quality": "draft", "variations": 4, "duration": 2.0,
+            "aspect_ratio": graph.ASPECT_RATIOS[0], "image": iname,
+            "source_video": up["video"], "source_video_meta": up["probe"],
+            "ref_image_size": "match"})
+        self.assertEqual(len(batch["generations"]), 4)
+        obj = self.manager.batch(batch["id"])
+        wait_until(lambda: all(g.status == "done" for g in obj.generations), 60)
+        fresh = self.get("/api/batch/" + batch["id"])
+        self.assertEqual([g["cache_result"] for g in fresh["generations"]],
+                         ["MISS", "HIT", "HIT", "HIT"])
+
+        gid = fresh["generations"][0]["id"]
+        self.assertTrue(self.post("/api/select", {"generation_id": gid})["ok"])
+        final = self.post("/api/finalize", {"generation_id": gid, "finish_options": {}})
+        self.assertEqual(len(final["generations"]), 1)
+        self.assertEqual(final["generations"][0]["params"]["mode"], "motion_trace")
+
+    def test_motion_trace_without_a_video_is_rejected(self):
+        with self.assertRaises(Exception) as cm:
+            self.post("/api/generate", {"mode": "motion_trace", "prompt": "x",
+                                        "image": "a.png"})
+        self.assertIn("400", str(cm.exception))
 
     def test_bad_requests_are_rejected_with_400(self):
         for payload in ({"mode": "nope", "prompt": "x"},

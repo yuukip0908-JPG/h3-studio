@@ -22,7 +22,7 @@ if __package__ in (None, ""):  # allow `python3 studio/server.py`
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "studio"
 
-from . import comfy_client, config, graph, history, jobs, runpod_ctl  # noqa: E402
+from . import comfy_client, config, graph, history, jobs, mediaprobe, runpod_ctl  # noqa: E402
 
 STARTED_AT = time.time()
 MANAGER = None
@@ -253,6 +253,19 @@ class Handler(BaseHTTPRequestHandler):
                         "max": graph.REF_STRENGTH_MAX,
                         "available": MANAGER.reference_node_available(),
                     },
+                    "mode_inputs": {
+                        graph.MODE_IMAGE_TRACE: ["image", "prompt", "reference_strength"],
+                        graph.MODE_MOTION_TRACE: ["image", "source_video", "prompt",
+                                                  "reference_strength", "ref_image_size"],
+                        graph.MODE_PROMPT_CINEMA: ["prompt"],
+                    },
+                    "motion_trace": {
+                        "ref_image_size_choices": ["match", "max"],
+                        "identity_tag": graph.IDENTITY_TAG,
+                        "motion_tag": graph.MOTION_TAG,
+                        "source_video_seconds": [mediaprobe.MIN_SECONDS, mediaprobe.MAX_SECONDS],
+                        "expected_fps": mediaprobe.H3_FPS,
+                    },
                     "finish_options": _finish_option_catalog(),
                     "output_dir": config.OUTPUT_DIR,
                 })
@@ -273,7 +286,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # POST
         if path == "/api/upload":
-            return self._json(self._upload())
+            return self._json(self._upload(kind=(query.get("kind") or ["image"])[0]))
         data = self._json_body()
         if path == "/api/generate":
             return self._json(self._generate(data))
@@ -310,7 +323,7 @@ class Handler(BaseHTTPRequestHandler):
             "stats": history.stats(),
         }
 
-    def _upload(self):
+    def _upload(self, kind="image"):
         """Accept one image from the browser and forward it to ComfyUI /input.
 
         multipart is parsed here rather than with cgi.FieldStorage so the file
@@ -331,6 +344,10 @@ class Handler(BaseHTTPRequestHandler):
         os.makedirs(config.UPLOAD_DIR, exist_ok=True)
         with open(local, "wb") as f:
             f.write(content)
+        if kind == "video":
+            name, subfolder, meta = MANAGER.upload_source_video(local)
+            return {"ok": True, "video": name, "subfolder": subfolder,
+                    "local_path": local, "bytes": len(content), "probe": meta}
         name, subfolder = MANAGER.upload_source_image(local)
         return {"ok": True, "image": name, "subfolder": subfolder, "local_path": local,
                 "bytes": len(content)}
@@ -352,6 +369,9 @@ class Handler(BaseHTTPRequestHandler):
             image=data.get("image"),
             image_source=data.get("local_path"),
             reference_strength=float(ref) if ref not in (None, "") else None,
+            source_video=data.get("source_video"),
+            source_video_meta=data.get("source_video_meta"),
+            ref_image_size=data.get("ref_image_size", "match"),
         )
         return batch.as_dict()
 
@@ -444,6 +464,10 @@ def _doctor():
     add("comfyui reachable", alive, MANAGER.client.base)
     if alive:
         add("CLIPCached node registered", MANAGER.client.has_node(graph.CACHED_NODE), graph.CACHED_NODE)
+        add("Ref2VA node registered (Motion Trace)",
+            MANAGER.client.has_node(graph.CACHED_NODE_REF2VA), graph.CACHED_NODE_REF2VA)
+        add("Ref2VA checkpoint present", _ref2va_model_present(),
+            graph.REF2VA_MODEL)
         ref = MANAGER.reference_node_available()
         checks.append({"check": "Reference Strength node", "status": "PASS" if ref else "WARN",
                        "detail": graph.REF_STRENGTH_NODE +
@@ -452,6 +476,21 @@ def _doctor():
     fails = sum(1 for c in checks if c["status"] == "FAIL")
     return {"checks": checks, "fail": fails,
             "warn": sum(1 for c in checks if c["status"] == "WARN"), "ok": fails == 0}
+
+
+def _ref2va_model_present():
+    """Is the ref2va checkpoint loadable by UNETLoader on the Pod?
+
+    Checked through /object_info rather than the filesystem: what matters is
+    what ComfyUI can actually load, not what is on disk.
+    """
+    try:
+        info = MANAGER.client.object_info("UNETLoader") or {}
+    except comfy_client.ComfyError:
+        return False
+    spec = (info.get("UNETLoader") or {}).get("input", {}).get("required", {})
+    options = (spec.get("unet_name") or [[]])[0]
+    return graph.REF2VA_MODEL in (options or [])
 
 
 def _db_writable():

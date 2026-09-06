@@ -142,11 +142,29 @@ sys.exit(0 if json.load(sys.stdin)["generations"][0]["cache_result"]=="HIT" else
     && ok "$label: EXPORT" || no "$label: EXPORT failed"
 }
 
-IMG="$(python3 -c "print('transparent_rgb_gaming_mouse.png')")"
+IMG="transparent_rgb_gaming_mouse.png"
+
+# Motion Trace needs a real source video in ComfyUI's input dir. Upload the
+# baseline's own sample so the check never depends on an operator's file.
+SRC_VIDEO=""
+if [[ -f "$DIR/results/sample_MiniMax_H3_00015_.mp4" ]]; then
+  SRC_VIDEO="$(curl -sS -F "image=@$DIR/results/sample_MiniMax_H3_00015_.mp4" \
+      "$BASE/api/upload?kind=video" \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("video",""))' || true)"
+fi
+say "motion trace source video: ${SRC_VIDEO:-<none>}"
+
 run_pipeline image_trace "a slow push-in, gentle natural light, subtle motion" \
   ",\"image\":\"$IMG\",\"reference_strength\":0.999" "PIPELINE A: Image Trace"
+if [[ -n "$SRC_VIDEO" ]]; then
+  run_pipeline motion_trace "keep the person of <Picture 1>, follow the motion and camera of <Video 1>" \
+    ",\"image\":\"$IMG\",\"source_video\":\"$SRC_VIDEO\",\"ref_image_size\":\"match\",\"reference_strength\":0.999" \
+    "PIPELINE B: Motion Trace"
+else
+  no "PIPELINE B: Motion Trace -- could not upload a source video"
+fi
 run_pipeline prompt_cinema "slow dolly through a neon-lit street after rain, cinematic" \
-  "" "PIPELINE B: Prompt Cinema"
+  "" "PIPELINE C: Prompt Cinema"
 
 # ---- 6. history ----
 api /api/history '' 30 | python3 -c '
@@ -158,7 +176,7 @@ print("  generations=%d hits=%d misses=%d gpu_s=%s" % (s["generations"], s["cach
 need=("mode","prompt","image","duration","reference_strength","quality")
 b=h["batches"][0]
 missing=[k for k in need if k not in b]
-sys.exit(1 if missing or s["generations"]<8 else 0)' | tee -a "$LOG"
+sys.exit(1 if missing or s["generations"] < 15 else 0)' | tee -a "$LOG"
 [[ "${PIPESTATUS[0]}" == 0 ]] && ok "history records full provenance" || no "history incomplete"
 
 # ---- 7. STOP GPU ----

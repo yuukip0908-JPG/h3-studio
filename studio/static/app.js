@@ -9,6 +9,9 @@ const state = {
   variations: 4,
   image: null,
   localPath: null,
+  sourceVideo: null,
+  sourceVideoMeta: null,
+  refImageSize: "match",
   cfg: null,
   batch: null,       // current batch shown in RESULTS
   selected: null,
@@ -69,12 +72,26 @@ function preset() {
 }
 
 function renderModeHints() {
-  const it = state.mode === "image_trace";
-  $("field-image").hidden = !it;
-  $("field-refstrength").hidden = !it;
-  $("mode-hint").textContent = it
-    ? "1枚の画像を元に、人物・顔・服・雰囲気を保ったまま動画化します。"
-    : "画像なし。Prompt だけで世界観・カメラワークを探索します。Reference Strength は T2V では効果がありません。";
+  const mode = state.mode;
+  const inputs = (state.cfg && state.cfg.mode_inputs[mode]) || [];
+  const has = (k) => inputs.indexOf(k) >= 0;
+
+  $("field-image").hidden = !has("image");
+  $("field-video").hidden = !has("source_video");
+  $("field-refsize").hidden = !has("ref_image_size");
+  $("field-refstrength").hidden = !has("reference_strength");
+
+  $("image-label").textContent =
+    mode === "motion_trace" ? "IDENTITY IMAGE (person / appearance)" : "SOURCE IMAGE";
+  $("refstrength-label").firstChild.nodeValue =
+    mode === "motion_trace" ? "REFERENCE STRENGTH (identity + motion) " : "REFERENCE STRENGTH ";
+
+  $("mode-hint").textContent =
+    mode === "image_trace"
+      ? "1枚の画像を元に、人物・顔・服・雰囲気を保ったまま動画化します。"
+      : mode === "motion_trace"
+      ? "Source Video から動き・テンポ・カメラを、Identity Image から人物・見た目を取ります。Prompt では「何を保ち、何を変えるか」を書いてください。"
+      : "画像なし。Prompt だけで世界観・カメラワークを探索します。Reference Strength は T2V では効果がありません。";
   const p = preset();
   $("quality-hint").textContent = p.megapixels
     ? `${p.megapixels} MP / ${p.steps} steps — ${p.note || ""}`
@@ -90,15 +107,24 @@ function renderCacheHint() {
   const cur = {
     prompt: $("prompt").value.trim(),
     image: state.image,
+    source_video: state.sourceVideo,
     aspect_ratio: $("aspect").value,
     megapixels: preset().megapixels,
+    duration: Number($("duration").value),
+    ref_image_size: state.refImageSize,
+  };
+  /* Mirrors studio/graph.py expected_cache() for all three modes. Motion Trace
+     also folds duration in: the reference video is truncated to the generated
+     frame count, so a different duration is a different encode. */
+  const KEYS = {
+    image_trace: ["image", "aspect_ratio", "megapixels"],
+    motion_trace: ["image", "source_video", "aspect_ratio", "megapixels",
+                   "duration", "ref_image_size"],
+    prompt_cinema: [],
   };
   let verdict = "MISS";
   if (prev && prev.prompt === cur.prompt) {
-    verdict = "HIT";
-    if (state.mode === "image_trace" &&
-        (prev.image !== cur.image || prev.aspect_ratio !== cur.aspect_ratio ||
-         prev.megapixels !== cur.megapixels)) verdict = "MISS";
+    verdict = (KEYS[state.mode] || []).every((k) => prev[k] === cur[k]) ? "HIT" : "MISS";
   }
   const n = state.variations;
   $("cache-hint").innerHTML = verdict === "HIT"
@@ -234,7 +260,29 @@ $("mode-seg").addEventListener("click", (e) => {
   state.mode = b.dataset.mode;
   [...$("mode-seg").children].forEach((c) => c.classList.toggle("on", c === b));
   renderModeHints();
+  maybeSuggestTags();
 });
+
+$("refsize-seg").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  state.refImageSize = b.dataset.refsize;
+  [...$("refsize-seg").children].forEach((c) => c.classList.toggle("on", c === b));
+  renderCacheHint();
+});
+
+/* Motion Trace addresses its references by tag: <Picture 1> is the identity
+   image, <Video 1> the source video. Offer the scaffold as a placeholder once;
+   never overwrite what the operator has typed. */
+function maybeSuggestTags() {
+  if (state.mode !== "motion_trace") return;
+  const t = $("prompt");
+  if (t.value.trim()) return;
+  const mt = (state.cfg && state.cfg.motion_trace) || {};
+  t.placeholder =
+    "keep the person of " + (mt.identity_tag || "<Picture 1>") +
+    ", follow the motion and camera of " + (mt.motion_tag || "<Video 1>") +
+    "; change the background to a sunlit street";
+}
 $("quality-seg").addEventListener("click", (e) => {
   const b = e.target.closest("button"); if (!b) return;
   state.quality = b.dataset.quality;
@@ -249,7 +297,37 @@ $("var-seg").addEventListener("click", (e) => {
 });
 $("prompt").addEventListener("input", renderCacheHint);
 $("aspect").addEventListener("change", renderCacheHint);
+$("duration").addEventListener("change", renderCacheHint);
 $("refstrength").addEventListener("input", (e) => { $("ref-value").textContent = e.target.value; });
+
+$("video-file").addEventListener("change", async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  $("video-status").textContent = "アップロード中…";
+  $("video-notes").textContent = "";
+  try {
+    const fd = new FormData();
+    fd.append("image", f, f.name);
+    const r = await api("/api/upload?kind=video", { method: "POST", body: fd });
+    state.sourceVideo = r.video;
+    state.sourceVideoMeta = r.probe;
+    const p = r.probe || {};
+    const bits = ["ComfyUI input: " + r.video,
+                  (Math.round(r.bytes / 1024 / 1024 * 10) / 10) + " MB"];
+    if (p.duration) bits.push(p.duration + "s");
+    if (p.fps) bits.push(p.fps + " fps");
+    if (p.frames) bits.push(p.frames + " frames");
+    $("video-status").textContent = bits.join(" · ");
+    $("video-notes").textContent = (p.notes || []).join("\n");
+    if (p.ok === false) notice("warn", (p.notes || []).join(" / "));
+    const v = $("video-preview");
+    v.src = URL.createObjectURL(f);
+    v.hidden = false;
+    renderCacheHint();
+  } catch (err) {
+    $("video-status").textContent = "";
+    notice("error", "動画アップロード失敗: " + err.message);
+  }
+});
 
 $("image-file").addEventListener("change", async (e) => {
   const f = e.target.files[0]; if (!f) return;
@@ -280,10 +358,18 @@ $("btn-generate").addEventListener("click", async () => {
     duration: Number($("duration").value),
     aspect_ratio: $("aspect").value,
   };
-  if (state.mode === "image_trace") {
+  const inputs = (state.cfg && state.cfg.mode_inputs[state.mode]) || [];
+  if (inputs.indexOf("image") >= 0) {
     payload.image = state.image;
     payload.local_path = state.localPath;
-    if (!$("refstrength").disabled) payload.reference_strength = Number($("refstrength").value);
+  }
+  if (inputs.indexOf("source_video") >= 0) {
+    payload.source_video = state.sourceVideo;
+    payload.source_video_meta = state.sourceVideoMeta;
+  }
+  if (inputs.indexOf("ref_image_size") >= 0) payload.ref_image_size = state.refImageSize;
+  if (inputs.indexOf("reference_strength") >= 0 && !$("refstrength").disabled) {
+    payload.reference_strength = Number($("refstrength").value);
   }
   $("btn-generate").disabled = true;
   try {
@@ -293,7 +379,9 @@ $("btn-generate").addEventListener("click", async () => {
     });
     state.lastEncoder[state.mode] = {
       prompt: payload.prompt.trim(), image: payload.image,
+      source_video: payload.source_video,
       aspect_ratio: payload.aspect_ratio, megapixels: preset().megapixels,
+      duration: payload.duration, ref_image_size: state.refImageSize,
     };
     renderResults(batch);
     renderCacheHint();
@@ -369,7 +457,8 @@ async function loadHistory() {
 }
 
 (async function init() {
-  try { await loadConfig(); } catch (e) { notice("error", "設定の読み込みに失敗: " + e.message); }
+  try { await loadConfig(); maybeSuggestTags(); }
+  catch (e) { notice("error", "設定の読み込みに失敗: " + e.message); }
   pollStatus();
   loadHistory();
   setInterval(loadHistory, 30000);

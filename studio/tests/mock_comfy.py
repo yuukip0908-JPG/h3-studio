@@ -34,7 +34,11 @@ KNOWN_NODES = {
     "UNETLoader", "VAELoader", "VAEDecode", "VAEDecodeAudio", "CreateVideo",
     "SamplerCustomAdvanced", "BasicGuider", "ComfySwitchNode", "PrimitiveInt",
     "PrimitiveFloat", "PrimitiveBoolean", "ComfyMathExpression",
+    "MiniMaxH3CLIPCachedRef2VA", "MiniMaxH3ReferenceToVideo", "LoadVideo",
+    "GetVideoComponents",
 }
+
+CACHED_CLASSES = ("MiniMaxH3CLIPCachedFL2VA", "MiniMaxH3CLIPCachedRef2VA")
 
 MP_TO_WH = {0.25: (672, 384), 0.4: (832, 480), 0.6: (1024, 576)}
 
@@ -90,29 +94,78 @@ STATE = MockState()
 
 
 # --------------------------------------------------------------------------
+def _first(prompt, class_type):
+    for v in prompt.values():
+        if v["class_type"] == class_type:
+            return v
+    return None
+
+
+def _generation_wh(prompt):
+    res = _first(prompt, "ResolutionSelector")
+    if not res:
+        return None, None
+    mp = res["inputs"].get("megapixels")
+    ar = str(res["inputs"].get("aspect_ratio"))
+    w, h = MP_TO_WH.get(mp, (832, 480))
+    if "9:16" in ar or "3:4" in ar:
+        w, h = h, w
+    return w, h
+
+
+def _duration(prompt):
+    """The PrimitiveFloat behind the frame-count expression."""
+    f = _first(prompt, "PrimitiveFloat")
+    return f["inputs"].get("value") if f else None
+
+
 def fingerprint_of(prompt):
-    """Reproduce the encoder-visible inputs, exactly as the real node does."""
-    cached = [v for v in prompt.values() if v["class_type"] == "MiniMaxH3CLIPCachedFL2VA"]
-    if not cached:
+    """Reproduce the encoder-visible inputs, exactly as the real nodes do.
+
+    FL2VA:  tokenize(prompt, images=[resize(first_frame, w, h)])
+    Ref2VA: tokenize(prompt, minimax_ref_items=[identity_image, video_frames])
+
+    The Ref2VA differences that matter, both taken from
+    MiniMaxH3ReferenceToVideo.execute():
+      * the identity image is scaled by the generation's pixel area only when
+        ref_image_size == "match"; "max" uses a fixed 2048px short edge and is
+        therefore resolution-independent;
+      * the reference video is truncated to the generated frame count, so the
+        duration is encoder-visible here and nowhere else.
+    """
+    node = None
+    for cls in CACHED_CLASSES:
+        node = _first(prompt, cls)
+        if node:
+            break
+    if not node:
         return None
-    node = cached[0]
-    text = node["inputs"].get("prompt", "")
-    has_keyframe = "first_frame" in node["inputs"]
-    image = None
-    width = height = None
-    if has_keyframe:
-        loaders = [v for v in prompt.values() if v["class_type"] == "LoadImage"]
-        image = loaders[0]["inputs"].get("image") if loaders else None
-        res = [v for v in prompt.values() if v["class_type"] == "ResolutionSelector"]
-        if res:
-            mp = res[0]["inputs"].get("megapixels")
-            ar = res[0]["inputs"].get("aspect_ratio")
-            width, height = MP_TO_WH.get(mp, (832, 480))
-            if "9:16" in str(ar) or "3:4" in str(ar):
-                width, height = height, width
-    blob = json.dumps({"prompt": text, "image": image, "w": width, "h": height,
-                       "clip": node["inputs"].get("clip_name")}, sort_keys=True)
-    return hashlib.sha256(blob.encode()).hexdigest()
+    inputs = node["inputs"]
+    text = inputs.get("prompt", "")
+    payload = {"prompt": text, "clip": inputs.get("clip_name")}
+    w, h = _generation_wh(prompt)
+
+    if node["class_type"] == "MiniMaxH3CLIPCachedRef2VA":
+        loader = _first(prompt, "LoadImage")
+        video = _first(prompt, "LoadVideo")
+        size_mode = inputs.get("ref_image_size", "match")
+        payload.update({
+            "kind": "ref2va",
+            "identity": loader["inputs"].get("image") if loader else None,
+            "video": video["inputs"].get("file") if video else None,
+            "ref_image_size": size_mode,
+            "duration": _duration(prompt),
+        })
+        if size_mode == "match":
+            payload.update({"w": w, "h": h})
+    elif "first_frame" in inputs:
+        loader = _first(prompt, "LoadImage")
+        payload.update({"kind": "fl2va-i2v",
+                        "image": loader["inputs"].get("image") if loader else None,
+                        "w": w, "h": h})
+    else:
+        payload["kind"] = "fl2va-t2v"
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def run_job(prompt_id, prompt):
@@ -138,7 +191,7 @@ def run_job(prompt_id, prompt):
 
     for node_id, node in prompt.items():
         STATE.broadcast({"type": "executing", "data": {"prompt_id": prompt_id, "node": node_id}})
-        if node["class_type"] == "MiniMaxH3CLIPCachedFL2VA":
+        if node["class_type"] in CACHED_CLASSES:
             if not hit:
                 time.sleep(STATE.encode_seconds)
                 with STATE.lock:

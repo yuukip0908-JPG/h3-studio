@@ -26,16 +26,35 @@
       <label>MODE</label>
       <div class="seg" id="mode-seg">
         <button data-mode="image_trace" class="on">Image Trace</button>
+        <button data-mode="motion_trace">Motion Trace</button>
         <button data-mode="prompt_cinema">Prompt Cinema</button>
       </div>
       <p class="hint" id="mode-hint"></p>
     </div>
 
     <div class="field" id="field-image">
-      <label>SOURCE IMAGE</label>
+      <label id="image-label">SOURCE IMAGE</label>
       <input type="file" id="image-file" accept="image/*">
       <div id="image-status" class="hint"></div>
       <img id="image-preview" alt="" hidden>
+    </div>
+
+    <div class="field" id="field-video">
+      <label>SOURCE VIDEO <span class="dim">(motion / timing / camera)</span></label>
+      <input type="file" id="video-file" accept="video/mp4,video/quicktime,video/*">
+      <div id="video-status" class="hint"></div>
+      <div id="video-notes" class="hint warn"></div>
+      <video id="video-preview" controls preload="metadata" hidden></video>
+    </div>
+
+    <div class="field" id="field-refsize">
+      <label>IDENTITY FIDELITY</label>
+      <div class="seg" id="refsize-seg">
+        <button data-refsize="match" class="on">match (fast)</button>
+        <button data-refsize="max">max (2048px)</button>
+      </div>
+      <p class="hint">max は参照画像を 2048px で扱い同一性が上がりますが、参照トークンが
+        全サンプリングステップを通るため数倍遅くなります。</p>
     </div>
 
     <div class="field">
@@ -55,7 +74,7 @@
     </div>
 
     <div class="field" id="field-refstrength">
-      <label>REFERENCE STRENGTH <span id="ref-value">0.999</span></label>
+      <label id="refstrength-label">REFERENCE STRENGTH <span id="ref-value">0.999</span></label>
       <input type="range" id="refstrength" min="0.90" max="1.0" step="0.001" value="0.999">
       <p class="hint">高いほど元画像に忠実。低くすると動きの自由度が上がる代わりに人物の同一性が崩れやすい。<br>
         キャッシュには影響しない（常に HIT）。</p>

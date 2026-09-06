@@ -18,6 +18,19 @@ ComfyUI 169fcf35 comfy_extras/nodes_minimax_h3.py):
   * Image Trace resizes the keyframe to width x height -> changing the
     resolution changes the tensor -> MISS.
 
+Motion Trace (Ref2VA) follows the same rule with two extra encoder-visible
+inputs, verified in MiniMaxH3ReferenceToVideo.execute():
+
+    tokens = clip.tokenize(prompt, minimax_ref_items=[identity_image, video])
+
+  * the identity image is scaled by the generation's pixel area when
+    ref_image_size="match"      -> resolution changes MISS;
+  * the source video is truncated to the generation's frame count
+    (`frames[:frame_count]`)    -> duration changes MISS, unlike the other two
+    modes, where `length` never reaches tokenize().
+
+Both are why Motion Trace Draft and Final share a resolution AND a duration.
+
 That last line is why the presets below keep Image Trace Draft and Final at
 the *same* megapixels and vary only the step count: the Final of a selected
 draft is then a pure cache HIT (no ~60 s re-encode) *and* is encoded from
@@ -34,12 +47,34 @@ from . import config
 
 T2V_TEMPLATE = os.path.join(config.TEMPLATE_DIR, "t2v_base.json")
 I2V_TEMPLATE = os.path.join(config.TEMPLATE_DIR, "i2v_base.json")
+MOTION_TEMPLATE = os.path.join(config.TEMPLATE_DIR, "motion_trace_base.json")
 
 MODE_IMAGE_TRACE = "image_trace"
+MODE_MOTION_TRACE = "motion_trace"
 MODE_PROMPT_CINEMA = "prompt_cinema"
-MODES = (MODE_IMAGE_TRACE, MODE_PROMPT_CINEMA)
+MODES = (MODE_IMAGE_TRACE, MODE_MOTION_TRACE, MODE_PROMPT_CINEMA)
 
+TEMPLATES = {
+    MODE_IMAGE_TRACE: I2V_TEMPLATE,
+    MODE_MOTION_TRACE: MOTION_TEMPLATE,
+    MODE_PROMPT_CINEMA: T2V_TEMPLATE,
+}
+
+# Image Trace / Prompt Cinema use the FL2VA node; Motion Trace uses Ref2VA.
 CACHED_NODE = "MiniMaxH3CLIPCachedFL2VA"
+CACHED_NODE_REF2VA = "MiniMaxH3CLIPCachedRef2VA"
+CACHED_NODES = (CACHED_NODE, CACHED_NODE_REF2VA)
+# Motion Trace loads a different diffusion checkpoint. Note both files are
+# 20,970,379,616 bytes, so only the sha256 distinguishes them.
+REF2VA_MODEL = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+
+# Motion Trace addresses its references by the tags the model was trained on:
+# the stock node presents images then videos, 1-based per type, so the identity
+# image is <Picture 1> and the source video is <Video 1>. Prompting with those
+# tags is how the roles are actually communicated to H3 -- see the node
+# docstring in comfy_extras/nodes_minimax_h3.py.
+IDENTITY_TAG = "<Picture 1>"
+MOTION_TAG = "<Video 1>"
 REF_STRENGTH_NODE = "H3StudioReferenceStrength"
 REF_STRENGTH_ID = "h3s_refstrength"
 
@@ -59,6 +94,14 @@ PRESETS = {
         "note": "same resolution as Final on purpose -> Final is a cache HIT",
     },
     (MODE_IMAGE_TRACE, "final"): {
+        "megapixels": 0.4, "steps": 30, "sampler": "res_multistep", "scheduler": "simple",
+        "note": "validated baseline resolution; cache HIT from the selected draft",
+    },
+    (MODE_MOTION_TRACE, "draft"): {
+        "megapixels": 0.4, "steps": 12, "sampler": "res_multistep", "scheduler": "simple",
+        "note": "same resolution as Final -> Final is a cache HIT (Ref2VA re-encode is costly)",
+    },
+    (MODE_MOTION_TRACE, "final"): {
         "megapixels": 0.4, "steps": 30, "sampler": "res_multistep", "scheduler": "simple",
         "note": "validated baseline resolution; cache HIT from the selected draft",
     },
@@ -92,9 +135,22 @@ class GraphError(ValueError):
 
 
 def load_template(mode):
-    path = I2V_TEMPLATE if mode == MODE_IMAGE_TRACE else T2V_TEMPLATE
+    path = TEMPLATES.get(mode)
+    if not path:
+        raise GraphError("unknown mode: %s" % mode)
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def cached_node_id(prompt):
+    """Id of whichever cached conditioning node this graph uses."""
+    for class_type in CACHED_NODES:
+        ids = find_ids(prompt, class_type)
+        if len(ids) == 1:
+            return ids[0]
+        if len(ids) > 1:
+            raise GraphError("%d %s nodes in one graph" % (len(ids), class_type))
+    raise GraphError("no cached MiniMax H3 conditioning node in the graph")
 
 
 def find_ids(prompt, class_type):
@@ -184,11 +240,12 @@ def insert_reference_strength(prompt, strength):
     It is deliberately downstream of the cached node, so the fingerprint never
     sees it: changing Reference Strength is always a cache HIT.
     """
-    cached = one_id(prompt, CACHED_NODE)
+    cached = cached_node_id(prompt)
     guider = one_id(prompt, "BasicGuider")
     cond_link = prompt[guider]["inputs"]["conditioning"]
     if not _is_link(cond_link) or cond_link[0] != cached:
-        raise GraphError("BasicGuider.conditioning is not fed by %s" % CACHED_NODE)
+        raise GraphError("BasicGuider.conditioning is not fed by %s"
+                         % prompt[cached]["class_type"])
     prompt[REF_STRENGTH_ID] = {
         "class_type": REF_STRENGTH_NODE,
         "inputs": {
@@ -210,7 +267,8 @@ def preset_for(mode, quality):
 
 
 def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
-          aspect_ratio=ASPECT_RATIOS[0], image=None, reference_strength=None,
+          aspect_ratio=ASPECT_RATIOS[0], image=None, source_video=None,
+          reference_strength=None, ref_image_size="match",
           filename_prefix="video/H3Studio", overrides=None):
     """Return (api_prompt, resolved_params) for one generation."""
     if mode not in MODES:
@@ -219,13 +277,20 @@ def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
         raise GraphError("prompt is required")
     if mode == MODE_IMAGE_TRACE and not image:
         raise GraphError("image_trace requires a source image")
+    if mode == MODE_MOTION_TRACE:
+        if not image:
+            raise GraphError("motion_trace requires an identity image")
+        if not source_video:
+            raise GraphError("motion_trace requires a source video")
+        if ref_image_size not in ("match", "max"):
+            raise GraphError("ref_image_size must be 'match' or 'max'")
 
     preset = preset_for(mode, quality)
     if overrides:
         preset.update({k: v for k, v in overrides.items() if v is not None})
 
     p = load_template(mode)
-    cached = one_id(p, CACHED_NODE)
+    cached = cached_node_id(p)
     p[cached]["inputs"]["prompt"] = prompt_text
 
     res = one_id(p, "ResolutionSelector")
@@ -244,11 +309,14 @@ def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
 
     p[one_id(p, "SaveVideo")]["inputs"]["filename_prefix"] = filename_prefix
 
-    if mode == MODE_IMAGE_TRACE:
+    if mode in (MODE_IMAGE_TRACE, MODE_MOTION_TRACE):
         p[one_id(p, "LoadImage")]["inputs"]["image"] = image
+    if mode == MODE_MOTION_TRACE:
+        p[one_id(p, "LoadVideo")]["inputs"]["file"] = source_video
+        p[cached]["inputs"]["ref_image_size"] = ref_image_size
 
     strength = None
-    if mode == MODE_IMAGE_TRACE and reference_strength is not None:
+    if mode in (MODE_IMAGE_TRACE, MODE_MOTION_TRACE) and reference_strength is not None:
         strength = float(reference_strength)
         if not REF_STRENGTH_MIN <= strength <= REF_STRENGTH_MAX:
             raise GraphError("reference_strength must be within [%s, %s]"
@@ -260,7 +328,9 @@ def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
         "duration": float(duration), "aspect_ratio": aspect_ratio,
         "megapixels": float(preset["megapixels"]), "steps": int(preset["steps"]),
         "sampler": preset["sampler"], "scheduler": preset["scheduler"],
-        "image": image, "reference_strength": strength,
+        "image": image, "source_video": source_video,
+        "reference_strength": strength,
+        "ref_image_size": ref_image_size if mode == MODE_MOTION_TRACE else None,
         "filename_prefix": filename_prefix,
     }
     return p, params
@@ -277,12 +347,16 @@ def expected_cache(mode, prev_params, params):
     if prev_params.get("prompt") != params.get("prompt"):
         return "MISS"
     if mode == MODE_IMAGE_TRACE:
-        if prev_params.get("image") != params.get("image"):
-            return "MISS"
-        if prev_params.get("aspect_ratio") != params.get("aspect_ratio"):
-            return "MISS"
-        if prev_params.get("megapixels") != params.get("megapixels"):
-            return "MISS"
+        for key in ("image", "aspect_ratio", "megapixels"):
+            if prev_params.get(key) != params.get(key):
+                return "MISS"
+    elif mode == MODE_MOTION_TRACE:
+        # duration is encoder-visible here (it truncates the reference video),
+        # and so is ref_image_size (it selects how the identity image is scaled)
+        for key in ("image", "source_video", "aspect_ratio", "megapixels",
+                    "duration", "ref_image_size"):
+            if prev_params.get(key) != params.get(key):
+                return "MISS"
     return "HIT"
 
 
