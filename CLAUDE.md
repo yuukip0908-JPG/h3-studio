@@ -1,42 +1,76 @@
-# Claude Code contract — H3 Cloud Reproduction
+# Claude Code contract — H3 Cloud Reproduction / H3 Studio
 
 ## Mission
-RunPod等のLinux/NVIDIA環境で MiniMax H3 + CLIPCached baseline を再現し、Stock → MISS → full restart → HIT を証明する。
+1. **v1 baseline（達成済み・凍結）** — RunPod等のLinux/NVIDIA環境で MiniMax H3 + CLIPCached
+   baseline を再現し、Stock → MISS → full restart → HIT を証明する。
+   証跡: `results/BASELINE_READY`、タグ `v1-baseline`。
+2. **v2 H3 Studio（進行中）** — baselineを壊さず、Image Trace と Prompt Cinema の
+   2用途を普段使いできるUIに変える。
 
-## 絶対順序
-1. scripts/preflight.sh
-2. scripts/install_comfyui.sh
-3. scripts/download_models.sh + verify
-4. stock H3 workflowで1本生成
-5. stock成功後のみ scripts/enter_cache_phase.sh を実行してCLIPCachedを導入
-6. MISSとcache artifact作成を確認
-7. ComfyUI processを完全停止
-8. 同じ環境を再起動
-9. encoder-visible inputを変えずHITを確認
-10. docs/VALIDATION_PLAN.mdのmatrixを実行
-11. results/VALIDATION_LOG.mdを埋める
-12. scripts/snapshot_env.sh
+## 絶対原則
+**baselineが最優先。v2の機能はすべて捨てられる。baselineは捨てられない。**
 
-## Baseline中にしないこと
-- H3本体の再実装
-- CLIPCached内部改造
-- git pull / ComfyUI最新版化
-- blanket pip upgrade
-- H3-Optimizations / sparse attention / turbo / motion context追加
-- encoderのGGUF置換
+迷ったら: 複雑さより単純さ / 機能数より信頼性 / 速度よりFinal品質 /
+全動画仕上げよりSelect後仕上げ / 新規実装より既存成功基盤の維持。
+
+## してはいけないこと
+- ComfyUIのバージョン更新（v0.34.2 `169fcf35` 固定）
+- H3本体の再実装・別実装への置換
+- INT8 ConvRotから別量子化への変更
+- CLIPCached内部改造・削除（`f17ba8f` 固定）
+- git pull / blanket pip upgrade / CUDA・torchの不用意な更新
+- baseline workflow (`workflows/READY_TO_USE_*`, `H3_STOCK_*`) の破壊的上書き
 - 同じcache directoryを複数ComfyUI processで共有
+- Network Volume (`olmj77x4pc`) の削除、Podのterminate
+- secret（RunPod API key / SSH private key）のログ出力・ファイル書き込み・commit
+- ユーザーへのターミナル操作要求（ssh / pip / git clone / bash の代行はこちらで行う）
+
+未検証の値を既定にしない。A/Bで勝つまでは Optional / Experimental のままにする。
+
+## v1 baseline 手順（変更なし）
+preflight → install_comfyui → download_models + verify → stock H3生成 →
+enter_cache_phase → MISS → 完全再起動 → HIT → matrix → snapshot_env
+
+## v2 の構造
+```
+Mac: studio/ (H3 Studio, 標準ライブラリのみ, 127.0.0.1:8010)
+        │ HTTP/WS ──▶ Pod: ComfyUI :8188（無改変の baseline）
+        └ RunPod REST ──▶ Pod start/stop（terminateはしない）
+```
+Studio が Mac 側にあるのは**論理的強制**。Pod上のbackendはPodと共に停止するため
+「START GPU」を提供できない。
+
+## Cache expectation（ソース確認済み・推測禁止）
+fingerprint = prompt + tokenize kwargs（keyframe画像テンソル）+ encoder同一性 + ABI。
+
+| 変更 | Image Trace (I2V) | Prompt Cinema (T2V) |
+|---|---|---|
+| seed / sampler / scheduler / steps / duration | HIT | HIT |
+| Reference Strength（cached nodeの下流） | HIT | 効果なし |
+| 解像度・aspect | **MISS**（keyframeをw×hにresize） | **HIT**（images=[]） |
+| prompt / 元画像 / encoder | MISS | MISS |
+
+この非対称性が preset を決めている（`studio/graph.py` PRESETS）。
+Image Trace の Draft と Final は解像度を揃える — Finalをcache HITにし、かつ
+選んだDraftと同一ピクセルからencodeするため。
 
 ## 切り分け
-- ComfyUI起動不可 → runtime
+- Studio起動不可 → Mac側。`results/logs/studio.log`。Podは無関係
+- GPU情報がUNKNOWN → RunPod API / Keychain。`scripts/runpod_status.sh`
+- ComfyUI health不可 → Pod側。`scripts/pod_ssh.sh` → `doctor.sh`
+- 生成が400 → グラフ/ノード未登録。`/api/doctor`
 - stock H3不可 → ComfyUI/H3/model。cacheを触らない
-- stock成功・cached node不可 → custom node
 - MISS成功・cacheなし → persistence/write
-- cacheあり・restart後MISS → fingerprint/environment drift
+- cacheあり・restart後MISS → fingerprint/environment drift（encoderのctime、ComfyUI版）
 - HIT成功・sampling失敗 → downstream H3
 
-## Cache expectation
-MISS: prompt変更、encoder変更、encoder-visible image/reference変更
-HIT: seed変更、sampler/scheduler/steps変更、downstream diffusion LoRA変更
+## ロールバック
+- ローカル: `scripts/rollback_v1.sh`（タグ `v1-baseline`）/ `~/Downloads/H3_CLOUD_REPRO_BACKUPS/*.tar.gz`
+- Pod venv: `scripts/venv_snapshot.sh` → `scripts/venv_rollback.sh <label>`
+- 実験導入は `scripts/install_experiment.sh`（スナップショット必須、torchはconstraintsで固定）
 
 ## 完了条件
-Stock成功 / MISS成功 / persistent cache作成 / full restart / HIT成功 / matrix成功 / snapshot保存。
+- v1: Stock成功 / MISS成功 / persistent cache / full restart / HIT / matrix / snapshot → **達成済み**
+- v2: `docs/V2_KNOWN_LIMITATIONS.md` §1 の未検証項目を実機で埋め、
+  `docs/V2_AB_TESTS.md` の表を実測で埋め、`results/V2_READY` を作成する。
+  実測せずに `V2_READY` を作らない。

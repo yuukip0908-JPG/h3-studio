@@ -209,7 +209,15 @@ class JobManager:
                                               "i2v_base.json" if mode == graph.MODE_IMAGE_TRACE
                                               else "t2v_base.json"))
 
+        # Snapshot the cache BEFORE anything is queued, and publish it before
+        # the first submit. _classify_cache() advances this value from the
+        # poller thread as each generation lands; writing it after the submit
+        # loop would let a fast first job be overwritten by the stale
+        # pre-batch snapshot, and the second generation would then be
+        # misreported as a MISS.
         cache_before = self._cache_fingerprints()
+        batch.meta["cache_before"] = sorted(cache_before) if cache_before is not None else None
+
         for g in gens:
             try:
                 g.prompt_id = self.client.submit(g.api_prompt, self.client_id)
@@ -219,7 +227,6 @@ class JobManager:
                 history.update_generation(g.id, prompt_id=g.prompt_id)
             except comfy_client.ComfyError as e:
                 self._fail(g, str(e))
-        batch.meta["cache_before"] = sorted(cache_before) if cache_before is not None else None
         return batch
 
     def _last_encoder_params(self, mode):

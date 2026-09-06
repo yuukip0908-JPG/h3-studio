@@ -243,3 +243,78 @@ Deliverable workflow re-run from the file itself after the last restart: status 
 `scripts/snapshot_env.sh`: written to `results/environment_snapshot/` (uname, os-release, nvidia-smi, gpu.csv, pip_freeze, torch, ComfyUI and CLIPCached commits, model sizes, launch command, cache dir, manifest).
 
 Cache directory holds 4 entries / 13 MB. Baseline complete: **YES**.
+
+---
+
+## Session 2026-09-06 (Claude Code) — H3 Studio v2 の構築
+
+方針確認: (1) **今回は Pod を起動しない**（課金ゼロ）、(2) venv への実験導入は
+pip freeze バックアップ後に行う。→ GPU 不要な範囲をすべて完成させ、
+GPU 依存の A/B は実行可能な形で準備した。
+
+### PHASE 1 — 観測
+| 項目 | 実測 |
+|---|---|
+| Pod `ufhtfdg9ulv3fj` | **EXITED**（課金停止中）。Volume `olmj77x4pc` 健在 |
+| git | **リポジトリではなかった** → ロールバックにタグが使えない |
+| baseline | `results/BASELINE_READY` 健全（stock/MISS/restart HIT/matrix/doctor すべて PASS） |
+| 既存資産 | `h3_run.py` + `workflow_to_api.py` が subgraph 展開・API 投入・WS 進捗・HIT/MISS 検出を実装済み |
+| flattened API prompt | `results/runs/*/api_prompt.json` に実行実績あり → グラフを書き起こす必要なし |
+| I2V vs T2V | `LoadImage`(145) + `first_frame` リンクの差のみ |
+| secret 走査 | リポジトリ内に値なし（変数名のみ）→ git 化して安全 |
+
+### PHASE 2 — ロールバックポイント
+- tar: `~/Downloads/H3_CLOUD_REPRO_BACKUPS/H3_CLOUD_REPRO_v1_baseline_20260906T065833Z.tar.gz`
+- git: `git init` → 全ファイル commit → タグ **`v1-baseline` (`47fcabb`)**
+
+### ソース調査（推測せず確認した 2 点）
+1. **`minimax_visual_cond_noise_aug` は ComfyUI v0.34.2 に実在**
+   (`comfy/model_base.py:2193`)。ただし標準ノードが一切設定しないため到達不能だった。
+   `comfy/ldm/minimax/model.py:502` で `r = aug*r + (1-aug)*noise`（`aug<1.0` のときのみ）。
+   → **1.0 = 参照そのまま（最大忠実）**、下げるほど自由度。既定 0.999。
+   → `cond_video_latents` がある時のみ効く → **T2V では無効**（Image Trace 専用で正しい）。
+2. **fingerprint の正確な範囲**（CLIPCached `f17ba8f` `fingerprint.py`）
+   = prompt + tokenize kwargs（keyframe 画像テンソル）+ encoder 同一性 + ABI。
+   `nodes_minimax_h3.py` は `tokenize(prompt, images=[resize(first_frame, w, h)])` を呼ぶ。
+   → `length`(duration) は tokenize に渡らない → **duration 変更は常に HIT**
+   → T2V は `images=[]` → **解像度非依存**
+   → I2V は解像度で keyframe テンソルが変わる → **解像度変更は MISS**
+
+この非対称性から preset を決定（Image Trace は Draft と Final の解像度を揃え、
+Final を cache HIT かつ Draft と同一ピクセル由来にする）。
+
+### PHASE 3-12 — 実装
+`studio/`（標準ライブラリのみ、Mac 側 127.0.0.1:8010）、`comfy_nodes/h3studio/`、
+4 本の pipeline workflow、start/stop/install/snapshot/rollback/ab_test/v2_validate スクリプト。
+既存 WebUI (`zenryokukikai/minimax-h3-webui`, MIT) は **CLIPCached 非対応**で
+ノードグラフを動的生成するため、アーキテクチャのみ採用しコードは不採用。
+
+### PHASE 13 — 検証（GPU なし）
+自動テスト **30/30 PASS**（`results/studio_offline_validation/test_run.txt`）。
+mock ComfyUI は実 RFC 6455 WebSocket サーバを持ち、ComfyUI と同じ**単一ワーカー**で
+キューを処理する。
+
+ブラウザ実操作で確認:
+- Prompt Cinema ×4 → `#1 MISS 6.4s` / `#2-4 HIT 3.2s`（encode 3 秒分の差）
+- SELECT（排他） → FINALIZE → **1 本のみ**・同一 seed・**HIT 3.1s**
+- EXPORT → mp4 + metadata json
+- 画像アップロード 1.38 MB → multipart → Image Trace 生成成功
+- GPU パネルは実 RunPod API 値（`EXITED` / `$0.840/hr` / `olmj77x4pc`）
+
+**検出・修正した実バグ 2 件**
+1. duration が無視されていた。入力リゾルバが `ComfyMathExpression` で停止し、
+   値を式ノードへ書いていた（設定できているように見えて効かない状態）。
+   スイッチと式を貫通するリゾルバに修正し、Primitive 以外への書き込みを例外にした。
+2. mock が prompt ごとにスレッドを起動しており、実 ComfyUI の単一ワーカーと異なるため
+   MISS→HIT テストが偶然通っていた。単一キューに修正しテストの意味を回復。
+
+### 未了（GPU 必須）
+START/STOP GPU 全経路、RunPod proxy 経由の疎通（WS upgrade 可否含む）、
+実 H3 生成・実 HIT/MISS・実 Final、Reference Strength の実効果、
+Face Refine / SageAttention / RTX VSR の導入と A/B。
+
+→ `bash scripts/v2_validate.sh` が全項目を実測し、FAIL=0 のときだけ
+   `results/V2_READY` を作成する。実測なしにマーカーは作らない。
+
+baseline への影響: **なし**（ComfyUI / CLIPCached / モデル / baseline workflow /
+Pod venv すべて無変更。Pod を起動していないため Pod 側への追加も現時点でゼロ）。

@@ -1,4 +1,59 @@
-# H3_CLOUD_REPRO
+# H3_CLOUD_REPRO / H3 STUDIO v2
+
+MiniMax H3 + ComfyUI-MiniMaxH3-CLIPCached をクラウドGPUで再現した baseline (v1) と、
+その上で普段使いするための **H3 Studio v2** を含む。
+
+- **v1 baseline** — 再現性の担保。`results/BASELINE_READY` が証跡。タグ `v1-baseline`。
+- **v2 H3 Studio** — Image Trace / Prompt Cinema の 2 用途を、ComfyUI の
+  ノードグラフに触れずに回すための Mac 側 UI。baseline は無改変。
+
+## H3 Studio をすぐ使う
+
+```bash
+bash scripts/start_studio.sh
+```
+
+`http://127.0.0.1:8010/` が開く。Studio 自体は GPU を使わないので**この時点では課金されない**。
+UI 右上の **START GPU** で Pod 起動 → ComfyUI 起動 → READY まで自動。
+終わったら **STOP GPU** で課金停止（Network Volume は保持）。
+
+| 手順書 | 内容 |
+|---|---|
+| [docs/V2_OPERATION.md](docs/V2_OPERATION.md) | 毎日の操作手順 |
+| [docs/V2_ARCHITECTURE.md](docs/V2_ARCHITECTURE.md) | 構成とキャッシュ設計の根拠 |
+| [docs/V2_AB_TESTS.md](docs/V2_AB_TESTS.md) | A/B の手順と結果表 |
+| [docs/V2_KNOWN_LIMITATIONS.md](docs/V2_KNOWN_LIMITATIONS.md) | 制約・未検証範囲 |
+| [docs/V2_RECOVERY.md](docs/V2_RECOVERY.md) | 復旧・ロールバック |
+| [docs/V2_IMPLEMENTATION_REPORT.md](docs/V2_IMPLEMENTATION_REPORT.md) | v2 実装レポート |
+
+### 2 つのパイプライン
+
+```
+INPUT → DRAFT → VARIATIONS → SELECT → FINAL → EXPORT
+```
+
+- **Image Trace** — 1 枚の画像から、人物・顔・服・雰囲気を保って動画化（I2V）。
+  Reference Strength で元画像への忠実度を調整できる。
+- **Prompt Cinema** — 画像なし。Prompt から世界観・カメラワークを探索（T2V）。
+
+Draft は安く速く候補を出すためのもの（12 steps、後処理なし）。
+Final は **SELECT した 1 本にだけ**計算資源を使う（30 steps、任意で Face Refine / RTX VSR）。
+
+### キャッシュの効き方（ソースで確認済み）
+
+| 変更 | Image Trace | Prompt Cinema |
+|---|---|---|
+| seed / steps / sampler / scheduler / duration | HIT | HIT |
+| Reference Strength | HIT | 効果なし |
+| 解像度・aspect | **MISS** | HIT |
+| prompt / 元画像 / encoder | MISS | MISS |
+
+Draft と Final は同一プロンプトなので、**Final は原則 cache HIT**（再エンコードなし）。
+根拠は [docs/V2_ARCHITECTURE.md](docs/V2_ARCHITECTURE.md) §3。
+
+---
+
+## v1 baseline（再現手順）
 
 MiniMax H3 + ComfyUI-MiniMaxH3-CLIPCached をクラウドGPUで再現するための baseline package。
 

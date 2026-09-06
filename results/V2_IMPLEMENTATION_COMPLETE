@@ -1,0 +1,34 @@
+H3 STUDIO V2 IMPLEMENTATION COMPLETE (GPU VALIDATION PENDING)
+created: 2026-09-06T07:30:54Z
+commit: 534158a
+baseline: v1-baseline (47fcabb) UNCHANGED - results/BASELINE_READY still valid
+
+DONE (verified offline, no GPU, no billing):
+  studio backend + UI              PASS  (stdlib only, 127.0.0.1:8010)
+  graph builder / presets          PASS  (retargets the validated baseline graph)
+  cache model vs CLIPCached source PASS  (30 automated tests)
+  stdlib WebSocket client          PASS  (against a real RFC 6455 server)
+  Image Trace x4 -> select -> final PASS (mock ComfyUI + browser)
+  Prompt Cinema x4 -> select -> final PASS
+  MISS then 3x HIT                 PASS  (serialized queue, as real ComfyUI)
+  Final = 1 job only, cache HIT    PASS
+  multipart image upload           PASS  (1.38 MB PNG end to end)
+  export + metadata                PASS
+  history provenance               PASS
+  RunPod status via real API       PASS  (pod EXITED, $0.840/hr, volume olmj77x4pc)
+  cost guard safety rules          PASS  (never stops while busy or state unknown)
+  rollback points                  PASS  (git tag + tarball + venv snapshot tooling)
+
+PENDING (requires the Pod to be RUNNING - this session deliberately did not start it):
+  START GPU / STOP GPU full path
+  ComfyUI over the RunPod proxy (incl. whether WebSocket upgrades pass)
+  real H3 generation, real cache HIT/MISS, real Final
+  Reference Strength node registration and visual effect
+  Face Refine / SageAttention / RTX VSR install + A/B
+
+TO COMPLETE:
+  bash scripts/v2_validate.sh
+  -> measures every pending item above and writes results/V2_READY only if FAIL=0
+  then fill docs/V2_AB_TESTS.md with measured A/B results.
+
+results/V2_READY is intentionally NOT created: it must be earned by measurement.

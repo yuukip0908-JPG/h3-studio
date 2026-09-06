@@ -16,6 +16,7 @@ import base64
 import hashlib
 import json
 import os
+import queue as _queue
 import struct
 import threading
 import time
@@ -54,6 +55,23 @@ class MockState:
         self.fail_next = None      # set to a message to make the next job fail
         self.cache_route = True    # flip off to simulate a Pod without the route
         self.submitted = []        # every api prompt we received, for assertions
+        # Real ComfyUI drains its prompt queue with a SINGLE worker: job N+1
+        # does not start until job N has finished. That serialisation is what
+        # makes variation 1 a MISS and variations 2-4 real cache HITs, so the
+        # mock has to reproduce it or the cache tests would pass by accident.
+        self.queue = _queue.Queue()
+        self.worker = threading.Thread(target=self._drain, daemon=True)
+        self.worker.start()
+
+    def _drain(self):
+        while True:
+            item = self.queue.get()
+            if item is None:
+                return
+            try:
+                run_job(*item)
+            except Exception:  # noqa: BLE001 - a mock job must not kill the worker
+                pass
 
     def broadcast(self, message):
         payload = json.dumps(message).encode("utf-8")
@@ -218,7 +236,8 @@ class Handler(BaseHTTPRequestHandler):
                 h = STATE.history.get(pid)
             return self._json({pid: h} if h else {})
         if path == "/queue":
-            return self._json({"queue_running": [], "queue_pending": []})
+            return self._json({"queue_running": [], "queue_pending": [],
+                               "exec_info": {"queue_remaining": STATE.queue.qsize()}})
         if path == "/h3_cache_manager/check":
             if not STATE.cache_route:
                 return self._json({"error": "not found"}, 404)
@@ -256,7 +275,7 @@ class Handler(BaseHTTPRequestHandler):
             with STATE.lock:
                 STATE.jobs[pid] = prompt
                 STATE.submitted.append(prompt)
-            threading.Thread(target=run_job, args=(pid, prompt), daemon=True).start()
+            STATE.queue.put((pid, prompt))
             return self._json({"prompt_id": pid, "number": len(STATE.jobs), "node_errors": {}})
 
         if path == "/upload/image":

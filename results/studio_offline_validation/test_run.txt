@@ -1,0 +1,45 @@
+H3 Studio v2 -- offline validation (no GPU, no Pod, no billing)
+date: 2026-09-06T07:23:42Z
+host: Darwin 25.6.0 arm64  python: Python 3.12.14
+commit: 534158a
+
+test_auto_stop_setting_round_trips (studio.tests.test_studio.ApiServerTests.test_auto_stop_setting_round_trips) ... ok
+test_bad_requests_are_rejected_with_400 (studio.tests.test_studio.ApiServerTests.test_bad_requests_are_rejected_with_400) ... ok
+test_doctor_reports_the_studio_side_checks (studio.tests.test_studio.ApiServerTests.test_doctor_reports_the_studio_side_checks) ... ok
+test_generate_select_finalize_over_http (studio.tests.test_studio.ApiServerTests.test_generate_select_finalize_over_http) ... ok
+test_index_and_config_are_served (studio.tests.test_studio.ApiServerTests.test_index_and_config_are_served) ... ok
+test_status_reports_gpu_and_cost (studio.tests.test_studio.ApiServerTests.test_status_reports_gpu_and_cost) ... ok
+test_stop_gpu_refuses_while_a_job_is_running (studio.tests.test_studio.ApiServerTests.test_stop_gpu_refuses_while_a_job_is_running) ... ok
+test_guard_is_off_by_default (studio.tests.test_studio.CostGuardTests.test_guard_is_off_by_default) ... ok
+test_guard_never_stops_while_busy (studio.tests.test_studio.CostGuardTests.test_guard_never_stops_while_busy) ... ok
+test_guard_treats_unknown_state_as_busy (studio.tests.test_studio.CostGuardTests.test_guard_treats_unknown_state_as_busy) ... ok
+test_cache_result_is_unknown_when_the_route_is_missing (studio.tests.test_studio.EndToEndTests.test_cache_result_is_unknown_when_the_route_is_missing)
+No silent lying: an unavailable probe reports UNKNOWN, not HIT. ... ok
+test_execution_error_is_recorded_not_swallowed (studio.tests.test_studio.EndToEndTests.test_execution_error_is_recorded_not_swallowed) ... ok
+test_export_writes_the_video_and_its_metadata (studio.tests.test_studio.EndToEndTests.test_export_writes_the_video_and_its_metadata) ... ok
+test_history_records_the_provenance_of_every_video (studio.tests.test_studio.EndToEndTests.test_history_records_the_provenance_of_every_video) ... ok
+test_image_trace_flow_and_resolution_miss (studio.tests.test_studio.EndToEndTests.test_image_trace_flow_and_resolution_miss) ... ok
+test_missing_custom_node_falls_back_instead_of_failing (studio.tests.test_studio.EndToEndTests.test_missing_custom_node_falls_back_instead_of_failing)
+A Pod without the Studio node must still generate. ... ok
+test_prompt_cinema_four_variations_one_miss_three_hits (studio.tests.test_studio.EndToEndTests.test_prompt_cinema_four_variations_one_miss_three_hits) ... ok
+test_reference_strength_change_is_a_cache_hit (studio.tests.test_studio.EndToEndTests.test_reference_strength_change_is_a_cache_hit) ... ok
+test_select_then_final_reuses_the_cache_and_runs_once (studio.tests.test_studio.EndToEndTests.test_select_then_final_reuses_the_cache_and_runs_once) ... ok
+test_duration_resolves_through_the_frame_expression (studio.tests.test_studio.GraphBuilderTests.test_duration_resolves_through_the_frame_expression) ... ok
+test_expected_cache_truth_table (studio.tests.test_studio.GraphBuilderTests.test_expected_cache_truth_table) ... ok
+test_image_trace_draft_and_final_share_a_resolution (studio.tests.test_studio.GraphBuilderTests.test_image_trace_draft_and_final_share_a_resolution)
+The preset design that makes a Final a cache HIT. ... ok
+test_image_trace_requires_an_image (studio.tests.test_studio.GraphBuilderTests.test_image_trace_requires_an_image) ... ok
+test_prompt_cinema_targets_the_right_nodes (studio.tests.test_studio.GraphBuilderTests.test_prompt_cinema_targets_the_right_nodes) ... ok
+test_reference_strength_is_downstream_of_the_cached_node (studio.tests.test_studio.GraphBuilderTests.test_reference_strength_is_downstream_of_the_cached_node) ... ok
+test_reference_strength_is_rejected_outside_its_range (studio.tests.test_studio.GraphBuilderTests.test_reference_strength_is_rejected_outside_its_range) ... ok
+test_steps_resolve_through_the_turbo_switch (studio.tests.test_studio.GraphBuilderTests.test_steps_resolve_through_the_turbo_switch)
+steps must land on the PrimitiveInt the switch actually selects. ... ok
+test_strip_reference_strength_restores_the_original_wiring (studio.tests.test_studio.GraphBuilderTests.test_strip_reference_strength_restores_the_original_wiring) ... ok
+test_client_receives_real_frames (studio.tests.test_studio.WebSocketClientTests.test_client_receives_real_frames) ... ok
+test_large_frame_uses_extended_length (studio.tests.test_studio.WebSocketClientTests.test_large_frame_uses_extended_length)
+Exercise the 126/2-byte length path, not just short frames. ... ok
+
+----------------------------------------------------------------------
+Ran 30 tests in 46.491s
+
+OK

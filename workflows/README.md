@@ -10,3 +10,49 @@ Baseline files generated from them (2026-09-05; validated against ComfyUI v0.34.
 - `input/transparent_rgb_gaming_mouse.png` — official example input (copied to `ComfyUI/input` by `scripts/install_workflows.sh`).
 
 Headless use: `python scripts/h3_run.py --workflow workflows/READY_TO_USE_H3_CLIPCACHED.json --name <run> ...` (see `scripts/h3_run.py --help`). UI use: the files are copied to `ComfyUI/user/default/workflows/` and appear in the sidebar **Workflows**.
+
+## H3 Studio v2 pipeline workflows (2026-09-06)
+
+The four pipelines the Studio runs, in **ComfyUI API format** (directly submittable to
+`POST /prompt`, and what `studio/graph.py` produces at run time):
+
+| file | mode | megapixels | steps | Reference Strength |
+|---|---|---|---|---|
+| `IMAGE_TRACE_DRAFT.api.json` | I2V | 0.40 | 12 | 0.999 |
+| `IMAGE_TRACE_FINAL.api.json` | I2V | 0.40 | 30 | 0.999 |
+| `PROMPT_CINEMA_DRAFT.api.json` | T2V | 0.25 | 12 | — (no effect in T2V) |
+| `PROMPT_CINEMA_FINAL.api.json` | T2V | 0.40 | 30 | — |
+
+They are **generated from** `studio/templates/{t2v,i2v}_base.json`, which are the
+flattened API prompts the baseline actually executed (captured from `results/runs/`).
+Nothing was re-authored by hand, so they cannot drift from the validated graph.
+
+Regenerate after changing `studio/graph.py` PRESETS:
+
+```bash
+python3 -c "
+import json,sys; sys.path.insert(0,'.')
+from studio import graph
+for name,mode,q in [('IMAGE_TRACE_DRAFT',graph.MODE_IMAGE_TRACE,'draft'),
+                    ('IMAGE_TRACE_FINAL',graph.MODE_IMAGE_TRACE,'final'),
+                    ('PROMPT_CINEMA_DRAFT',graph.MODE_PROMPT_CINEMA,'draft'),
+                    ('PROMPT_CINEMA_FINAL',graph.MODE_PROMPT_CINEMA,'final')]:
+    kw=dict(quality=q,duration=2.0,aspect_ratio=graph.ASPECT_RATIOS[0],filename_prefix='video/'+name)
+    if mode==graph.MODE_IMAGE_TRACE:
+        kw.update(image='transparent_rgb_gaming_mouse.png',reference_strength=graph.REF_STRENGTH_DEFAULT)
+    api,_=graph.build(mode,'placeholder prompt',42,**kw)
+    json.dump(api,open('workflows/%s.api.json'%name,'w'),indent=2,ensure_ascii=False)
+"
+```
+
+Note: `IMAGE_TRACE_*.api.json` reference `H3StudioReferenceStrength`, which needs
+`bash scripts/install_h3studio_node.sh` on the Pod. The Studio strips that node
+automatically when it is not installed; a raw submission of these files would be
+rejected with `value_not_in_list`.
+
+The Draft and Final of a pipeline differ **only** in `steps` (and, for Prompt Cinema,
+`megapixels`), so the Final of a selected Draft is a CLIPCached HIT. See
+`docs/V2_ARCHITECTURE.md` §3.
+
+The v1 baseline UI workflows above are unchanged and remain the ones to open in the
+ComfyUI GUI for debugging.
