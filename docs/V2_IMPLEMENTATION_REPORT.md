@@ -198,9 +198,97 @@ mock ComfyUI（**実 RFC 6455 WebSocket サーバ含む**）に対して実行:
 すべて実行手順とハーネスは用意済み（`scripts/ab_test.sh`,
 `scripts/install_experiment.sh`, `docs/V2_AB_TESTS.md` の空表）。
 
+## 6.5 継続セッション（2026-09-06 後半）— Motion Trace 追加と実機検証
+
+### 実機でしか出なかった不具合 3 件
+
+Phase 2 のスモークテストで、**mock では全件 PASS していたのに実機で Studio が
+まったく動かない**不具合が 3 件出た。
+
+1. **Cloudflare 403（致命的）**
+   RunPod の Pod HTTP proxy は Cloudflare 経由で、既定の `Python-urllib/3.x`
+   User-Agent に `403 error code: 1010` を返す。curl は通り urllib は通らない。
+   Studio → ComfyUI の全リクエストが失敗していた。
+   → 全 HTTP + WebSocket handshake に明示 User-Agent。
+     **mock 側も既定 UA を 403 で弾く**ようにして退行を検出可能にした。
+
+2. **SSH ポートが再割り当てされる**
+   Pod 再起動で container 22 のホスト側ポートが 25061 → 28041 に変化。
+   さらに `desiredStatus=RUNNING` は `portMappings` 公開**前**に返るため、
+   `start()` が null ポートを保存 → 旧ポートで Connection refused。
+   → ポートマッピングが出るまで待ち、`ssh()` は毎回エンドポイントを再取得。
+
+3. **`/api/status` が 500**
+   `lastStartedAt` は Go 形式 `2026-09-06 08:52:22.087 +0000 UTC`。
+   ISO 専用パーサが None を返し、コスト計算が None で除算していた。
+
+いずれも「実機検証をしないと絶対に見つからない」種類の不具合で、
+mock 成功だけで完了扱いにしなかった判断がそのまま効いた。
+
+### 実機スモーク結果
+
+| 項目 | 実測 |
+|---|---|
+| START GPU 全経路 | PASS（ComfyUI HEALTHY 58s） |
+| Prompt Cinema ×1 | **233.2s / cache MISS** |
+| Image Trace ×1 | **175.3s / cache MISS**（Reference Strength 適用） |
+| WebSocket（proxy 経由） | **PASS** — ノード単位の進捗が届く |
+| STOP GPU | PASS（EXITED / Volume 保持） |
+| 課金 | 29 分 = **$0.41** |
+
+### Motion Trace の設計根拠（すべてソース確認）
+
+- `MiniMaxH3CLIPCachedRef2VA` / `LoadVideo` / `GetVideoComponents` は**登録済み**
+  → **追加 custom node 不要**
+- モデルは `minimax_h3_ref2va_pruned_int8_convrot.safetensors`。
+  **fl2va と同一バイト数 20,970,379,616** なので sha256 でしか区別できない。
+  Pod へ導入し sha256 一致を確認
+- `model_base.py` は Ref2VA の refs を `cond_video_latents` に**追記**する
+  → Reference Strength は効くが**識別画像と元動画に一括**（片方だけは無理）
+- `MiniMaxH3ReferenceToVideo.execute()` は参照動画を生成フレーム数で切り詰める
+  → **duration が encoder-visible なのは Motion Trace だけ**
+- 参照は `<Picture 1>` / `<Video 1>` タグでモデルに渡る → UI の placeholder に反映
+
+テンプレートは検証済み T2V グラフから `scripts/build_motion_trace_template.py` が
+生成（差分 4 点）。実機から取得した `/object_info` に対して検証済み。
+
+### `studio/mediaprobe.py`
+
+H3 は参照動画を 24fps / 2-15s 前提で扱い、5 フレーム未満で例外を投げる。
+GPU を使う前に弾くため、標準ライブラリだけの MP4 probe を追加した。
+
+**video track は `hdlr` で選ぶ。** 「サンプル数が最多の track」を選ぶ実装は
+baseline 自身のサンプル動画で音声 track を拾い、56 フレーム / 24fps を
+**74 フレーム / 31.4fps と誤読**した。修正後は ffprobe と完全一致。
+
+### Phase 6（3モード通し実機検証）— 未了・外部要因
+
+`bash scripts/v2_validate.sh` 実行時に RunPod が
+
+```
+start pod: There are not enough free GPUs on the host machine to start this pod.
+```
+
+を返した。停止した Pod は**元のホストでしか再起動できず**、そのホストが満杯。
+3 分間隔でリトライしたが空かなかった。**コードの問題ではない。**
+
+対応: この状態を「retryable な空き待ち」として UI に明示し、回帰テストも追加した。
+空き次第 `bash scripts/v2_validate.sh` を 1 回実行すれば、3モード ×4 / HIT /
+Select / Final / EXPORT / STOP まで自動測定し、FAIL=0 のときだけ
+`results/V2_READY` を作成する。
+
 ## 7. baseline への影響
 
-**なし。** ComfyUI・CLIPCached・モデル・baseline workflow・Pod の venv は
-一切変更していない。`results/BASELINE_READY` と
-`workflows/READY_TO_USE_*` は無改変で残っている。
-Pod 側に追加したものも現時点では**何もない**（Pod を起動していないため）。
+**なし。** ComfyUI・CLIPCached・baseline のモデル 4 点・baseline workflow・
+Pod の venv は一切変更していない。`results/BASELINE_READY` と
+`workflows/READY_TO_USE_*` は無改変。`config/MODEL_MANIFEST.json` も凍結したまま
+（v2 の追加は `config/MODEL_MANIFEST_V2.json` に分離）。
+
+Pod 側への追加は 2 点だけで、どちらも削除可能:
+
+| 追加 | 削除方法 |
+|---|---|
+| `custom_nodes/h3studio/__init__.py`（Reference Strength、純 Python 1 ファイル） | `scripts/install_h3studio_node.sh --uninstall` |
+| `models/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors`（21 GB） | ファイル削除のみ。他モードには無関係 |
+
+Pod 側 `doctor.sh` はスモークテスト時点で FAIL=0。

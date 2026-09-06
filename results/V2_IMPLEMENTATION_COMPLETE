@@ -1,34 +1,41 @@
-H3 STUDIO V2 IMPLEMENTATION COMPLETE (GPU VALIDATION PENDING)
-created: 2026-09-06T07:30:54Z
-commit: 534158a
+H3 STUDIO V2 (3 MODES) IMPLEMENTATION COMPLETE - FINAL GPU RUN PENDING ON RUNPOD CAPACITY
+created: 2026-09-06T09:51:06Z
+commit: 569e6eb
 baseline: v1-baseline (47fcabb) UNCHANGED - results/BASELINE_READY still valid
 
-DONE (verified offline, no GPU, no billing):
-  studio backend + UI              PASS  (stdlib only, 127.0.0.1:8010)
-  graph builder / presets          PASS  (retargets the validated baseline graph)
-  cache model vs CLIPCached source PASS  (30 automated tests)
-  stdlib WebSocket client          PASS  (against a real RFC 6455 server)
-  Image Trace x4 -> select -> final PASS (mock ComfyUI + browser)
-  Prompt Cinema x4 -> select -> final PASS
-  MISS then 3x HIT                 PASS  (serialized queue, as real ComfyUI)
-  Final = 1 job only, cache HIT    PASS
-  multipart image upload           PASS  (1.38 MB PNG end to end)
-  export + metadata                PASS
-  history provenance               PASS
-  RunPod status via real API       PASS  (pod EXITED, $0.840/hr, volume olmj77x4pc)
-  cost guard safety rules          PASS  (never stops while busy or state unknown)
-  rollback points                  PASS  (git tag + tarball + venv snapshot tooling)
+MEASURED ON THE REAL POD (ufhtfdg9ulv3fj, 2026-09-06, $0.41 of GPU time):
+  START GPU full path (Pod -> SSH -> ComfyUI healthy 58s)  PASS
+  Prompt Cinema x1 real H3                                 PASS  233.2s  cache MISS
+  Image Trace x1 real H3 (Reference Strength applied)      PASS  175.3s  cache MISS
+  WebSocket progress through the RunPod/Cloudflare proxy    PASS
+  STOP GPU (Pod EXITED, network volume olmj77x4pc kept)     PASS
+  Reference Strength node installed + registered            PASS
+  Ref2VA checkpoint downloaded + sha256 verified            PASS  9255f52b...
+  Ref2VA / LoadVideo / GetVideoComponents registered        PASS
+  Pod baseline doctor.sh                                    FAIL=0
 
-PENDING (requires the Pod to be RUNNING - this session deliberately did not start it):
-  START GPU / STOP GPU full path
-  ComfyUI over the RunPod proxy (incl. whether WebSocket upgrades pass)
-  real H3 generation, real cache HIT/MISS, real Final
-  Reference Strength node registration and visual effect
-  Face Refine / SageAttention / RTX VSR install + A/B
+VERIFIED OFFLINE (58 automated tests + browser operation, no GPU):
+  Image Trace / Motion Trace / Prompt Cinema mode switching  PASS
+  Motion Trace x4 -> MISS + 3x HIT -> select -> Final HIT    PASS
+  cache truth tables for all three modes                     PASS
+  media probe matches ffprobe exactly                        PASS
+  Cloudflare user-agent regression guard                     PASS
+  cost guard never stops while busy or state unknown         PASS
 
-TO COMPLETE:
+PENDING - blocked by RunPod host capacity, NOT by code:
+  three-mode end-to-end run on real H3 (4 variations + Final per mode)
+  Reference Strength / ref_image_size / steps / resolution A/B
+  Face Refine / SageAttention / RTX VSR
+
+  RunPod returned:
+    "start pod: There are not enough free GPUs on the host machine to start this pod."
+  A stopped Pod can only restart on the host it is bound to. The Pod, its
+  container disk and the network volume are all intact; this is a wait.
+
+TO COMPLETE (one command, once the host has a free GPU):
   bash scripts/v2_validate.sh
-  -> measures every pending item above and writes results/V2_READY only if FAIL=0
-  then fill docs/V2_AB_TESTS.md with measured A/B results.
+  -> runs all three pipelines x4 + Select + Final + Export + STOP GPU
+  -> creates results/V2_READY ONLY when FAIL=0
+  then fill in the measured A/B tables in docs/V2_AB_TESTS.md
 
 results/V2_READY is intentionally NOT created: it must be earned by measurement.
