@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# Get a GPU by whatever means, then run the resolution/Turbo A/B end to end.
+# Get a GPU by whatever means, then run one measurement payload end to end.
+#
+#   AB_PAYLOAD='bash scripts/ab_reference_session.sh' bash scripts/ab_acquire_and_run.sh
+#
+# AB_PAYLOAD defaults to the resolution/Turbo A/B this was first written for.
+# AB_VERIFY_MODELS=0 skips the manifest re-verify when the payload needs no
+# Turbo LoRA -- sha256 over 21 GB is several minutes of billed GPU.
 #
 # US-WA-1 capacity has been intermittent: the existing Pod's host fills up, and
 # creating a new one fails too. This keeps trying both routes -- restart the
@@ -16,7 +22,10 @@ PY=/opt/homebrew/bin/python3.12
 PORT="${H3_STUDIO_PORT:-8010}"
 BASE="http://127.0.0.1:$PORT"
 MAX_MINUTES="${MAX_MINUTES:-90}"
-LOG="$DIR/results/ab_quality/acquire_$(date -u +%Y%m%dT%H%M%SZ).log"
+PAYLOAD="${AB_PAYLOAD:-$PY scripts/ab_quality.py --run}"
+VERIFY_MODELS="${AB_VERIFY_MODELS:-1}"
+PAYLOAD_MINUTES="${AB_PAYLOAD_MINUTES:-90}"   # hard wall clock on the billed part
+LOG="$DIR/results/ab_quality/${AB_LOG_NAME:-acquire}_$(date -u +%Y%m%dT%H%M%SZ).log"
 mkdir -p "$(dirname "$LOG")"
 say(){ echo "[$(date -u +%H:%M:%SZ)] $*" | tee -a "$LOG"; }
 
@@ -78,18 +87,36 @@ if gpu and "RTX 6000 Ada" not in str(gpu):
     print("        to earlier measurements; only A vs B vs C among themselves are.")
 PYEOF
 
-say "=== downloading the Turbo LoRA ==="
-bash scripts/download_models_v2.sh >>"$LOG" 2>&1 \
-  && say "LoRA present and sha256 verified" \
-  || { say "LoRA download/verify FAILED -- A/B will run with Turbo unavailable"; }
+if [ "$VERIFY_MODELS" = 1 ]; then
+  say "=== downloading / verifying the v2 models ==="
+  bash scripts/download_models_v2.sh >>"$LOG" 2>&1 \
+    && say "models present and sha256 verified" \
+    || { say "model download/verify FAILED -- Turbo will be unavailable"; }
+else
+  say "=== skipping model verify (AB_VERIFY_MODELS=0) ==="
+fi
 
 say "=== baseline doctor on the Pod ==="
 bash scripts/pod_ssh.sh 'bash /workspace/H3_CLOUD_REPRO/scripts/doctor.sh' >>"$LOG" 2>&1 \
   && say "doctor: FAIL=0" || say "doctor reported failures (see log)"
 
-say "=== running the A/B ==="
-$PY scripts/ab_quality.py --run 2>&1 | tee -a "$LOG"
-rc=${PIPESTATUS[0]}
+# MAX_MINUTES bounds only the hunt for a card. Without a second limit here a
+# payload that hangs keeps a billing GPU alive indefinitely, which is the one
+# failure mode the cost guard cannot catch either (it lives in the Studio
+# process). Job control gives the payload its own process group so the watchdog
+# can take its children with it.
+say "=== running the payload: $PAYLOAD (hard limit ${PAYLOAD_MINUTES}m) ==="
+# Not a pipeline: for `cmd | tee &` bash reports tee's pid in $!, which is not
+# the job's process group id, and the watchdog's kill silently does nothing.
+set -m
+{ eval "$PAYLOAD"; } > >(tee -a "$LOG") 2>&1 &
+PP=$!
+{ sleep $(( PAYLOAD_MINUTES * 60 )); kill -TERM -"$PP" 2>/dev/null && \
+  say "payload exceeded ${PAYLOAD_MINUTES}m and was stopped; the GPU is stopped next"; } &
+WD=$!
+wait "$PP"; rc=$?
+kill "$WD" 2>/dev/null
+set +m
 
 say "=== stopping the GPU ==="
 curl -sS -X POST -H 'Content-Type: application/json' -d '{"force":false}' --max-time 300 \
