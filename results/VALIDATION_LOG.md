@@ -472,3 +472,45 @@ WS の `execution_start` を取りこぼした場合、`started_at` が `finishe
 
 baseline への影響: **なし**。ComfyUI / CLIPCached / baseline モデル 4 点 /
 baseline workflow / venv すべて無変更。旧 Pod も無変更で保持。
+
+---
+
+## 2026-09-06 夕方 — 通常運用で判明したこと
+
+### 検証範囲の拡大（実機）
+core 検証は 2秒 / 16:9 の1点だけだったが、通常運用で2点追加できた。
+
+| 条件 | 結果 | 実測 |
+|---|---|---|
+| 9:16 縦 | **PASS** | aspect_ratio 修正後、実機完走 |
+| 18秒 = 447フレーム（学習範囲超過） | **PASS** | 18.625秒 / 480x864 / H.264 + AAC 32kHz stereo / 3.1MB |
+| Motion Trace + 18.2秒 参照動画 | **PASS** | 2777.7秒（46分18秒）、213秒/step、VRAM 32.3/48GB 安定 |
+
+**学習範囲（124-362フレーム）を超えても破綻しない**が、時間は急増する
+（2秒 Motion Trace 約70秒 → 18秒 46分 = 約40倍）。
+
+### 通常運用で見つかった不具合（すべて修正済み）
+1. **aspect_ratio に実在しない値をハードコード** — `9:16 (Vertical)` / `3:4 (Portrait)`。
+   `ResolutionSelector` の COMBO は `comfy_extras/nodes_resolution.py` の AspectRatio enum
+   であり、正しくは `9:16 (Portrait Widescreen)` / `3:4 (Portrait Standard)`。
+   → 表示ラベルと API 送信値を分離。値はノード定義から取得し、live `/object_info` を優先。
+2. **進捗が0%のまま・残り時間が出ない** — エンコード中は進捗イベントが一切来ないため。
+   → 経過時間の毎秒更新、実測 秒/step からの残り時間、順番待ち本数、バッチ全体の残りを表示。
+3. **GPU停止中はファイルを選べない**（最初の修正が過剰だった）
+   → Mac側で預かり、生成時に自動転送する方式へ変更。
+4. **キャンセルが1本ずつしか効かない** — `/interrupt` は実行中のみ。
+   → キューからも削除し、キャンセル済みがWSイベントで running に戻らないようガード。
+
+### 先駆者調査（X/コミュニティ）で判明した改善余地
+| 項目 | 現在 | 推奨 | 出典の信頼性 |
+|---|---|---|---|
+| Final 解像度 | 0.40 MP（≒480p） | **1.0 MP = 1344x768（768p）** モデルが調整された解像度 | 公式ドキュメント/複数一致 |
+| Draft steps | 12 | 15未満は画質低下 / Turbo LoRA なら 6-8 | 複数一致 |
+| Final steps | 30 | 20（25で微増、以降無駄） | 複数一致 |
+| Turbo LoRA | 未使用 | Draft 用に 8step・strength 1.0（4stepは手にブロックノイズ） | HF discussion / 実測ブログ |
+| shift 12/3・guidance 1・17n+5・res_multistep/simple | 一致 | — | 変更不要（モデル既定） |
+
+**注意:** `h3aivideo.com` の Ref2VA ガイドは `identity_weight` / `motion_weight` /
+`Ref2VA Preprocessor` / `CFG 3.5-5.0` を推奨しているが、**これらはノード定義に一切存在しない**
+（`nodes_minimax_h3.py` に0件）。CFG も「guidance は 1 固定」と矛盾する。
+外部情報は必ずノード定義と照合してから採用すること。
