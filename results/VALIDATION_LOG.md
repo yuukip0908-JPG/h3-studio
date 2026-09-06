@@ -566,3 +566,33 @@ core 検証は 2秒 / 16:9 の1点だけだったが、通常運用で2点追加
 | 5 | 停止成功なのに 502 で異常終了 | `/api/gpu/stop` は Pod 自身の proxy 経由で、Pod と同時に消える | RunPod API で停止を確認する |
 
 3回目は Turbo ゲートが**生成を1本も走らせる前に**落ちて GPU を停止した（GPU使用 約2.5分）。
+
+---
+
+## 2026-09-07 — 残る A/B の前に、A/B ハーネス自身を直した（GPU未使用）
+
+継続作業の依頼を受けて現状を観測したところ、**依頼の前提（Motion Trace 未実装 /
+実機検証未了）は既に古く**、3モードとも実装・実機PASS済みだった（`results/V2_READY`、
+`docs/V2_KNOWN_LIMITATIONS.md` §1）。再実装はしていない。
+
+代わりに、**まだ残っている A/B（Reference Strength / `ref_image_size`）を走らせると
+無意味な測定になる**ことが分かったので、GPUを使う前に `scripts/ab_test.sh` を直した。
+
+| 症状 | 原因 | 影響 | 対策 |
+|---|---|---|---|
+| `ab_test.sh ... motion_trace` が **Prompt Cinema を測っていた** | ワークフロー選択が「image_trace かそれ以外」の2分岐で、Motion Trace の分岐が無かった | `docs/V2_AB_TESTS.md` §7・§8 のコマンドは、参照画像も参照動画も無い T2V を回して「Motion Trace の結果」として記録するところだった | mode → workflow を3分岐に。未知の mode は拒否 |
+| `refsize` が変数として存在しない | `case` に無く `exit 2` | §7 のコマンドが実行不能 | `--set <cached>.ref_image_size=` を追加。`motion_trace` 以外では拒否、値は `match`/`max` のみ |
+| Motion Trace の参照入力を渡す口が無い | `h3_run.py` に `--video` が無い | 参照なしで走ってしまう | `mt_identity.image` / `mt_video.file` を `--set` で指定し、実行前に Pod の `input/` へバイト数照合付きでアップロード |
+| `--set` の JSON クォートが ssh 先の shell に食われる | `key="value"` が裸のまま remote shell を通り `json.loads` が落ちる | 起動後に落ちる（= 課金後に判明） | `--set '<nid>.<input>="value"'` と単一引用で包む。ローカルで `--dry-run` 実測して確認 |
+| 動画が Pod に置き去り | `run.json` しか回収していなかった | Pod 停止後、目視判定の対象が消える | 出力動画も `results/ab/<name>/{A,B}/` へ回収（「判定を読んだフレームを残す」原則） |
+| stdin をsshに食われる既知の穴 | 過去にモデルDLを1件落とした | 再発しうる | すべての ssh 呼び出しを `</dev/null` で閉じる |
+
+**`AB_DRY_RUN=1` を追加。** ゲートを全部走らせ、Podに一切触れずに remote コマンドを
+表示する。3つの残 A/B すべてで確認済み（正常系3件・拒否4件）。
+`h3_run.py --dry-run` にローカルの MOTION_TRACE_DRAFT を通し、
+`mt_identity.image='id.png'` / `mt_video.file='src.mp4'` /
+`140:141.ref_image_size='max'` / `h3s_refstrength=0.95` が**正しい型で正しいノードに
+着地する**ことを確認した。
+
+テスト 103件 PASS（`python3 -m unittest discover -s studio/tests -t .`）。
+Pod `u3j83y0qfrdc56` は EXITED のまま。GPU課金なし。baseline 無変更。

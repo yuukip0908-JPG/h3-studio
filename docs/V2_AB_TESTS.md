@@ -14,7 +14,20 @@ bash scripts/ab_test.sh <variable> <valueA> <valueB> [mode] [prompt]
 
 `scripts/h3_run.py` を Pod 上で走らせ、ノード別時間・peak VRAM・
 ComfyUI ログの `[CACHE HIT]`/`[CACHE MISS]`（ground truth）・ffprobe を記録する。
-結果は `results/ab/<name>/` に入り、要約表が標準出力に出る。
+結果は `results/ab/<name>/` に入り（**動画も回収する**）、要約表が標準出力に出る。
+
+**GPUを使う前に必ず空撃ちする:**
+
+```bash
+AB_DRY_RUN=1 bash scripts/ab_test.sh <variable> <valueA> <valueB> [mode]
+```
+
+ゲート（mode / 変数 / 値 / ノードID / 参照ファイルの実在）を全部走らせ、
+Podに触れずに remote コマンドを表示する。壊れた比較は**課金前に**落ちる。
+
+> 2026-09-07 修正: `motion_trace` を指定しても Prompt Cinema の workflow が
+> 走っていた（参照画像も参照動画も無い T2V）。`refsize` は変数として存在せず、
+> §7 のコマンドは実行できなかった。両方とも修正済み（`results/VALIDATION_LOG.md`）。
 
 比較項目（自動計測 / 目視）:
 
