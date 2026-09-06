@@ -3,3 +3,5 @@
 results/environment_snapshot/
 __pycache__/
 .DS_Store
+results/studio/
+studio/**/__pycache__/

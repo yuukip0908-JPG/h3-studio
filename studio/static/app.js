@@ -1,0 +1,376 @@
+"use strict";
+// H3 Studio front end. No framework, no build step: the whole point is that
+// this file can be read and fixed by whoever is standing in front of the Pod.
+
+const $ = (id) => document.getElementById(id);
+const state = {
+  mode: "image_trace",
+  quality: "draft",
+  variations: 4,
+  image: null,
+  localPath: null,
+  cfg: null,
+  batch: null,       // current batch shown in RESULTS
+  selected: null,
+  busy: false,
+  lastEncoder: {},   // mode -> {prompt, image, aspect_ratio, megapixels}
+};
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const text = await r.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { error: text }; }
+  if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+  return data;
+}
+
+function notice(level, text, ttl = 9000) {
+  const el = document.createElement("div");
+  el.className = "notice " + level;
+  el.textContent = text;
+  $("notices").appendChild(el);
+  if (ttl) setTimeout(() => el.remove(), ttl);
+}
+
+// ---------------------------------------------------------------- config
+async function loadConfig() {
+  const cfg = await api("/api/config");
+  state.cfg = cfg;
+  $("aspect").innerHTML = cfg.aspect_ratios.map((a) => `<option>${a}</option>`).join("");
+
+  const rs = cfg.reference_strength;
+  $("refstrength").min = rs.min;
+  $("refstrength").max = rs.max;
+  $("refstrength").value = rs.default;
+  $("ref-value").textContent = rs.default;
+  if (rs.available === false) {
+    $("ref-unavailable").hidden = false;
+    $("ref-unavailable").textContent =
+      "H3StudioReferenceStrength ノードが Pod に未導入のため無効です " +
+      "(scripts/install_h3studio_node.sh)。生成はそのまま実行できます。";
+    $("refstrength").disabled = true;
+  }
+
+  $("auto-stop").innerHTML = cfg.auto_stop_choices
+    .map((m) => `<option value="${m}">${m === 0 ? "OFF" : m + " min"}</option>`).join("");
+
+  $("finish-options").innerHTML = cfg.finish_options.map((o) => `
+    <label class="opt" title="${o.note}">
+      <input type="checkbox" data-finish="${o.key}" ${o.available ? "" : "disabled"}>
+      <span>${o.label}${o.available ? "" : " (未導入)"}</span>
+    </label>`).join("");
+
+  renderModeHints();
+}
+
+function preset() {
+  return (state.cfg && state.cfg.presets[state.mode + "/" + state.quality]) || {};
+}
+
+function renderModeHints() {
+  const it = state.mode === "image_trace";
+  $("field-image").hidden = !it;
+  $("field-refstrength").hidden = !it;
+  $("mode-hint").textContent = it
+    ? "1枚の画像を元に、人物・顔・服・雰囲気を保ったまま動画化します。"
+    : "画像なし。Prompt だけで世界観・カメラワークを探索します。Reference Strength は T2V では効果がありません。";
+  const p = preset();
+  $("quality-hint").textContent = p.megapixels
+    ? `${p.megapixels} MP / ${p.steps} steps — ${p.note || ""}`
+    : "";
+  renderCacheHint();
+}
+
+// Mirrors studio/graph.py expected_cache(): prompt and (Image Trace only) the
+// keyframe pixels + the resolution they are resized to are the encoder-visible
+// inputs. Everything else — seed, steps, sampler, duration — is a HIT.
+function renderCacheHint() {
+  const prev = state.lastEncoder[state.mode];
+  const cur = {
+    prompt: $("prompt").value.trim(),
+    image: state.image,
+    aspect_ratio: $("aspect").value,
+    megapixels: preset().megapixels,
+  };
+  let verdict = "MISS";
+  if (prev && prev.prompt === cur.prompt) {
+    verdict = "HIT";
+    if (state.mode === "image_trace" &&
+        (prev.image !== cur.image || prev.aspect_ratio !== cur.aspect_ratio ||
+         prev.megapixels !== cur.megapixels)) verdict = "MISS";
+  }
+  const n = state.variations;
+  $("cache-hint").innerHTML = verdict === "HIT"
+    ? `予測: 1本目から <span class="tag HIT">HIT</span> — エンコード再実行なし。`
+    : `予測: 1本目 <span class="tag MISS">MISS</span>（Qwen3-VL エンコード ~60s）、` +
+      `残り ${Math.max(0, n - 1)} 本は <span class="tag HIT">HIT</span>。`;
+}
+
+// ---------------------------------------------------------------- status
+let statusTimer = null;
+async function pollStatus() {
+  try {
+    const s = await api("/api/status");
+    renderGpu(s.gpu);
+    renderStats(s.stats);
+    if (state.batch) {
+      const fresh = s.batches.find((b) => b.id === state.batch.id);
+      if (fresh) renderResults(fresh);
+    }
+    state.busy = s.gpu.active_jobs > 0;
+    $("btn-cancel").hidden = !state.busy;
+    $("btn-generate").disabled = state.busy;
+  } catch (e) {
+    renderGpu({ pod_state: "UNKNOWN", pod_error: e.message });
+  } finally {
+    statusTimer = setTimeout(pollStatus, state.busy ? 1500 : 5000);
+  }
+}
+
+function renderGpu(g) {
+  const chip = $("gpu-chip");
+  const st = g.pod_state || "UNKNOWN";
+  chip.textContent = "GPU: " + st + (g.comfy_ready ? " · ComfyUI READY" : "");
+  chip.className = "chip " + (st === "RUNNING" ? "chip-running"
+    : st === "EXITED" || st === "STOPPED" ? "chip-exited" : "chip-unknown");
+
+  const cost = [];
+  if (g.hourly_usd) cost.push(`$${Number(g.hourly_usd).toFixed(3)}/hr`);
+  if (g.session_cost_usd != null) {
+    const m = Math.round((g.session_seconds || 0) / 60);
+    cost.push(`this session: $${g.session_cost_usd.toFixed(2)} (${m}分)`);
+  }
+  $("cost").textContent = cost.join("\n");
+
+  const rows = [
+    ["Pod", g.pod_id], ["State", st], ["GPU", g.gpu],
+    ["Cost/hr", g.hourly_usd ? "$" + Number(g.hourly_usd).toFixed(3) : "-"],
+    ["Volume", g.network_volume], ["ComfyUI", g.comfy_ready ? "ready" : "down"],
+    ["Progress WS", g.ws_connected ? "connected" : "polling"],
+    ["Active jobs", g.active_jobs],
+  ];
+  if (g.auto_stop && g.auto_stop.enabled) {
+    rows.push(["Auto stop in", Math.round(g.auto_stop.remaining_seconds / 60) + " min"]);
+  }
+  $("gpu-info").innerHTML = rows
+    .filter(([, v]) => v !== undefined && v !== null && v !== "")
+    .map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
+
+  $("btn-gpu-start").disabled = st === "RUNNING";
+  $("btn-gpu-stop").disabled = st !== "RUNNING";
+  if (g.pod_error && !g.have_api_key) {
+    $("btn-gpu-start").disabled = true;
+    $("btn-gpu-stop").disabled = true;
+  }
+}
+
+function renderStats(s) {
+  if (!s) return;
+  $("stats").textContent =
+    `${s.generations} 本生成 / cache HIT ${s.cache_hits} · MISS ${s.cache_misses} / GPU ${Math.round(s.gpu_seconds)}s`;
+}
+
+// ---------------------------------------------------------------- results
+function renderResults(batch) {
+  state.batch = batch;
+  const sel = batch.generations.find((g) => g.selected);
+  state.selected = sel ? sel.id : null;
+
+  $("results").innerHTML = batch.generations.map((g, i) => {
+    const body = g.output_url
+      ? `<video src="${g.output_url}" controls preload="metadata" playsinline></video>`
+      : `<div class="ph">${g.status === "error" ? "ERROR<br>" + esc(g.error || "") : esc(g.progress_text || g.status)}</div>`;
+    const tag = g.cache_result
+      ? `<span class="tag ${g.cache_result}">${g.cache_result}</span>`
+      : (g.status === "error" ? `<span class="tag err">ERROR</span>` : "");
+    return `<div class="card ${g.selected ? "sel" : ""}" data-gen="${g.id}">
+      ${body}
+      <div class="bar-progress"><i style="width:${Math.round((g.progress || 0) * 100)}%"></i></div>
+      <div class="meta">
+        <span>#${i + 1} · seed ${g.seed}</span>
+        <span>${tag}${g.seconds ? " " + g.seconds + "s" : ""}</span>
+      </div>
+      <div class="acts">
+        <button class="btn ${g.selected ? "btn-primary" : ""}" data-act="select" ${g.status !== "done" ? "disabled" : ""}>
+          ${g.selected ? "★ SELECTED" : "SELECT"}</button>
+        <button class="btn" data-act="export" ${g.status !== "done" ? "disabled" : ""}>EXPORT</button>
+      </div>
+    </div>`;
+  }).join("");
+
+  $("finish").hidden = !state.selected;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+$("results").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  const genId = btn.closest(".card").dataset.gen;
+  try {
+    if (btn.dataset.act === "select") {
+      await api("/api/select", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ generation_id: genId, selected: true }),
+      });
+      const b = await api("/api/batch/" + state.batch.id);
+      renderResults(b);
+    } else {
+      const r = await api("/api/export", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ generation_id: genId }),
+      });
+      notice("info", "書き出しました: " + r.path);
+    }
+  } catch (err) { notice("error", err.message); }
+});
+
+// ---------------------------------------------------------------- actions
+$("mode-seg").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  state.mode = b.dataset.mode;
+  [...$("mode-seg").children].forEach((c) => c.classList.toggle("on", c === b));
+  renderModeHints();
+});
+$("quality-seg").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  state.quality = b.dataset.quality;
+  [...$("quality-seg").children].forEach((c) => c.classList.toggle("on", c === b));
+  renderModeHints();
+});
+$("var-seg").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  state.variations = Number(b.dataset.var);
+  [...$("var-seg").children].forEach((c) => c.classList.toggle("on", c === b));
+  renderCacheHint();
+});
+$("prompt").addEventListener("input", renderCacheHint);
+$("aspect").addEventListener("change", renderCacheHint);
+$("refstrength").addEventListener("input", (e) => { $("ref-value").textContent = e.target.value; });
+
+$("image-file").addEventListener("change", async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  $("image-status").textContent = "アップロード中…";
+  try {
+    const fd = new FormData();
+    fd.append("image", f, f.name);
+    const r = await api("/api/upload", { method: "POST", body: fd });
+    state.image = r.image;
+    state.localPath = r.local_path;
+    $("image-status").textContent = `ComfyUI input: ${r.image} (${Math.round(r.bytes / 1024)} KB)`;
+    const img = $("image-preview");
+    img.src = URL.createObjectURL(f);
+    img.hidden = false;
+    renderCacheHint();
+  } catch (err) {
+    $("image-status").textContent = "";
+    notice("error", "アップロード失敗: " + err.message);
+  }
+});
+
+$("btn-generate").addEventListener("click", async () => {
+  const payload = {
+    mode: state.mode,
+    prompt: $("prompt").value,
+    quality: state.quality,
+    variations: state.variations,
+    duration: Number($("duration").value),
+    aspect_ratio: $("aspect").value,
+  };
+  if (state.mode === "image_trace") {
+    payload.image = state.image;
+    payload.local_path = state.localPath;
+    if (!$("refstrength").disabled) payload.reference_strength = Number($("refstrength").value);
+  }
+  $("btn-generate").disabled = true;
+  try {
+    const batch = await api("/api/generate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    state.lastEncoder[state.mode] = {
+      prompt: payload.prompt.trim(), image: payload.image,
+      aspect_ratio: payload.aspect_ratio, megapixels: preset().megapixels,
+    };
+    renderResults(batch);
+    renderCacheHint();
+  } catch (e) {
+    notice("error", e.message);
+    $("btn-generate").disabled = false;
+  }
+});
+
+$("btn-cancel").addEventListener("click", async () => {
+  try { await api("/api/cancel", { method: "POST", body: "{}" }); }
+  catch (e) { notice("error", e.message); }
+});
+
+$("btn-finalize").addEventListener("click", async () => {
+  if (!state.selected) return;
+  const finish = {};
+  document.querySelectorAll("#finish-options input[data-finish]").forEach((c) => {
+    if (c.checked) finish[c.dataset.finish] = true;
+  });
+  try {
+    const b = await api("/api/finalize", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ generation_id: state.selected, finish_options: finish }),
+    });
+    notice("info", "Final を投入しました（選択した1本のみ）。");
+    renderResults(b);
+  } catch (e) { notice("error", e.message); }
+});
+
+$("btn-gpu-start").addEventListener("click", async () => {
+  $("btn-gpu-start").disabled = true;
+  notice("info", "GPU を起動しています… Pod start → ComfyUI 起動 → health check", 0);
+  try {
+    const r = await api("/api/gpu/start", { method: "POST", body: "{}" });
+    notice(r.ok ? "info" : "error", (r.ok ? "READY: " : "失敗: ") + (r.error || r.steps.join(" → ")));
+  } catch (e) { notice("error", e.message); }
+});
+
+$("btn-gpu-stop").addEventListener("click", async () => {
+  if (!confirm("Pod を停止します（課金停止）。Network Volume とモデル・キャッシュ・出力は保持されます。")) return;
+  try {
+    const r = await api("/api/gpu/stop", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: false }),
+    });
+    notice(r.ok ? "info" : "warn", r.ok ? "Pod を停止しました。Volume は保持されています。" : r.error);
+  } catch (e) { notice("error", e.message); }
+});
+
+$("auto-stop").addEventListener("change", async (e) => {
+  try {
+    await api("/api/gpu/auto_stop", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ minutes: Number(e.target.value) }),
+    });
+    notice("info", "AUTO STOP: " + (e.target.value === "0" ? "OFF" : e.target.value + " 分"));
+  } catch (err) { notice("error", err.message); }
+});
+
+async function loadHistory() {
+  try {
+    const h = await api("/api/history?limit=15");
+    $("history").innerHTML = h.batches.map((b) => {
+      const done = b.generations.filter((g) => g.status === "done").length;
+      const sel = b.generations.find((g) => g.selected);
+      return `<div class="h-item"><b>${b.kind.toUpperCase()} · ${b.mode}</b><br>
+        ${esc((b.prompt || "").slice(0, 70))}<br>
+        ${done}/${b.generations.length} 本${sel ? " · ★選択済" : ""}
+        ${b.reference_strength ? " · ref " + b.reference_strength : ""}</div>`;
+    }).join("") || "<div class='hint'>まだ履歴はありません。</div>";
+  } catch (e) { /* history is non-critical */ }
+}
+
+(async function init() {
+  try { await loadConfig(); } catch (e) { notice("error", "設定の読み込みに失敗: " + e.message); }
+  pollStatus();
+  loadHistory();
+  setInterval(loadHistory, 30000);
+})();

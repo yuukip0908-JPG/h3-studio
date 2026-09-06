@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>H3 STUDIO</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="bar">
+  <h1>H3 STUDIO</h1>
+  <div id="gpu-chip" class="chip chip-unknown">GPU: …</div>
+  <div class="spacer"></div>
+  <div id="cost" class="cost"></div>
+  <button id="btn-gpu-start" class="btn btn-go">START GPU</button>
+  <button id="btn-gpu-stop" class="btn btn-stop">STOP GPU</button>
+</header>
+
+<div id="notices"></div>
+
+<main>
+  <section class="panel" id="panel-input">
+    <h2>1 · INPUT</h2>
+
+    <div class="field">
+      <label>MODE</label>
+      <div class="seg" id="mode-seg">
+        <button data-mode="image_trace" class="on">Image Trace</button>
+        <button data-mode="prompt_cinema">Prompt Cinema</button>
+      </div>
+      <p class="hint" id="mode-hint"></p>
+    </div>
+
+    <div class="field" id="field-image">
+      <label>SOURCE IMAGE</label>
+      <input type="file" id="image-file" accept="image/*">
+      <div id="image-status" class="hint"></div>
+      <img id="image-preview" alt="" hidden>
+    </div>
+
+    <div class="field">
+      <label>PROMPT</label>
+      <textarea id="prompt" rows="4" placeholder="what should happen in the video"></textarea>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>ASPECT</label>
+        <select id="aspect"></select>
+      </div>
+      <div class="field">
+        <label>DURATION (s)</label>
+        <input type="number" id="duration" value="2" min="0.5" max="10" step="0.5">
+      </div>
+    </div>
+
+    <div class="field" id="field-refstrength">
+      <label>REFERENCE STRENGTH <span id="ref-value">0.999</span></label>
+      <input type="range" id="refstrength" min="0.90" max="1.0" step="0.001" value="0.999">
+      <p class="hint">高いほど元画像に忠実。低くすると動きの自由度が上がる代わりに人物の同一性が崩れやすい。<br>
+        キャッシュには影響しない（常に HIT）。</p>
+      <p class="hint warn" id="ref-unavailable" hidden></p>
+    </div>
+
+    <h2>2 · QUALITY</h2>
+    <div class="field">
+      <div class="seg" id="quality-seg">
+        <button data-quality="draft" class="on">Draft</button>
+        <button data-quality="final">Final</button>
+      </div>
+      <p class="hint" id="quality-hint"></p>
+    </div>
+
+    <div class="field">
+      <label>VARIATIONS</label>
+      <div class="seg" id="var-seg">
+        <button data-var="1">1</button>
+        <button data-var="4" class="on">4</button>
+        <button data-var="8">8</button>
+      </div>
+      <p class="hint" id="cache-hint"></p>
+    </div>
+
+    <button id="btn-generate" class="btn btn-primary btn-big">GENERATE</button>
+    <button id="btn-cancel" class="btn btn-ghost" hidden>CANCEL</button>
+  </section>
+
+  <section class="panel" id="panel-results">
+    <h2>3 · RESULTS</h2>
+    <div id="results" class="grid"></div>
+
+    <div id="finish" hidden>
+      <h2>4 · FINISH SELECTED</h2>
+      <div id="finish-options" class="opts"></div>
+      <button id="btn-finalize" class="btn btn-primary">FINALIZE</button>
+      <p class="hint">Final は選択した 1 本にだけ実行されます。</p>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-side">
+    <h2>GPU</h2>
+    <dl id="gpu-info" class="kv"></dl>
+    <div class="field">
+      <label>AUTO STOP</label>
+      <select id="auto-stop"></select>
+      <p class="hint">無操作かつジョブ無しでPodを自動停止します。Network Volume は消えません。</p>
+    </div>
+    <h2>HISTORY</h2>
+    <div id="stats" class="hint"></div>
+    <div id="history"></div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
