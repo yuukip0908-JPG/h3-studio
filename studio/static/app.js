@@ -154,6 +154,7 @@ async function pollStatus() {
     if (state.batch) {
       const fresh = s.batches.find((b) => b.id === state.batch.id);
       if (fresh) renderResults(fresh);
+      tickResults();
     }
       state.comfyReady = Boolean(s.gpu.comfy_ready);
     renderReadiness();
@@ -244,6 +245,104 @@ function renderStats(s) {
 }
 
 // ---------------------------------------------------------------- results
+function fmtDuration(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m ? `${m}分${String(s).padStart(2, "0")}秒` : `${s}秒`;
+}
+
+/* How far along one generation is.
+   The sampler only reports progress during its own phase, and the Qwen3-VL
+   encode before it can take a minute on its own -- so a bar driven purely by
+   the sampler sits at 0% for the part of the run that feels slowest. Elapsed
+   time against the measured estimate always moves; when real sampler numbers
+   arrive we take whichever is further along. Capped below 1 so it never looks
+   finished before it is. */
+function genProgress(g, now) {
+  if (g.status === "done") return 1;
+  if (g.status === "error" || g.status === "cancelled") return 0;
+  let byTime = 0;
+  if (g.started_at && g.expected_seconds) {
+    byTime = (now / 1000 - g.started_at) / g.expected_seconds;
+  }
+  const bySampler = g.sampler && g.sampler.max ? g.sampler.value / g.sampler.max : 0;
+  return Math.max(0, Math.min(0.97, Math.max(byTime, bySampler)));
+}
+
+/* Remaining seconds, preferring the rate this run is actually achieving. */
+function genRemaining(g, now) {
+  const s = g.sampler;
+  if (s && s.seconds_per_step && s.max) {
+    const stepsLeft = Math.max(0, s.max - s.value);
+    const sinceStep = s.last_step_at ? now / 1000 - s.last_step_at : 0;
+    return Math.max(0, stepsLeft * s.seconds_per_step - sinceStep);
+  }
+  if (g.started_at && g.expected_seconds) {
+    return g.expected_seconds - (now / 1000 - g.started_at);
+  }
+  return null;
+}
+
+function genTiming(g, now) {
+  if (g.status === "done") return g.seconds != null ? `${g.seconds}秒` : "";
+  if (g.status !== "running" || !g.started_at) return "";
+  const elapsed = now / 1000 - g.started_at;
+  const left = genRemaining(g, now);
+  /* The estimate is a median of past runs, so a run can outlast it. Saying
+     "まもなく完了" for another ten minutes would be worse than saying nothing:
+     admit it is running long instead. */
+  let eta = "";
+  if (left != null) {
+    if (left > 3) eta = ` · 残り約${fmtDuration(left)}`;
+    else if (left > -30) eta = " · まもなく完了";
+    else eta = " · 予想より長くかかっています";
+  }
+  const rate = g.sampler && g.sampler.seconds_per_step
+    ? ` · ${g.sampler.seconds_per_step}秒/step` : "";
+  return `${fmtDuration(elapsed)}経過${eta}${rate}`;
+}
+
+/* Re-render only the changing numbers, once a second, so the screen visibly
+   moves between the 1.5 s status polls instead of appearing frozen. */
+function tickResults() {
+  if (!state.batch) return;
+  const now = Date.now();
+  state.batch.generations.forEach((g) => {
+    const card = document.querySelector(`.card[data-gen="${g.id}"]`);
+    if (!card) return;
+    const bar = card.querySelector(".bar-progress > i");
+    if (bar) bar.style.width = Math.round(genProgress(g, now) * 100) + "%";
+    const timing = card.querySelector(".timing");
+    if (timing) timing.textContent = genTiming(g, now);
+  });
+  const head = $("batch-progress");
+  if (head && state.batch.total_count) {
+    const b = state.batch;
+    const busy = b.generations.some((g) => g.status === "queued" || g.status === "running");
+    /* Prefer the measured rate of whatever is running now; fall back to the
+       server's sum of placeholder estimates. */
+    const running = b.generations.find((g) => g.status === "running");
+    const live = running ? genRemaining(running, now) : null;
+    const queued = b.generations.filter((g) => g.status === "queued").length;
+    let total = null;
+    if (live != null && live >= 0) {
+      const per = running.sampler && running.sampler.seconds_per_step && running.sampler.max
+        ? running.sampler.seconds_per_step * running.sampler.max
+        : running.expected_seconds || 0;
+      total = live + queued * per;
+    } else if (b.remaining_seconds) {
+      total = b.remaining_seconds;
+    }
+    const left = !busy ? "" : total != null
+      ? ` · 全体の残り約${fmtDuration(total)}` : "";
+    head.textContent = `${b.done_count}/${b.total_count} 本 完了${left}`;
+    head.hidden = false;
+  } else if (head) {
+    head.hidden = true;
+  }
+}
+setInterval(tickResults, 1000);
+
 function renderResults(batch) {
   state.batch = batch;
   const sel = batch.generations.find((g) => g.selected);
@@ -258,10 +357,14 @@ function renderResults(batch) {
       : (g.status === "error" ? `<span class="tag err">エラー</span>` : "");
     return `<div class="card ${g.selected ? "sel" : ""}" data-gen="${g.id}">
       ${body}
-      <div class="bar-progress"><i style="width:${Math.round((g.progress || 0) * 100)}%"></i></div>
+      <div class="bar-progress"><i style="width:${Math.round(genProgress(g, Date.now()) * 100)}%"></i></div>
       <div class="meta">
         <span>#${i + 1} · seed ${g.seed}</span>
-        <span>${tag}${g.seconds ? " " + g.seconds + "s" : ""}</span>
+        <span>${tag}</span>
+      </div>
+      <div class="meta">
+        <span class="stage">${esc(g.progress_text || g.status)}</span>
+        <span class="timing">${genTiming(g, Date.now())}</span>
       </div>
       <div class="acts">
         <button class="btn ${g.selected ? "btn-primary" : ""}" data-act="select" ${g.status !== "done" ? "disabled" : ""}>
@@ -343,7 +446,27 @@ $("var-seg").addEventListener("click", (e) => {
 });
 $("prompt").addEventListener("input", renderCacheHint);
 $("aspect").addEventListener("change", renderCacheHint);
-$("duration").addEventListener("change", renderCacheHint);
+$("duration").addEventListener("change", () => { renderCacheHint(); renderDurationHint(); });
+
+/* H3 is trained on roughly 124-362 frames at 24 fps (about 5-15 s). Cost scales
+   with the frame count, so a long clip is dramatically slower -- an 18 s Motion
+   Trace measured 212 s per sampling step, about 43 minutes for one draft. */
+function renderDurationHint() {
+  const el = $("duration-hint");
+  if (!el) return;
+  const seconds = Number($("duration").value) || 0;
+  let frames = Math.max(5, Math.round(seconds * 24));
+  frames += (5 - (frames % 17)) % 17;
+  let text = "";
+  if (frames > 362) {
+    text = `${seconds}秒 = ${frames}フレーム。H3 の学習範囲（約5〜15秒）を超えており、` +
+           `1本あたり数十分かかることがあります。`;
+  } else if (seconds > 8) {
+    text = `${seconds}秒 = ${frames}フレーム。長いほど生成時間は比例して伸びます。`;
+  }
+  el.textContent = text;
+  el.hidden = !text;
+}
 $("refstrength").addEventListener("input", (e) => { $("ref-value").textContent = e.target.value; });
 
 $("video-file").addEventListener("change", async (e) => {
@@ -507,7 +630,7 @@ async function loadHistory() {
 }
 
 (async function init() {
-  try { await loadConfig(); maybeSuggestTags(); }
+  try { await loadConfig(); maybeSuggestTags(); renderDurationHint(); }
   catch (e) { notice("error", "設定の読み込みに失敗: " + e.message); }
   pollStatus();
   loadHistory();

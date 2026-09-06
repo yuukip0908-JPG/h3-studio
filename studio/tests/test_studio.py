@@ -577,6 +577,97 @@ class EndToEndTests(StudioTestCase):
         self.assertNotIn(graph.REF_STRENGTH_ID, mock_comfy.STATE.submitted[-1])
         self.assertTrue(any("Reference Strength ignored" in e["text"] for e in m.events))
 
+    def test_sampler_progress_actually_moves(self):
+        """Regression: only "progress" was handled, so the bar sat at 0%.
+
+        ComfyUI 0.34.2 sends "progress_state" with a per-node map; a real Motion
+        Trace draft showed progress 0.00 after 345 s because of this.
+        """
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 4.0
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="moving bar",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        gen = batch.generations[0]
+        self.assertTrue(wait_until(lambda: gen.progress > 0, 25),
+                        "progress must advance while sampling")
+        self.assertTrue(wait_until(lambda: gen.sampler_max is not None, 10))
+        self.assertIn("生成中", gen.progress_text)
+        self.wait_batch(batch)
+        self.assertEqual(gen.status, "done")
+
+    def test_every_generation_carries_timing_anchors_for_the_ui(self):
+        m = self.make_manager()
+        batch = m.submit_batch(mode=graph.MODE_IMAGE_TRACE, prompt_text="eta",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0], image="a.png")
+        d = batch.generations[0].as_dict()
+        self.assertIsNotNone(d["queued_at"])
+        self.assertGreater(d["expected_seconds"], 0,
+                           "an ETA must exist before any history is recorded")
+        self.wait_batch(batch)
+        done = batch.generations[0].as_dict()
+        self.assertIsNotNone(done["started_at"])
+        self.assertIsNotNone(done["finished_at"])
+
+    def test_batch_reports_completion_and_remaining_time(self):
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 3.0
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="batch eta",
+                               quality="draft", variations=4, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        d = batch.as_dict()
+        self.assertEqual(d["total_count"], 4)
+        self.assertEqual(d["done_count"], 0)
+        self.assertGreater(d["remaining_seconds"], 0)
+        self.wait_batch(batch)
+        d = batch.as_dict()
+        self.assertEqual(d["done_count"], 4)
+        self.assertEqual(d["remaining_seconds"], 0)
+
+    def test_estimate_prefers_measured_history_over_the_fallback(self):
+        m = self.make_manager()
+        fallback = m._estimate_seconds(graph.MODE_MOTION_TRACE, "draft", "HIT")  # noqa: SLF001
+        self.assertEqual(fallback, 70, "measured Motion Trace draft HIT baseline")
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="learn me",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        self.wait_batch(batch)
+        cache = batch.generations[0].cache_result
+        measured = history.typical_seconds(graph.MODE_PROMPT_CINEMA, "draft", cache)
+        self.assertIsNotNone(measured, "a finished run must feed the estimate")
+        self.assertEqual(m._estimate_seconds(graph.MODE_PROMPT_CINEMA, "draft", cache),  # noqa: SLF001
+                         round(measured))
+
+    def test_live_sampling_rate_is_measured_from_the_run(self):
+        """The ETA must come from this run, not a fixed guess.
+
+        Settings dominate: a 2 s Prompt Cinema samples in ~3 s/step while an
+        18 s Motion Trace measured 212 s/step, so any fixed number is wrong for
+        one of them.
+        """
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 4.0
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="rate",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        gen = batch.generations[0]
+        self.assertTrue(wait_until(
+            lambda: (gen.as_dict().get("sampler") or {}).get("seconds_per_step"), 25))
+        sampler = gen.as_dict()["sampler"]
+        self.assertGreater(sampler["seconds_per_step"], 0)
+        self.assertIsNotNone(sampler["last_step_at"])
+        self.assertGreaterEqual(sampler["max"], 1)
+        self.wait_batch(batch)
+
+    def test_estimate_scales_with_duration(self):
+        """An 18 s clip is ~9x the frames of the 2 s baseline, not the same."""
+        m = self.make_manager()
+        short = m._estimate_seconds(graph.MODE_MOTION_TRACE, "draft", "HIT", 2.0)   # noqa: SLF001
+        long_ = m._estimate_seconds(graph.MODE_MOTION_TRACE, "draft", "HIT", 18.0)  # noqa: SLF001
+        self.assertGreater(long_, short * 5,
+                           "a 9x longer clip must not be estimated at the same cost")
+
     def test_cancel_stops_the_whole_batch_not_one_job_at_a_time(self):
         """Interrupting alone lets the next queued prompt start immediately."""
         m = self.make_manager()

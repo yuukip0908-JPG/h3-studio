@@ -181,6 +181,25 @@ def stats():
             "cache_misses": row["misses"] or 0, "gpu_seconds": round(row["secs"] or 0.0, 1)}
 
 
+def typical_seconds(mode, quality, cache_result):
+    """Median run time of comparable finished generations, or None.
+
+    Used for the ETA. Keyed on mode + quality + cache result because those are
+    what actually drive the cost: a MISS pays for the ~60 s Qwen3-VL encode, and
+    Motion Trace carries its reference tokens through every sampling step
+    (measured ~69 s vs ~30 s for Image Trace at the same settings).
+    """
+    rows = connect().execute(
+        "SELECT g.generation_seconds s FROM generations g JOIN batches b ON b.id = g.batch_id"
+        " WHERE g.status = 'done' AND g.generation_seconds > 0 AND b.mode = ?"
+        "   AND b.quality = ? AND g.cache_result = ?"
+        " ORDER BY g.created_at DESC LIMIT 9", (mode, quality, cache_result)).fetchall()
+    values = sorted(r["s"] for r in rows if r["s"])
+    if not values:
+        return None
+    return values[len(values) // 2]
+
+
 def export_batch_metadata(batch_id, dest_dir):
     """Write the full provenance of one batch next to its exported videos."""
     batch = get_batch(batch_id)

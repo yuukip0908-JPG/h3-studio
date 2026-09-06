@@ -216,8 +216,12 @@ def run_job(prompt_id, prompt):
         elif node["class_type"] == "SamplerCustomAdvanced":
             steps = 8
             for i in range(1, steps + 1):
-                STATE.broadcast({"type": "progress",
-                                 "data": {"prompt_id": prompt_id, "value": i, "max": steps}})
+                # ComfyUI 0.34.2 sends progress_state with a per-node map, not
+                # the flat "progress" older builds used.
+                STATE.broadcast({"type": "progress_state", "data": {
+                    "prompt_id": prompt_id,
+                    "nodes": {node_id: {"value": i, "max": steps, "state": "running",
+                                        "node_id": node_id, "prompt_id": prompt_id}}}})
                 time.sleep(STATE.job_seconds / steps)
 
     save = [(k, v) for k, v in prompt.items() if v["class_type"] == "SaveVideo"]

@@ -48,6 +48,28 @@ class Generation:
         self.error = None
         self.cache_result = None
         self.selected = False
+        self.sampler_value = None
+        self.sampler_max = None
+        self.expected_seconds = None
+        self.step_times = []          # wall clock of each observed step advance
+
+    def _sampler_dict(self):
+        """Live sampling rate, so the ETA comes from this run rather than a guess.
+
+        Settings move the cost enormously -- an 18 s Motion Trace measured
+        212 s per step against ~3 s for a 2 s Prompt Cinema -- so any estimate
+        made before the run starts is only a placeholder. Once two steps have
+        gone by, the observed seconds-per-step is the honest number.
+        """
+        if not self.sampler_max:
+            return None
+        out = {"value": self.sampler_value, "max": self.sampler_max,
+               "seconds_per_step": None, "last_step_at": None}
+        if len(self.step_times) >= 2:
+            span = self.step_times[-1] - self.step_times[0]
+            out["seconds_per_step"] = round(span / (len(self.step_times) - 1), 2)
+            out["last_step_at"] = self.step_times[-1]
+        return out
 
     def as_dict(self):
         return {
@@ -60,6 +82,13 @@ class Generation:
                         if self.started_at and self.finished_at else None),
             "selected": self.selected,
             "params": self.params,
+            # Wall-clock anchors so the UI can tick a live elapsed time and an
+            # ETA between polls, instead of looking frozen.
+            "queued_at": self.queued_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "expected_seconds": self.expected_seconds,
+            "sampler": self._sampler_dict(),
         }
 
 
@@ -73,9 +102,24 @@ class Batch:
         self.created_at = time.time()
 
     def as_dict(self):
+        gens = [g.as_dict() for g in self.generations]
+        done = sum(1 for g in gens if g["status"] == "done")
+        # Remaining wall clock for the whole batch: ComfyUI runs one prompt at a
+        # time, so unfinished generations queue behind each other and their
+        # estimates add up rather than overlap.
+        remaining = 0.0
+        for g, obj in zip(gens, self.generations):
+            if g["status"] in ("done", "error", "cancelled"):
+                continue
+            expected = g.get("expected_seconds") or 0
+            if g["status"] == "running" and obj.started_at:
+                remaining += max(0.0, expected - (time.time() - obj.started_at))
+            else:
+                remaining += expected
         return {"id": self.id, "kind": self.kind, "mode": self.mode, "meta": self.meta,
-                "created_at": self.created_at,
-                "generations": [g.as_dict() for g in self.generations]}
+                "created_at": self.created_at, "generations": gens,
+                "done_count": done, "total_count": len(gens),
+                "remaining_seconds": round(remaining) if remaining else 0}
 
 
 class JobManager:
@@ -265,7 +309,10 @@ class JobManager:
                                     "installed on the Pod (scripts/install_h3studio_node.sh).")
             expected = graph.expected_cache(mode, prev if idx == 0 else gens[0].params, params)
             gen_id = _short_id("g")
-            gens.append(Generation(gen_id, batch_id, idx, seed, params, api_prompt, expected))
+            generation = Generation(gen_id, batch_id, idx, seed, params, api_prompt, expected)
+            generation.expected_seconds = self._estimate_seconds(
+                mode, quality, expected, duration)
+            gens.append(generation)
             prev = params if idx == 0 else prev
 
         meta = {"prompt": prompt_text, "mode": mode, "quality": quality, "duration": duration,
@@ -311,6 +358,35 @@ class JobManager:
             except comfy_client.ComfyError as e:
                 self._fail(g, str(e))
         return batch
+
+    # Fallbacks measured on the validated Pod (RTX 6000 Ada, 0.4 MP, 2 s) so a
+    # fresh install still shows a sensible ETA before it has any history.
+    _BASE_SECONDS = {
+        (graph.MODE_PROMPT_CINEMA, "draft"): 17, (graph.MODE_PROMPT_CINEMA, "final"): 40,
+        (graph.MODE_IMAGE_TRACE, "draft"): 31, (graph.MODE_IMAGE_TRACE, "final"): 61,
+        (graph.MODE_MOTION_TRACE, "draft"): 70, (graph.MODE_MOTION_TRACE, "final"): 150,
+    }
+    _MISS_EXTRA_SECONDS = 70      # the Qwen3-VL encode a cache MISS pays for
+
+    def _estimate_seconds(self, mode, quality, cache_expected, duration=2.0):
+        """Placeholder estimate, in seconds, until the run reports its own rate.
+
+        Scaled by duration because the frame count drives everything: the
+        baselines below were measured at 2 s, and an 18 s clip is nine times the
+        frames. Without the scaling an 18 s Motion Trace was estimated at ~2
+        minutes and actually took ~43.
+        """
+        scale = max(0.25, float(duration or 2.0) / 2.0)
+        measured = history.typical_seconds(mode, quality, cache_expected)
+        if measured:
+            return round(measured)
+        base = self._BASE_SECONDS.get((mode, quality))
+        if base is None:
+            base = self._BASE_SECONDS.get((mode, "draft"), 60)
+        seconds = base * scale
+        if cache_expected == "MISS":
+            seconds += self._MISS_EXTRA_SECONDS
+        return round(seconds)
 
     def _last_encoder_params(self, mode):
         """Encoder-visible params of the most recent batch in the same mode,
@@ -393,9 +469,30 @@ class JobManager:
                 cls = (gen.api_prompt.get(node) or {}).get("class_type", node)
                 gen.progress_text = _friendly_stage(cls)
                 gen.status = "running"
-        elif mtype == "progress":
-            value, maximum = data.get("value"), data.get("max")
+        elif mtype in ("progress_state", "progress"):
+            # ComfyUI 0.34.2 emits BOTH: the legacy flat "progress" from
+            # comfy.utils.ProgressBar and "progress_state" with a per-node map
+            # from WebUIProgressHandler. Handle both so progress does not depend
+            # on which one a given node happens to drive.
+            #
+            # Note this is not what made the bar look stuck: neither event is
+            # sent during the Qwen3-VL encode, which is the slowest part of a
+            # cache MISS, so there is simply no signal until sampling starts.
+            # Elapsed time and the estimate below are what cover that stretch.
+            value = maximum = None
+            if mtype == "progress_state":
+                for node in (data.get("nodes") or {}).values():
+                    if node.get("state") == "running" and node.get("max"):
+                        value, maximum = node.get("value"), node.get("max")
+                        break
+            else:
+                value, maximum = data.get("value"), data.get("max")
             if maximum:
+                if gen.sampler_value is None or float(value) > gen.sampler_value:
+                    gen.step_times.append(time.time())
+                    del gen.step_times[:-6]      # keep a short trailing window
+                gen.sampler_value = float(value)
+                gen.sampler_max = float(maximum)
                 gen.progress = max(0.0, min(1.0, float(value) / float(maximum)))
                 gen.progress_text = "生成中 %d/%d" % (value, maximum)
         elif mtype == "execution_error":
@@ -417,6 +514,7 @@ class JobManager:
         with self.lock:
             pending = [g for g in self.generations.values()
                        if g.status in ACTIVE_STATES and g.prompt_id]
+        self._refresh_queue_positions()
         for gen in pending:
             try:
                 h = self.client.history(gen.prompt_id)
@@ -432,6 +530,26 @@ class JobManager:
             if not status.get("completed"):
                 continue
             self._complete(gen, h)
+
+    def _refresh_queue_positions(self):
+        """Tell a waiting generation how many jobs are ahead of it.
+
+        "順番待ち" on its own gives no sense of whether anything is happening;
+        "順番待ち（あと2本）" does.
+        """
+        try:
+            q = self.client.queue_state()
+        except comfy_client.ComfyError:
+            return
+        order = [item[1] for item in (q.get("queue_pending") or [])
+                 if isinstance(item, (list, tuple)) and len(item) > 1]
+        with self.lock:
+            for gen in self.generations.values():
+                if gen.status != "queued" or not gen.prompt_id:
+                    continue
+                if gen.prompt_id in order:
+                    ahead = order.index(gen.prompt_id)
+                    gen.progress_text = ("順番待ち（あと%d本）" % ahead) if ahead else "まもなく開始"
 
     def _complete(self, gen, hist):
         files = []
