@@ -357,20 +357,27 @@ class JobManager:
         gen.output_filename = f["filename"]
         gen.finished_at = time.time()
         gen.started_at = gen.started_at or gen.finished_at
-        gen.status = "done"
         gen.progress = 1.0
+        # Classify BEFORE flipping the status. _classify_cache() makes an HTTP
+        # call, so publishing "done" first would let anything watching the
+        # status -- the UI's poll, a caller waiting on the batch -- observe a
+        # finished generation whose cache_result is still None. status is the
+        # completion signal, so everything it implies must be set first.
         gen.cache_result = self._classify_cache(gen)
         gen.progress_text = "done (%s)" % (gen.cache_result or "?")
+        gen.status = "done"
         history.update_generation(
             gen.id, status="done", finished_at=gen.finished_at,
             generation_seconds=round(gen.finished_at - gen.started_at, 2),
             output_path=dest, output_filename=f["filename"], cache_result=gen.cache_result)
 
     def _fail(self, gen, message):
-        gen.status = "error"
+        # Same ordering rule as _complete(): status is the terminal signal, so
+        # the reason must already be readable when a watcher sees "error".
         gen.error = str(message)[:2000]
         gen.finished_at = time.time()
         gen.progress_text = "error"
+        gen.status = "error"
         history.update_generation(gen.id, status="error", error=gen.error, finished_at=gen.finished_at)
         self.notice("error", "%s: %s" % (gen.id, gen.error[:200]))
 

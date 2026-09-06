@@ -318,3 +318,19 @@ Face Refine / SageAttention / RTX VSR の導入と A/B。
 
 baseline への影響: **なし**（ComfyUI / CLIPCached / モデル / baseline workflow /
 Pod venv すべて無変更。Pod を起動していないため Pod 側への追加も現時点でゼロ）。
+
+#### 追記 — 断続的テスト失敗の追跡（同セッション）
+30 テストが約 4 回に 1 回落ちた。原因は **product 側の状態公開順序**だった。
+
+`jobs._complete()` が `status = "done"` を立てた**後**に `_classify_cache()`
+（HTTP 呼び出しを伴う）で `cache_result` を計算していたため、完了を監視している側
+（テスト、および `/api/status` をポーリングする UI）が
+**「done なのに cache_result が None」** の瞬間を観測できた。
+`_fail()` も同型で、`status="error"` を立てた後に `error` を埋めていた。
+
+修正: どちらも terminal signal である `status` を**最後**に立てるよう並べ替えた。
+これでその状態が意味する情報はすべて先に読める。
+同時に、`submit_batch` が queue 投入**後**に `cache_before` を書いていた競合も修正
+（速い 1 本目の更新が古いスナップショットで上書きされ、2 本目が MISS と誤報告されうる）。
+
+修正後 **10 回連続で 30/30 PASS、失敗 0**。

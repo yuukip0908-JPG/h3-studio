@@ -357,7 +357,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("Content-Length", str(len(chunk)))
                 self.end_headers()
-                self.wfile.write(chunk)
+                # HEAD must not carry a body: this connection is keep-alive
+                # (HTTP/1.1), so writing one would desync the next request.
+                if self.command != "HEAD":
+                    self.wfile.write(chunk)
                 return
             self._send(200, f.read(), "video/mp4", {"Accept-Ranges": "bytes"})
 

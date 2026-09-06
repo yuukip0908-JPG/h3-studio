@@ -1,7 +1,8 @@
 H3 Studio v2 -- offline validation (no GPU, no Pod, no billing)
-date: 2026-09-06T07:23:42Z
+date: 2026-09-06T07:51:05Z
 host: Darwin 25.6.0 arm64  python: Python 3.12.14
-commit: 534158a
+commit: 8a26217
+stability: 10 consecutive full runs, 0 failures
 
 test_auto_stop_setting_round_trips (studio.tests.test_studio.ApiServerTests.test_auto_stop_setting_round_trips) ... ok
 test_bad_requests_are_rejected_with_400 (studio.tests.test_studio.ApiServerTests.test_bad_requests_are_rejected_with_400) ... ok
@@ -40,6 +41,6 @@ test_large_frame_uses_extended_length (studio.tests.test_studio.WebSocketClientT
 Exercise the 126/2-byte length path, not just short frames. ... ok
 
 ----------------------------------------------------------------------
-Ran 30 tests in 46.491s
+Ran 30 tests in 46.529s
 
 OK

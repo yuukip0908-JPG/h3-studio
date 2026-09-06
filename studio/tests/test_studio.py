@@ -346,7 +346,9 @@ class EndToEndTests(StudioTestCase):
                                quality="draft", variations=1, duration=2.0,
                                aspect_ratio=graph.ASPECT_RATIOS[0])
         self.wait_batch(batch)
-        self.assertEqual(batch.generations[0].cache_result, "UNKNOWN")
+        g = batch.generations[0]
+        self.assertEqual(g.status, "done", "generation did not complete: %s" % g.error)
+        self.assertEqual(g.cache_result, "UNKNOWN")
 
     def test_export_writes_the_video_and_its_metadata(self):
         m = self.make_manager()
