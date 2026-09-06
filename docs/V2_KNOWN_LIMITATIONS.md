@@ -52,6 +52,26 @@ Motion Trace が約70秒に対し、18秒は46分 = 約40倍）。UI は duratio
 
 Face Refine / SageAttention / RTX VSR、および `docs/V2_AB_TESTS.md` の A/B 一式。
 
+## 1.5 US-WA-1 の GPU 在庫が枯れることがある（2026-09-06 実測）
+
+Network Volume `olmj77x4pc` は **US-WA-1 に固定**されており、Pod は同じデータセンター
+にしか作れない。そのデータセンターの在庫が尽きると、**起動も新規作成もできない**。
+
+実測（2026-09-06 13:19-13:35Z）:
+
+| 操作 | 結果 |
+|---|---|
+| `POST /pods/3lbxf2rnkjsqte/start` ×6（13分） | 全て `There are not enough free GPUs on the host machine` |
+| `POST /pods`（RTX 6000 Ada 単独） | `There are no instances currently available` |
+| `POST /pods`（RTX 6000 Ada + A100 80GB） | 同上 |
+
+**GraphQL の `stockStatus` は当てにならない。** 同時刻に `gpuTypes.lowestPrice` は
+RTX 6000 Ada / A100 とも `stockStatus: "Low"`（=購入可能に見える）を返していたが、
+実際には1台も確保できなかった。**在庫の真偽は `POST /pods` の応答でしか分からない。**
+
+対処: 待つしかない。Pod・コンテナディスク・Volume は全て無事で、データは失われない。
+空いたら `python3.12 scripts/ab_quality.py --run` を実行すれば A/B が完了する。
+
 ## 2. Motion Trace 固有の制約
 
 - **duration を変えると必ず MISS。** 参照動画が生成フレーム数で切り詰められるため

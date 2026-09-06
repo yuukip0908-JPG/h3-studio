@@ -2,14 +2,14 @@
   "captured": "2026-09-06T09:59:52Z",
   "purpose": "Everything needed to recreate the H3 environment on a different host. The OLD pod ufhtfdg9ulv3fj is kept EXITED as insurance and must not be deleted or modified.",
   "old_pod": {
-    "id": "ufhtfdg9ulv3fj",
+    "id": "3lbxf2rnkjsqte",
     "name": "h3-clipcached-baseline",
     "machineId": "bkwan6a3ct4i",
     "desiredStatus": "EXITED",
-    "note": "bound to machineId bkwan6a3ct4i, which has no free GPU; that is the only reason it cannot start. Keep as EXITED insurance."
+    "note": "host full again (2026-09-06). Kept EXITED. ufhtfdg9ulv3fj is also kept EXITED as the original insurance pod."
   },
   "recreate_spec": {
-    "name": "h3-clipcached-baseline-2",
+    "name": "h3-clipcached-baseline-3",
     "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
     "imageName_note": "MUST match. The venv at /workspace/ComfyUI/.venv was built by this image's interpreter (Python 3.12.3, Ubuntu 24.04.4, GCC 13.3.0). A different image with a different Python minor version breaks it.",
     "gpuTypeIds": [

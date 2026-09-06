@@ -42,6 +42,18 @@
 
 ---
 
+## 2.5 進捗（2026-09-06 更新）
+
+**§3 の事前準備は完了済み。** Turbo グラフ分岐・安全判定・ETA 3層・mock・テスト
+（100件 PASS）・A/B ランナー・manifest まで実装とコミットが終わっている。
+
+**GPU A/B は未実行** — US-WA-1 の在庫枯渇のため。起動も新規Pod作成も失敗した
+（`docs/V2_KNOWN_LIMITATIONS.md` §1.5）。空き次第この1コマンドで完了する:
+
+```bash
+/opt/homebrew/bin/python3.12 scripts/ab_quality.py --run
+```
+
 ## 3. 事前準備（GPU不要・先に済ませる）
 
 ### 3-1. Turbo LoRA を Volume へ配置
