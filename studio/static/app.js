@@ -625,8 +625,27 @@ $("btn-gpu-start").addEventListener("click", async () => {
   notice("info", "GPU を起動しています… Pod start → ComfyUI 起動 → health check", 0);
   try {
     const r = await api("/api/gpu/start", { method: "POST", body: "{}" });
-    notice(r.ok ? "info" : "error", (r.ok ? "READY: " : "失敗: ") + (r.error || r.steps.join(" → ")));
-  } catch (e) { notice("error", e.message); }
+    if (r.ok) {
+      notice("info", "READY: " + r.steps.join(" → "));
+    } else if (r.retryable) {
+      /* RunPod had no free GPU on this Pod's host. Nothing broke and nothing is
+         billing, so this is a wait, not a failure -- saying "失敗" sends the
+         operator looking for a bug in the Studio that is not there. */
+      notice("warn", "GPU の空き待ちです（RunPod 側の在庫切れ）。Pod・モデル・キャッシュは無事で、課金も発生していません。"
+                   + "数分おいて START GPU をもう一度押してください。" + (r.error ? "（" + r.error + "）" : ""), 0);
+    } else {
+      notice("error", "失敗: " + (r.error || r.steps.join(" → ")));
+    }
+  } catch (e) {
+    /* The start can take longer than the browser is willing to wait: Pod start
+       plus ComfyUI boot is minutes, and the request has been cut off before.
+       The server does not stop when that happens -- the Pod can come up and
+       start billing while this page says "error". Never report that as a plain
+       failure; the next status poll shows what actually happened. */
+    notice("error", "起動リクエストが途中で切れました（" + e.message + "）。"
+                  + "Pod はそのまま起動している可能性があります。状態表示を確認し、"
+                  + "「実行中」になっていて使わないなら STOP GPU を押してください。", 0);
+  }
 });
 
 $("btn-gpu-stop").addEventListener("click", async () => {
