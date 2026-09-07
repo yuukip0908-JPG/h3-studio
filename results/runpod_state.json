@@ -50,20 +50,17 @@
     "doctor": "FAIL=0 WARN=0"
   },
   "previousPods": [
-    "ufhtfdg9ulv3fj",
-    "y9ts66clj5wml6"
+    "ufhtfdg9ulv3fj"
   ],
-  "previousPodId": "y9ts66clj5wml6",
-  "podCleanup": "2026-09-07: six unused EXITED Pods deleted on the operator's instruction (ttgvtu9fb864k4, u3j83y0qfrdc56, jqj722x4jkwcan, otyu05x8yh2v96, sgiaeck1hh0m1l, 3lbxf2rnkjsqte). Nothing unique lived on them -- every persistent path is under /workspace on network volume olmj77x4pc, which was verified present afterwards. Remaining: y9ts66clj5wml6 (current) and ufhtfdg9ulv3fj (original, insurance).",
+  "previousPodId": "ufhtfdg9ulv3fj",
+  "podCleanup": "2026-09-07: six unused Pods deleted, then the redundant A100 y9ts66clj5wml6, all on the operator's instruction and all through the four-condition guard. Remaining: nkiurl6132qe5t (active, RTX 6000 Ada $0.84/hr) and ufhtfdg9ulv3fj (backup). Network volume olmj77x4pc (200GB, US-WA-1) verified present after every deletion.",
   "gpuVerified": true,
   "gpuVerifiedFor": "nkiurl6132qe5t",
   "podRoles": {
     "active": "nkiurl6132qe5t",
     "backup": "ufhtfdg9ulv3fj",
-    "temporary": [
-      "y9ts66clj5wml6"
-    ],
-    "note": "nkiurl6132qe5t created 2026-09-07 by the new START GPU path: RTX 6000 Ada 48GB at $0.84/hr, verified by nvidia-smi. y9ts66clj5wml6 is the A100 at $1.59/hr the old path acquired; it is redundant now and is a deletion candidate (EXITED, not active, shares olmj77x4pc, no volume of its own).",
+    "temporary": [],
+    "note": "nkiurl6132qe5t: RTX 6000 Ada 48GB at $0.84/hr, created 2026-09-07 by the new START GPU path and confirmed by nvidia-smi. ufhtfdg9ulv3fj: the original Pod, kept as backup. The A100 y9ts66clj5wml6 ($1.59/hr) was deleted 2026-09-07 on the operator's instruction once the cheap card was available again.",
     "policy": "A Pod is disposable; the network volume is the environment. Delete only when EXITED, not active, mounting olmj77x4pc and carrying no volume of its own (studio.runpod_ctl.delete_pod enforces all four). The volume is never deleted."
   }
 }

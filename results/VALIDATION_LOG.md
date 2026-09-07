@@ -854,3 +854,30 @@ Pod は3基（active `nkiurl6132qe5t` / backup `ufhtfdg9ulv3fj` / 不要 `y9ts66
 CLAUDE.md の規則どおり**指示があるまで削除しない**。
 
 テスト **138件 PASS**。
+
+### 2026-09-07 — 冗長になった A100 を削除
+
+`y9ts66clj5wml6`（A100-SXM4-80GB / $1.59時）を、ユーザー指示により削除した。
+新しい START GPU 経路が RTX 6000 Ada（$0.84時）を確保できるようになり、役目を終えたため。
+
+削除前に4条件を確認（`runpod_ctl.delete_pod()` が強制）:
+
+| 条件 | 実測 |
+|---|---|
+| EXITED である | EXITED |
+| active ではない | active=`nkiurl6132qe5t` |
+| 保護対象でない | keep=`nkiurl6132qe5t`, `ufhtfdg9ulv3fj` |
+| 共有 Volume を使っている | `olmj77x4pc` |
+| Pod 固有ボリュームが無い | `volumeInGb=0` |
+
+削除後の API 再確認:
+
+```
+nkiurl6132qe5t  h3-clipcached-baseline-3  EXITED  $0.84/時  volume=olmj77x4pc
+ufhtfdg9ulv3fj  h3-clipcached-baseline    EXITED  $0.84/時  volume=olmj77x4pc
+合計 2 基 / RUNNING 0 基
+olmj77x4pc  200GB  US-WA-1  name=h3-clipcached-baseline
+```
+
+`y9ts66clj5wml6` 消滅=True / 保護対象2基 健在=True / Volume 200GB 保持=True。
+残るディスク課金対象は 60GB × 2基（ピーク時は 60GB × 8基だった）。
