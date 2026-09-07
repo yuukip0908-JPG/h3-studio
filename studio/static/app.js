@@ -174,6 +174,8 @@ let statusTimer = null;
 async function pollStatus() {
   try {
     const s = await api("/api/status");
+    state.pollFails = 0;
+    state.lastGpu = s.gpu;
     renderGpu(s.gpu);
     renderStats(s.stats);
     if (state.batch) {
@@ -181,18 +183,27 @@ async function pollStatus() {
       if (fresh) renderResults(fresh);
       tickResults();
     }
-      state.comfyReady = Boolean(s.gpu.comfy_ready);
+    state.comfyReady = Boolean(s.gpu.comfy_ready);
     renderReadiness();
     state.busy = s.gpu.active_jobs > 0;
     $("btn-cancel").hidden = !state.busy;
     $("btn-generate").disabled = state.busy;
-    state.comfyReady = false;
-    renderReadiness();
   } catch (e) {
-    /* The Studio backend itself is unreachable (stopped, or never started).
-       That is a different condition from "RunPod said no", and the UI must not
-       silently look like a missing API key. */
-    renderGpu({ pod_state: "UNKNOWN", studio_down: true, pod_error: e.message });
+    /* One failed poll is not a dead backend. Reloading the page, restarting the
+       Studio, or any hiccup aborts the in-flight request, and treating that as
+       "the Studio is down" used to grey out STOP GPU -- while a Pod was running
+       and billing, which is precisely when the button has to work.
+       So: keep showing the last known state, and only declare the backend gone
+       after several consecutive failures. */
+    state.pollFails = (state.pollFails || 0) + 1;
+    if (state.pollFails < 3 && state.lastGpu) {
+      renderGpu(Object.assign({}, state.lastGpu, { poll_stale: true }));
+    } else {
+      renderGpu(Object.assign({}, state.lastGpu || {}, {
+        pod_state: (state.lastGpu && state.lastGpu.pod_state) || "UNKNOWN",
+        studio_down: true, pod_error: e.message,
+      }));
+    }
   } finally {
     statusTimer = setTimeout(pollStatus, state.busy ? 1500 : 5000);
   }
@@ -268,10 +279,15 @@ function renderGpu(g) {
   const unknown = st === "UNKNOWN";
   const starting = Boolean(g.start && g.start.busy);
   $("btn-gpu-start").disabled = Boolean(g.studio_down) || noKey || st === "RUNNING" || starting;
-  $("btn-gpu-stop").disabled = Boolean(g.studio_down) || noKey || st !== "RUNNING";
+  /* STOP is the button that ends a bill, so it is disabled only when the Pod is
+     *known* to be stopped. Not knowing is a reason to let the operator try, not
+     a reason to take the control away -- the server refuses safely if there is
+     nothing to stop. */
+  $("btn-gpu-stop").disabled = noKey || st === "EXITED";
 
   let why = "";
-  if (g.studio_down) why = "H3 Studio backend が停止しています（bash scripts/start_studio.sh）。";
+  if (g.poll_stale) why = "状態の取得に一度失敗しました（表示は直前の値）。STOP GPU は押せます。";
+  else if (g.studio_down) why = "H3 Studio backend が停止しています（bash scripts/start_studio.sh）。";
   else if (noKey) why = "RunPod API キーを Keychain から読めません。";
   else if (unknown && g.pod_error) why = "RunPod に問い合わせできません: " + g.pod_error;
   else if (g.start && g.start.error && !starting) why = g.start.error;
@@ -847,7 +863,15 @@ $("btn-gpu-stop").addEventListener("click", async () => {
     if (r.ok && r.verified) notice("info", "GPU を停止しました（RunPod で EXITED を確認済み）。Volume は保持されています。");
     else if (r.ok) notice("warn", r.error || "停止要求は通りましたが EXITED を確認できていません。", 0);
     else notice("warn", r.error);
-  } catch (e) { notice("error", e.message); }
+  } catch (e) {
+    /* Stopping runs stop_h3.sh over SSH and then waits for RunPod to report
+       EXITED, which can outlast the browser's patience. The server does not
+       abandon it when the request is dropped. */
+    notice("warn", "停止リクエストの応答を受け取れませんでした（" + e.message + "）。"
+                 + "サーバ側では停止処理が続いている可能性があります。数十秒後に状態表示を確認し、"
+                 + "まだ実行中ならもう一度 STOP GPU を押してください。", 0);
+  }
+  pollStatus();
 });
 
 $("stop-after-gen").addEventListener("change", async (e) => {
