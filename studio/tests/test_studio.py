@@ -1229,6 +1229,63 @@ class ApiServerTests(StudioTestCase):
         self.assertIn("still running", r["error"])
 
 
+class LocalOnlyGuardTests(ApiServerTests):
+    """This process binds to loopback, has no auth, and can spend money.
+
+    Loopback is not a boundary a browser enforces on its own: a name that
+    resolves to 127.0.0.1 is same-origin to the browser, and a cross-origin
+    fetch with Content-Type: text/plain arrives with no preflight at all.
+    """
+
+    # Only the guard tests below should run in this class; ApiServerTests is
+    # inherited for its fixture, not for its cases.
+    for _name in [n for n in dir(ApiServerTests) if n.startswith("test_")]:
+        locals()[_name] = None
+    del _name
+
+    def _request(self, path, method="GET", headers=None, body=None):
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(self.base + path, data=body, method=method)
+        for k, v in (headers or {}).items():
+            req.add_header(k, v)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    def test_the_ui_still_loads(self):
+        self.assertEqual(self._request("/"), 200)
+        self.assertEqual(self._request("/api/status"), 200)
+
+    def test_a_same_origin_post_is_served(self):
+        self.assertEqual(self._request(
+            "/api/motion_prompt", "POST",
+            {"Content-Type": "application/json", "Origin": self.base}, b"{}"), 200)
+
+    def test_a_rebound_hostname_is_refused(self):
+        """DNS rebinding: attacker.example resolving to 127.0.0.1."""
+        self.assertEqual(self._request("/api/status", headers={"Host": "evil.example"}), 403)
+
+    def test_a_cross_origin_post_is_refused(self):
+        self.assertEqual(self._request(
+            "/api/gpu/start", "POST",
+            {"Content-Type": "application/json", "Origin": "https://evil.example"}, b"{}"), 403)
+
+    def test_a_simple_request_cannot_dodge_the_preflight(self):
+        """text/plain needs no preflight, so the content type has to be checked."""
+        self.assertEqual(self._request(
+            "/api/gpu/start", "POST", {"Content-Type": "text/plain"}, b"{}"), 403)
+
+    def test_uploads_are_still_allowed(self):
+        """The upload route is genuinely multipart and must keep working."""
+        self.assertNotEqual(self._request(
+            "/api/upload", "POST",
+            {"Content-Type": "multipart/form-data; boundary=x", "Origin": self.base},
+            b"--x--\r\n"), 403)
+
+
 class RealPodRegressionTests(StudioTestCase):
     """Regressions for defects that only a real Pod could expose.
 

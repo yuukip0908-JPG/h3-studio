@@ -377,10 +377,16 @@ def record_actual_gpu(name, pod_id=None):
 
 def heartbeat(busy=False):
     """Tell the watchdog the Studio is alive, and whether it is mid-generation."""
+    # Written atomically: the reader is a different process, and open("w")
+    # truncates before it writes. A watchdog that caught that window would read
+    # an empty file, fail to parse it, and -- by its own rule -- treat the
+    # unknown as busy. Rename leaves no window to catch.
     try:
         os.makedirs(os.path.dirname(config.WATCHDOG_HEARTBEAT), exist_ok=True)
-        with open(config.WATCHDOG_HEARTBEAT, "w", encoding="utf-8") as f:
+        tmp = config.WATCHDOG_HEARTBEAT + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write("%d %d\n" % (int(time.time()), 1 if busy else 0))
+        os.replace(tmp, config.WATCHDOG_HEARTBEAT)
     except OSError:
         pass
 

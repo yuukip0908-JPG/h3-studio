@@ -178,6 +178,13 @@ async function pollStatus() {
     state.lastGpu = s.gpu;
     renderGpu(s.gpu);
     renderStats(s.stats);
+    /* A reload used to empty the results panel: state.batch only ever got set
+       by submitting, so the finished videos vanished even though they were on
+       disk and in this very payload. Adopt the newest batch when we have none. */
+    if (!state.batch && s.batches && s.batches.length) {
+      state.batch = s.batches[0];
+      renderResults(s.batches[0]);
+    }
     if (state.batch) {
       const fresh = s.batches.find((b) => b.id === state.batch.id);
       if (fresh) renderResults(fresh);
@@ -894,19 +901,50 @@ $("auto-stop").addEventListener("change", async (e) => {
   } catch (err) { notice("error", err.message); }
 });
 
+/* History rows come from SQLite and carry output_path but no output_url; the
+   video route now serves from history too, so the URL can be derived. This is
+   what makes a finished clip survive a Studio restart, not just a reload. */
+function historyBatchToView(b) {
+  return Object.assign({}, b, {
+    generations: (b.generations || []).map((g) => Object.assign({}, g, {
+      output_url: (g.status === "done" && g.output_path) ? "/api/video/" + g.id : null,
+    })),
+  });
+}
+
+let historyBatches = [];
+
 async function loadHistory() {
   try {
     const h = await api("/api/history?limit=15");
+    historyBatches = h.batches;
     $("history").innerHTML = h.batches.map((b) => {
       const done = b.generations.filter((g) => g.status === "done").length;
       const sel = b.generations.find((g) => g.selected);
-      return `<div class="h-item"><b>${JP_KIND[b.kind] || b.kind} · ${JP_MODE[b.mode] || b.mode}</b><br>
+      return `<div class="h-item" data-batch="${b.id}"><b>${JP_KIND[b.kind] || b.kind} · ${JP_MODE[b.mode] || b.mode}</b><br>
         ${esc((b.prompt || "").slice(0, 70))}<br>
         ${done}/${b.generations.length} 本${sel ? " · ★選択済み" : ""}
         ${b.reference_strength ? " · 忠実度 " + b.reference_strength : ""}</div>`;
     }).join("") || "<div class='hint'>まだ履歴はありません。</div>";
+
+    /* Nothing on screen and nothing in this process's memory (a restarted
+       Studio): show the most recent batch from history so the work is still
+       there. */
+    if (!state.batch && h.batches.length) {
+      const view = historyBatchToView(h.batches[0]);
+      if (view.generations.some((g) => g.output_url)) renderResults(view);
+    }
   } catch (e) { /* history is non-critical */ }
 }
+
+$("history").addEventListener("click", (e) => {
+  const item = e.target.closest("[data-batch]");
+  if (!item) return;
+  const b = historyBatches.find((x) => x.id === item.dataset.batch);
+  if (!b) return;
+  renderResults(historyBatchToView(b));
+  notice("info", "履歴からこのバッチを開きました。");
+});
 
 (async function init() {
   try { await loadConfig(); maybeSuggestTags(); renderDurationHint(); }

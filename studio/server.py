@@ -325,9 +325,52 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._dispatch("POST")
 
+    # This process binds to loopback, has no authentication, and can start a
+    # billable GPU. Loopback is not a boundary a browser respects on its own:
+    #
+    #   * DNS rebinding -- a page on attacker.example whose name resolves to
+    #     127.0.0.1 is same-origin as far as the browser is concerned, and can
+    #     then drive every endpoint here. Checking Host closes that.
+    #   * CSRF -- a cross-origin fetch with Content-Type: text/plain is a
+    #     "simple request" and arrives with no preflight; this server parsed the
+    #     body as JSON regardless of its type, so any site the operator visited
+    #     could POST /api/gpu/start. Checking Origin closes that.
+    #
+    # Both are refusals, not sanitisation: there is no legitimate request from
+    # another origin to a single-operator local tool.
+    ALLOWED_HOSTNAMES = frozenset(["127.0.0.1", "localhost", "::1", "[::1]"])
+
+    def _hostname(self, value):
+        value = (value or "").strip()
+        if value.startswith("["):                       # [::1]:8010
+            return value.split("]")[0] + "]"
+        return value.rsplit(":", 1)[0] if ":" in value else value
+
+    def _guard_request(self, method):
+        """Returns an error string when the request must not be served."""
+        host = self._hostname(self.headers.get("Host"))
+        if host and host not in self.ALLOWED_HOSTNAMES:
+            return ("Host %r is not loopback. This is a single-operator local "
+                    "tool and does not serve other names." % host)
+        origin = self.headers.get("Origin")
+        if origin:
+            parsed = urllib.parse.urlparse(origin)
+            if self._hostname(parsed.netloc) not in self.ALLOWED_HOSTNAMES:
+                return "cross-origin request from %s is refused" % origin
+        if method == "POST":
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            # Requiring JSON forces a preflight for anything cross-origin, and
+            # the preflight has nowhere to land: OPTIONS is not implemented.
+            if ctype and ctype != "application/json" and not ctype.startswith("multipart/"):
+                return "Content-Type %r is not accepted" % ctype
+        return None
+
     def _dispatch(self, method):
         parsed = urllib.parse.urlparse(self.path)
         path, query = parsed.path, urllib.parse.parse_qs(parsed.query)
+        refusal = self._guard_request(method)
+        if refusal:
+            return self._error(403, refusal)
         try:
             if path.startswith("/api/"):
                 if GUARD and path not in ("/api/status",):
@@ -571,9 +614,30 @@ class Handler(BaseHTTPRequestHandler):
         return batch.as_dict()
 
     def _video(self, gen_id):
+        """Serve a finished video, from memory or from history.
+
+        The JobManager only knows about this process's batches, so a Studio
+        restart -- or just a page reload landing on an older generation -- used
+        to 404 for a file that is sitting on disk. History records output_path,
+        so fall back to it, confined to the output directory: a path from the
+        database is still a path, and this handler takes an id from the URL.
+        """
+        path = None
         gen = MANAGER.generation(gen_id)
-        if gen is None or not gen.output_path or not os.path.exists(gen.output_path):
+        if gen is not None and gen.output_path:
+            path = gen.output_path
+        else:
+            row = history.get_generation(gen_id)
+            if row and row.get("output_path"):
+                candidate = os.path.realpath(row["output_path"])
+                if candidate.startswith(os.path.realpath(config.OUTPUT_DIR) + os.sep):
+                    path = candidate
+        if not path or not os.path.exists(path):
             return self._error(404, "no video for %s" % gen_id)
+
+        class _Gen:
+            output_path = path
+        gen = _Gen()
         size = os.path.getsize(gen.output_path)
         rng = self.headers.get("Range")
         with open(gen.output_path, "rb") as f:
