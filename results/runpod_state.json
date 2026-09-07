@@ -23,17 +23,17 @@
     "containerDiskInGb": 60,
     "cloudType": "SECURE"
   },
-  "podId": "nkiurl6132qe5t",
+  "podId": "pf6hrwqcpjjhss",
   "networkVolumeId": "olmj77x4pc",
   "status": "BASELINE_READY",
   "lastUpdated": "2026-09-07",
   "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
   "note_allowedCudaVersions": "omitted: requiring 13.0 returned \"no instances currently available\"",
-  "publicIp": "195.26.233.14",
-  "sshPort": 25387,
+  "publicIp": "195.26.233.33",
+  "sshPort": 41611,
   "costPerHrTotal": 0.84,
   "gpuUsdPerHour": 1.59,
-  "comfyUrl": "https://nkiurl6132qe5t-8188.proxy.runpod.net",
+  "comfyUrl": "https://pf6hrwqcpjjhss-8188.proxy.runpod.net",
   "accountSpendRatePerHr": 0.867,
   "comfyuiCommit": "169fcf35a2fc163fec31338b816503ddac0d3fcf",
   "clipcachedCommit": "f17ba8f369740a02a2138031517f853eb67b9d43",
@@ -50,9 +50,10 @@
     "doctor": "FAIL=0 WARN=0"
   },
   "previousPods": [
-    "ufhtfdg9ulv3fj"
+    "ufhtfdg9ulv3fj",
+    "nkiurl6132qe5t"
   ],
-  "previousPodId": "ufhtfdg9ulv3fj",
+  "previousPodId": "nkiurl6132qe5t",
   "podCleanup": "2026-09-07: six unused Pods deleted, then the redundant A100 y9ts66clj5wml6, all on the operator's instruction and all through the four-condition guard. Remaining: nkiurl6132qe5t (active, RTX 6000 Ada $0.84/hr) and ufhtfdg9ulv3fj (backup). Network volume olmj77x4pc (200GB, US-WA-1) verified present after every deletion.",
   "gpuVerified": true,
   "gpuVerifiedFor": "nkiurl6132qe5t",
