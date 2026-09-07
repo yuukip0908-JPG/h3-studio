@@ -1010,6 +1010,7 @@ class ApiServerTests(StudioTestCase):
             "lastStartedAt": None}
         runpod_ctl.have_api_key = lambda: True
         srv.build_app(comfy=comfy_client.ComfyClient(self.url))
+        srv._invalidate_pod_cache()      # module-level; must not leak between tests
         self.manager = srv.MANAGER
         self.httpd = srv.Server(("127.0.0.1", 0), srv.Handler)
         import threading
@@ -4430,6 +4431,226 @@ class ProgressHonestyTests(StudioTestCase):
         self.assertNotIn("expected_seconds", body,
                          "elapsed-against-estimate is a guess wearing a progress bar")
         self.assertIn("indeterminate", src.split("function renderResults(")[1][:2000])
+
+
+# --------------------------------------------------------------------------
+# Reliability Phase 5: stop paying for the same thing on every poll.
+class VideoCacheTests(ApiServerTests):
+    """A finished generation's file never changes, but the route said
+    Cache-Control: no-store, so the browser re-fetched 1.3 MB every time the
+    panel was rebuilt -- about 2 MB/s of localhost traffic for four videos
+    nobody had touched."""
+
+    def _finished(self):
+        batch = self.post("/api/generate", {
+            "mode": "prompt_cinema", "prompt": "cacheable", "quality": "draft",
+            "variations": 1, "duration": 2.0, "aspect_ratio": graph.ASPECT_RATIOS[0]})
+        obj = self.manager.batch(batch["id"])
+        self.assertTrue(wait_until(lambda: all(g.status == "done" for g in obj.generations), 40))
+        return obj.generations[0].id
+
+    def _get(self, path, headers=None):
+        req = self.urllib.Request(self.base + path, headers=headers or {})
+        try:
+            with self.urllib.urlopen(req, timeout=30) as r:
+                return r.status, r.read(), {k.lower(): v for k, v in r.headers.items()}
+        except self.urllib.HTTPError as e:      # 304 arrives here
+            return e.code, e.read(), {k.lower(): v for k, v in (e.headers or {}).items()}
+
+    def test_a_finished_video_is_cacheable_and_carries_a_validator(self):
+        gid = self._finished()
+        status, body, head = self._get("/api/video/" + gid)
+        self.assertEqual(status, 200)
+        self.assertGreater(len(body), 0)
+        self.assertTrue(head.get("etag"), "no validator, so the browser can only re-download")
+        self.assertNotIn("no-store", head.get("cache-control", ""),
+                         "no-store forbids the cache this whole change is about")
+        self.assertIn("private", head.get("cache-control", ""))
+
+    def test_a_matching_validator_answers_304_with_no_body(self):
+        gid = self._finished()
+        _s, _b, head = self._get("/api/video/" + gid)
+        status, body, head2 = self._get("/api/video/" + gid,
+                                        {"If-None-Match": head["etag"]})
+        self.assertEqual(status, 304)
+        self.assertEqual(body, b"")
+        self.assertEqual(head2.get("etag"), head["etag"])
+
+    def test_a_stale_validator_gets_the_file(self):
+        gid = self._finished()
+        status, body, _h = self._get("/api/video/" + gid,
+                                     {"If-None-Match": '"not-this-one"'})
+        self.assertEqual(status, 200)
+        self.assertGreater(len(body), 0)
+
+    def test_the_validator_changes_when_the_file_does(self):
+        """It is a validator, not a promise: nothing is served as immutable."""
+        gid = self._finished()
+        _s, _b, first = self._get("/api/video/" + gid)
+        path = history.get_generation(gid)["output_path"]
+        with open(path, "ab") as f:
+            f.write(b"\x00")
+        _s2, _b2, second = self._get("/api/video/" + gid)
+        self.assertNotEqual(first["etag"], second["etag"])
+
+    def test_a_range_request_still_works_and_is_validated(self):
+        gid = self._finished()
+        status, body, head = self._get("/api/video/" + gid, {"Range": "bytes=0-99"})
+        self.assertEqual(status, 206)
+        self.assertEqual(len(body), 100)
+        self.assertTrue(head.get("etag"))
+        self.assertIn("bytes 0-99/", head.get("content-range", ""))
+
+    def test_a_video_restored_from_history_is_cached_the_same_way(self):
+        gid = self._finished()
+        self.manager.generations.clear()          # a restarted Studio's memory
+        status, _b, head = self._get("/api/video/" + gid)
+        self.assertEqual(status, 200)
+        self.assertTrue(head.get("etag"))
+
+    def test_the_output_directory_confinement_still_holds(self):
+        """Caching must not have loosened the check on a path that came from a
+        database row and an id taken from a URL."""
+        outside = os.path.join(self.tmp, "outside.mp4")
+        with open(outside, "wb") as f:
+            f.write(b"not yours")
+        history.create_batch("b_out", kind="draft", mode="prompt_cinema", prompt="p")
+        history.create_generation("g_out", "b_out", 0, 1, {})
+        history.update_generation("g_out", status="done", output_path=outside)
+        status, _b, _h = self._get("/api/video/g_out")
+        self.assertEqual(status, 404, "a file outside OUTPUT_DIR was served")
+
+    def test_status_is_still_never_cached(self):
+        _s, _b, head = self._get("/api/status")
+        self.assertIn("no-store", head.get("cache-control", ""),
+                      "state must not be cacheable just because files now are")
+
+
+class PodStateCacheTests(ApiServerTests):
+    """describe() is a RunPod round trip measured at 600-700 ms, and /api/status
+    asked for it on every 1.5 s poll -- 686 of the 878 ms a call took."""
+
+    def setUp(self):
+        super().setUp()
+        self.calls = []
+        self.state = "RUNNING"
+        self.srv._invalidate_pod_cache()
+
+        def counted(pod_id=None):
+            self.calls.append(1)
+            return {"podId": "testpod", "desiredStatus": self.state, "gpu": "RTX 6000 Ada",
+                    "gpuCount": 1, "costPerHr": 0.84, "networkVolumeId": "vol1",
+                    "lastStartedAt": None}
+
+        runpod_ctl.describe = counted
+
+    def tearDown(self):
+        self.srv._invalidate_pod_cache()
+        super().tearDown()
+
+    def test_repeated_polls_ask_runpod_once(self):
+        for _ in range(6):
+            self.get("/api/status")
+        self.assertEqual(len(self.calls), 1,
+                         "every poll went to the RunPod API: %d calls" % len(self.calls))
+
+    def test_the_payload_says_how_old_the_answer_is(self):
+        self.get("/api/status")
+        again = self.get("/api/status")["gpu"]
+        self.assertIn("pod_state_age_seconds", again,
+                      "a cached answer must carry its age, not pretend to be live")
+
+    def test_the_cache_expires(self):
+        self.get("/api/status")
+        self.srv._POD_CACHE["at"] -= self.srv._POD_TTL + 1
+        self.get("/api/status")
+        self.assertEqual(len(self.calls), 2)
+
+    def test_starting_the_gpu_invalidates_it(self):
+        self.get("/api/status")
+        before = len(self.calls)
+        self.srv._invalidate_pod_cache()          # what _start_gpu does
+        self.get("/api/status")
+        self.assertEqual(len(self.calls), before + 1)
+
+    def test_stopping_the_gpu_invalidates_it(self):
+        """A cached "RUNNING" that outlives the stop that changed it is worse
+        than no cache at all -- it is a confident wrong answer about a bill."""
+        orig = (runpod_ctl.stop, runpod_ctl.stop_comfyui)
+        runpod_ctl.stop = lambda *a, **k: {"desiredStatus": "EXITED", "stopVerified": True,
+                                           "networkVolumeId": "vol1"}
+        runpod_ctl.stop_comfyui = lambda *a, **k: (0, "", "")
+        try:
+            self.assertEqual(self.get("/api/status")["gpu"]["pod_state"], "RUNNING")
+            self.state = "EXITED"
+            self.post("/api/gpu/stop", {"force": True})
+            self.assertEqual(self.get("/api/status")["gpu"]["pod_state"], "EXITED",
+                             "the panel still showed the Pod as running after a stop")
+        finally:
+            runpod_ctl.stop, runpod_ctl.stop_comfyui = orig
+
+    def test_a_failing_api_is_not_answered_from_cache(self):
+        """A refresh that fails must report UNKNOWN, not the last good answer."""
+        self.assertEqual(self.get("/api/status")["gpu"]["pod_state"], "RUNNING")
+        self.srv._POD_CACHE["at"] -= self.srv._POD_TTL + 1
+
+        def explode(pod_id=None):
+            raise runpod_ctl.RunPodError("api down")
+
+        runpod_ctl.describe = explode
+        g = self.get("/api/status")["gpu"]
+        self.assertEqual(g["pod_state"], "UNKNOWN")
+        self.assertIn("pod_error", g)
+
+    def test_the_decisions_that_must_be_fresh_do_not_use_the_cache(self):
+        """Starting ComfyUI on a running Pod is an action, not a display."""
+        self.get("/api/status")
+        before = len(self.calls)
+        self.state = "EXITED"
+        r = self.post("/api/comfyui/start", {})
+        self.assertGreater(len(self.calls), before,
+                           "the gate read a cached Pod state")
+        self.assertEqual(r["reason"], "pod_not_running")
+
+
+class RenderReuseTests(unittest.TestCase):
+    """The panel is front-end code and nothing in this suite can execute a DOM,
+    so these are source-level guards on the invariants that were measured in a
+    real browser: 5 videos on screen, 0 elements created across 8 render passes
+    and across a 12 s poll window, 0 bytes re-transferred."""
+
+    @staticmethod
+    def _src():
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "studio", "static", "app.js")
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_results_grid_is_not_rebuilt_wholesale(self):
+        body = self._src().split("function renderResults(")[1].split("\n}")[0]
+        self.assertNotIn('$("results").innerHTML =', body,
+                         "rebuilding the grid destroys and recreates every video element")
+        self.assertIn("ensureChild(root, g.id", body,
+                      "cards must be keyed by the generation id")
+
+    def test_the_long_draft_panel_is_not_rebuilt_wholesale(self):
+        body = self._src().split("function renderLongDraftRun(")[1].split("\nfunction ")[0]
+        self.assertNotIn("box.innerHTML = `", body)
+        self.assertIn("ensureChild(segsRoot", body,
+                      "segment cards must be keyed too -- they carry videos as well")
+
+    def test_a_video_is_matched_by_data_not_by_its_src_property(self):
+        """element.src is normalised to an absolute URL, so comparing it with
+        the relative one is always false: the node gets replaced anyway while
+        the code looks like it checked."""
+        body = self._src().split("function ensureVideo(")[1].split("\n}")[0]
+        self.assertIn("dataset.src === url", body)
+        self.assertNotIn(".src === url", body.replace("dataset.src === url", ""))
+
+    def test_a_generation_that_disappears_is_removed(self):
+        src = self._src()
+        self.assertIn("pruneChildren(root, keys)", src)
+        self.assertIn("function pruneChildren(", src)
 
 
 if __name__ == "__main__":

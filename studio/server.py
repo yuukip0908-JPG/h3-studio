@@ -54,7 +54,8 @@ def _gpu_status():
         "auto_stop": GUARD.status() if GUARD else {"enabled": False},
     }
     try:
-        info = runpod_ctl.describe()
+        info, pod_age = _pod_described()
+        out["pod_state_age_seconds"] = pod_age
         out.update({
             "pod_state": info.get("desiredStatus"),
             "gpu": info.get("gpu"),
@@ -162,6 +163,7 @@ def _start_comfyui_only(force=False):
             # cached from the previous ComfyUI.
             MANAGER.rebind(config.comfy_url())
             MANAGER.notice("info", "ComfyUI を起動しました。")
+        _invalidate_pod_cache()
         return {"ok": bool(ready), "reason": None if ready else "not_healthy",
                 "exit_code": code, "comfy_ready": ready,
                 "detail": (out or "")[-800:] or (err or "")[-800:],
@@ -172,6 +174,47 @@ def _start_comfyui_only(force=False):
     finally:
         with _COMFY_START["lock"]:
             _COMFY_START["busy"] = False
+
+
+# The Pod description is a RunPod REST round trip measured at 600-700 ms, and
+# /api/status asked for it on every 1.5 s poll -- 686 of the 878 ms a status
+# call took. A Pod's desiredStatus does not change on that timescale, so it is
+# cached like billing already is. Anything that CHANGES the Pod state
+# invalidates it, and the decisions that must be fresh (starting ComfyUI on a
+# running Pod, verifying a stop) call runpod_ctl.describe() directly and are
+# deliberately not routed through here.
+_POD_CACHE = {"at": 0.0, "value": None}
+_POD_TTL = 12.0
+
+# There is deliberately no cache for ComfyUI liveness. A five-second one was
+# tried and removed: comfy_start_available is derived from it, so a recovered
+# ComfyUI still read as 停止中 with a restart button offered for five seconds
+# after it came back -- its own test caught that. The probe is one /queue call
+# (~160 ms) against the ~690 ms describe() that actually made /api/status slow,
+# and Phase 4's whole point was that this answer is honest.
+
+
+def _pod_described(force=False):
+    """describe(), at most once per TTL. A failure is never answered from cache.
+
+    Serving a stale "RUNNING" after the API stopped answering would be a
+    confident wrong answer about a billing Pod; the error propagates instead and
+    _gpu_status reports UNKNOWN exactly as it did before.
+    """
+    now = time.time()
+    if not force and _POD_CACHE["value"] is not None and now - _POD_CACHE["at"] <= _POD_TTL:
+        return _POD_CACHE["value"], round(now - _POD_CACHE["at"])
+    info = runpod_ctl.describe()          # raises RunPodError; not cached
+    _POD_CACHE["value"] = info
+    _POD_CACHE["at"] = now
+    return info, 0
+
+
+def _invalidate_pod_cache():
+    """Called after anything that moves the Pod. A cached state that outlives
+    the action that changed it is worse than no cache at all."""
+    _POD_CACHE["at"] = 0.0
+    _POD_CACHE["value"] = None
 
 
 _BILLING_CACHE = {"at": 0.0, "value": None}
@@ -291,12 +334,14 @@ def _start_gpu(confirm_gpu=None, wait_seconds=0):
     global STARTER
     if STARTER is None:
         STARTER = _build_starter()
+    _invalidate_pod_cache()
     status = STARTER.begin(confirm_gpu=confirm_gpu)
     if wait_seconds:
         deadline = time.time() + wait_seconds
         while time.time() < deadline and STARTER.status()["busy"]:
             time.sleep(0.2)
         status = STARTER.status()
+    _invalidate_pod_cache()
     return {"ok": status["state"] == startup.READY, "accepted": True, "start": status,
             "steps": [st["label"] for st in status["stages"] if st["state"] == "done"],
             "retryable": status["state"] == startup.NO_CAPACITY or bool(status.get("capacity_blocked")),
@@ -319,6 +364,7 @@ def _stop_gpu(force=False):
         return _stop_gpu_inner(force)
     finally:
         MANAGER.end_stop()
+        _invalidate_pod_cache()
 
 
 def _stop_gpu_inner(force=False):
@@ -370,11 +416,17 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, status, body=b"", ctype="application/octet-stream", extra=None):
         if isinstance(body, str):
             body = body.encode("utf-8")
+        extra = dict(extra or {})
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        for k, v in (extra or {}).items():
+        # no-store stays the default for everything that is state. A caller that
+        # sets its own Cache-Control replaces it rather than adding a second
+        # header: two of them are merged by the browser into one list, and
+        # no-store in that list wins, so the override would silently do nothing.
+        if not any(k.lower() == "cache-control" for k in extra):
+            self.send_header("Cache-Control", "no-store")
+        for k, v in extra.items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
@@ -783,8 +835,9 @@ class Handler(BaseHTTPRequestHandler):
             path = (row or {}).get("preview_path")
         if not path or not longdraft.contains(path) or not os.path.exists(path):
             return self._error(404, "no preview for %s" % ld_id)
-        with open(path, "rb") as f:
-            return self._send(200, f.read(), "video/mp4", {"Accept-Ranges": "bytes"})
+        # A finished preview is a finished video: same validator, same 304, same
+        # confinement check above.
+        return self._serve_file(path, "video/mp4")
 
     def _video(self, gen_id):
         """Serve a finished video, from memory or from history.
@@ -807,13 +860,42 @@ class Handler(BaseHTTPRequestHandler):
                     path = candidate
         if not path or not os.path.exists(path):
             return self._error(404, "no video for %s" % gen_id)
+        return self._serve_file(path, "video/mp4")
 
-        class _Gen:
-            output_path = path
-        gen = _Gen()
-        size = os.path.getsize(gen.output_path)
+    # A finished generation's file never changes, but the response said
+    # Cache-Control: no-store, so the browser re-fetched 1.3 MB every time the
+    # panel was rebuilt -- measured at roughly 2 MB/s of localhost traffic for
+    # four videos nobody had touched. The panel no longer rebuilds, and this
+    # makes a re-fetch cheap when it does happen.
+    #
+    # An ETag over (size, mtime_ns) rather than a content hash: it is exact for
+    # "has this file changed", costs one stat, and never claims immutability for
+    # a file still being written -- a 304 is only ever answered for a validator
+    # the client got from this same file.
+    @staticmethod
+    def _file_etag(path):
+        st = os.stat(path)
+        return '"%x-%x"' % (st.st_size, st.st_mtime_ns)
+
+    def _serve_file(self, path, ctype):
+        try:
+            etag = self._file_etag(path)
+        except OSError:
+            return self._error(404, "not found")
+        size = os.path.getsize(path)
+
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            # private, not immutable: this is one operator's output on loopback,
+            # and a validated re-check every time is cheap enough.
+            self.send_header("Cache-Control", "private, must-revalidate")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
         rng = self.headers.get("Range")
-        with open(gen.output_path, "rb") as f:
+        with open(path, "rb") as f:
             if rng and rng.startswith("bytes="):
                 start_s, _, end_s = rng[6:].partition("-")
                 start = int(start_s or 0)
@@ -822,9 +904,11 @@ class Handler(BaseHTTPRequestHandler):
                 f.seek(start)
                 chunk = f.read(end - start + 1)
                 self.send_response(206)
-                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Type", ctype)
                 self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
                 self.send_header("Accept-Ranges", "bytes")
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "private, must-revalidate")
                 self.send_header("Content-Length", str(len(chunk)))
                 self.end_headers()
                 # HEAD must not carry a body: this connection is keep-alive
@@ -832,7 +916,9 @@ class Handler(BaseHTTPRequestHandler):
                 if self.command != "HEAD":
                     self.wfile.write(chunk)
                 return
-            self._send(200, f.read(), "video/mp4", {"Accept-Ranges": "bytes"})
+            self._send(200, f.read(), ctype,
+                       {"Accept-Ranges": "bytes", "ETag": etag,
+                        "Cache-Control": "private, must-revalidate"})
 
 
 def _parse_single_file(body, boundary):

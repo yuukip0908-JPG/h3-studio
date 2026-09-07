@@ -295,45 +295,84 @@ const JP_SEG = { pending: "待機", queued: "待機", running: "生成中", done
 const SEG_ICON = { done: "✓", running: "●", queued: "●", pending: "○",
                    cancelled: "×", error: "!" };
 
+function buildLongDraftShell() {
+  const el = document.createElement("div");
+  el.innerHTML = '<h2 class="ld-title"></h2>'
+    + '<div class="ld-run-head"></div>'
+    + '<div class="ld-segs"></div>'
+    + '<div class="ld-preview-wrap" hidden>'
+    + '<h2>結合プレビュー（確認用）</h2><div class="vid ld-preview"></div>'
+    + '<p class="hint">segment を順番につないだだけの確認用プレビューです。'
+    + '個々の segment 動画はそのまま残っています。</p></div>'
+    + '<p class="hint warn ld-warning"></p>'
+    + '<div class="ld-actions"></div>'
+    + '<p class="hint ld-manifest"></p>';
+  return el;
+}
+
+function buildSegmentCard() {
+  const el = document.createElement("div");
+  el.className = "ld-seg";
+  el.innerHTML = '<div class="ld-seg-head"></div><div class="ld-seg-state"></div>'
+    + '<div class="vid"></div><div class="ld-seg-error"></div>';
+  return el;
+}
+
+/* Same reconciliation as the results grid, and for the same reason: a Long
+   Draft shows one video per segment plus the joined preview, and rebuilding
+   the panel每 poll tore all of them down. */
 function renderLongDraftRun(run) {
   const box = $("longdraft-run");
   if (!box) return;
   if (!run) { box.hidden = true; box.innerHTML = ""; return; }
   state.longDraftRun = run;
   box.hidden = false;
+
+  const shell = ensureChild(box, run.id, buildLongDraftShell);
+  pruneChildren(box, new Set([run.id]));
+
+  setText(shell.querySelector(".ld-title"),
+          `長尺Draft ${run.done_count} / ${run.segment_count}`);
   const cur = run.current_index;
-  const segs = run.segments.map((sg) => {
+  const running = run.status === "running" || run.status === "planned";
+  setHtml(shell.querySelector(".ld-run-head"),
+    (cur != null ? `現在: Segment ${cur + 1} / ${run.segment_count} · ` : "")
+    + `状態: <b>${JP_SEG[run.status] || run.status}</b>`
+    + (running && run.remaining_seconds
+       ? ` · 全体推定残り <b>約${fmtDuration(run.remaining_seconds)}</b>（推定）` : ""));
+
+  const segsRoot = shell.querySelector(".ld-segs");
+  const keys = new Set();
+  run.segments.forEach((sg) => {
+    const key = String(sg.index);
+    keys.add(key);
+    const card = ensureChild(segsRoot, key, buildSegmentCard);
+    card.className = "ld-seg " + sg.status;
     const live = sg.status === "running" && sg.sampler && sg.sampler.max
       ? ` Sampling ${Math.round(sg.sampler.value || 0)} / ${Math.round(sg.sampler.max)}`
-      : (sg.progress_text ? " " + esc(sg.progress_text) : "");
-    const vid = sg.output_url
-      ? `<video src="${sg.output_url}" controls preload="metadata" playsinline></video>` : "";
-    return `<div class="ld-seg ${sg.status}">
-      <div class="ld-seg-head">${SEG_ICON[sg.status] || "·"} Segment ${sg.index + 1}
-        <span class="dim">${sg.start.toFixed(1)}-${sg.end.toFixed(1)} 秒 · seed ${sg.seed}</span></div>
-      <div class="ld-seg-state">${JP_SEG[sg.status] || sg.status}${live}
-        ${sg.cache_result ? `<span class="tag ${sg.cache_result}">${sg.cache_result}</span>` : ""}
-        ${sg.generation_seconds ? `<span class="dim">${fmtDuration(sg.generation_seconds)}</span>` : ""}</div>
-      ${vid}
-      ${sg.error ? `<div class="hint warn">${esc(sg.error)}</div>` : ""}
-    </div>`;
-  }).join("");
-  const running = run.status === "running" || run.status === "planned";
-  box.innerHTML = `
-    <h2>長尺Draft ${run.done_count} / ${run.segment_count}</h2>
-    <div class="ld-run-head">
-      ${cur != null ? `現在: Segment ${cur + 1} / ${run.segment_count} · ` : ""}
-      状態: <b>${JP_SEG[run.status] || run.status}</b>
-      ${running && run.remaining_seconds
-        ? ` · 全体推定残り <b>約${fmtDuration(run.remaining_seconds)}</b>（推定）` : ""}
-    </div>
-    <div class="ld-segs">${segs}</div>
-    ${run.preview_url ? `<h2>結合プレビュー（確認用）</h2>
-      <video class="ld-preview" src="${run.preview_url}" controls preload="metadata" playsinline></video>
-      <p class="hint">segment を順番につないだだけの確認用プレビューです。個々の segment 動画はそのまま残っています。</p>` : ""}
-    <p class="hint warn">${esc(run.warning || "")}</p>
-    ${run.resumable ? `<button class="btn" id="btn-ld-resume" data-ld="${run.id}">未完了の segment だけ再開する</button>` : ""}
-    <p class="hint">manifest: ${esc(run.manifest_path || "")}</p>`;
+      : (sg.progress_text ? " " + sg.progress_text : "");
+    setHtml(card.querySelector(".ld-seg-head"),
+      `${SEG_ICON[sg.status] || "·"} Segment ${sg.index + 1}`
+      + `<span class="dim">${sg.start.toFixed(1)}-${sg.end.toFixed(1)} 秒 · seed ${sg.seed}</span>`);
+    setHtml(card.querySelector(".ld-seg-state"),
+      esc((JP_SEG[sg.status] || sg.status) + live)
+      + (sg.cache_result ? `<span class="tag ${sg.cache_result}">${sg.cache_result}</span>` : "")
+      + (sg.generation_seconds ? `<span class="dim">${fmtDuration(sg.generation_seconds)}</span>` : ""));
+    ensureVideo(card.querySelector(".vid"), sg.output_url);
+    setHtml(card.querySelector(".ld-seg-error"),
+            sg.error ? `<div class="hint warn">${esc(sg.error)}</div>` : "");
+  });
+  pruneChildren(segsRoot, keys);
+
+  const previewWrap = shell.querySelector(".ld-preview-wrap");
+  previewWrap.hidden = !run.preview_url;
+  ensureVideo(shell.querySelector(".ld-preview"), run.preview_url || null);
+
+  setText(shell.querySelector(".ld-warning"), run.warning || "");
+  setHtml(shell.querySelector(".ld-actions"), run.resumable
+    ? `<button class="btn" id="btn-ld-resume" data-ld="${run.id}">未完了の segment だけ再開する</button>`
+    : "");
+  setText(shell.querySelector(".ld-manifest"), "manifest: " + (run.manifest_path || ""));
 }
 
 document.addEventListener("click", async (e) => {
@@ -785,38 +824,129 @@ function tickResults() {
 }
 setInterval(tickResults, 1000);
 
+/* ---- DOM reconciliation -------------------------------------------------
+   The results panel and the Long Draft panel used to be rebuilt with
+   innerHTML on every 1.5 s poll. Measured in the live page during a
+   generation: 16 <video> elements were constructed in 12 seconds for the four
+   on screen -- every poll tore all of them down and built them again. Each
+   rebuild re-requested the file (the route sent Cache-Control: no-store),
+   re-read its metadata, and threw away currentTime and any playback.
+
+   So elements are keyed by their id in the DATA and reused. Never by comparing
+   element.src: the browser normalises that to an absolute URL, so the
+   comparison against the relative one is always false and the node gets
+   replaced anyway while looking like it was checked. */
+function ensureChild(parent, key, build) {
+  let el = parent.querySelector(':scope > [data-key="' + key + '"]');
+  if (!el) {
+    el = build();
+    el.dataset.key = key;
+    parent.appendChild(el);
+  }
+  return el;
+}
+
+function pruneChildren(parent, keys) {
+  Array.from(parent.children).forEach((c) => {
+    if (!keys.has(c.dataset.key)) c.remove();
+  });
+}
+
+function setText(el, text) {
+  if (el && el.textContent !== text) el.textContent = text;
+}
+
+function setHtml(el, html) {
+  if (el && el.innerHTML !== html) el.innerHTML = html;
+}
+
+function setClass(el, name, on) {
+  if (el) el.classList.toggle(name, Boolean(on));
+}
+
+/* One <video> per source, created once and left alone. Reassigning src -- even
+   to the identical string -- restarts the load algorithm and loses playback
+   position, so the URL is remembered in a data attribute instead. */
+function ensureVideo(slot, url) {
+  if (!slot) return null;
+  if (!url) {
+    const gone = slot.querySelector("video");
+    if (gone) gone.remove();
+    return null;
+  }
+  const existing = slot.querySelector("video");
+  if (existing && existing.dataset.src === url) return existing;
+  if (existing) existing.remove();
+  slot.querySelectorAll(".ph").forEach((n) => n.remove());
+  const v = document.createElement("video");
+  v.controls = true;
+  v.preload = "metadata";
+  v.playsInline = true;
+  v.dataset.src = url;
+  v.src = url;
+  slot.appendChild(v);
+  return v;
+}
+
+function buildResultCard() {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = '<div class="vid"></div>'
+    + '<div class="bar-progress"><i></i></div>'
+    + '<div class="meta"><span class="who"></span><span class="tagwrap"></span></div>'
+    + '<div class="meta"><span class="stage"></span><span class="timing"></span></div>'
+    + '<div class="acts">'
+    + '<button class="btn" data-act="select"></button>'
+    + '<button class="btn" data-act="export">書き出し</button></div>';
+  return card;
+}
+
 function renderResults(batch) {
   state.batch = batch;
   const sel = batch.generations.find((g) => g.selected);
   state.selected = sel ? sel.id : null;
+  const root = $("results");
+  const now = Date.now();
+  const keys = new Set();
 
-  $("results").innerHTML = batch.generations.map((g, i) => {
-    const body = g.output_url
-      ? `<video src="${g.output_url}" controls preload="metadata" playsinline></video>`
-      : `<div class="ph">${g.status === "error" ? "エラー<br>" + esc(g.error || "") : esc(g.progress_text || g.status)}</div>`;
-    const tag = g.cache_result
+  batch.generations.forEach((g, i) => {
+    keys.add(g.id);
+    const card = ensureChild(root, g.id, buildResultCard);
+    card.dataset.gen = g.id;
+    setClass(card, "sel", g.selected);
+
+    const slot = card.querySelector(".vid");
+    if (g.output_url) {
+      ensureVideo(slot, g.output_url);
+    } else {
+      ensureVideo(slot, null);
+      setHtml(slot, '<div class="ph">' + (g.status === "error"
+        ? "エラー<br>" + esc(g.error || "") : esc(g.progress_text || g.status)) + "</div>");
+    }
+
+    const bar = card.querySelector(".bar-progress");
+    setClass(bar, "indeterminate", genIndeterminate(g));
+    const fill = card.querySelector(".bar-progress > i");
+    const width = Math.round(genProgress(g, now) * 100) + "%";
+    if (fill && fill.style.width !== width) fill.style.width = width;
+
+    setText(card.querySelector(".who"), `#${i + 1} · seed ${g.seed}`);
+    setHtml(card.querySelector(".tagwrap"), g.cache_result
       ? `<span class="tag ${g.cache_result}">${g.cache_result}</span>`
-      : (g.status === "error" ? `<span class="tag err">エラー</span>` : "");
-    return `<div class="card ${g.selected ? "sel" : ""}" data-gen="${g.id}">
-      ${body}
-      <div class="bar-progress${genIndeterminate(g) ? " indeterminate" : ""}"><i style="width:${Math.round(genProgress(g, Date.now()) * 100)}%"></i></div>
-      <div class="meta">
-        <span>#${i + 1} · seed ${g.seed}</span>
-        <span>${tag}</span>
-      </div>
-      <div class="meta">
-        <span class="stage">${genIndeterminate(g) ? esc(genStateText(g))
-          : esc((g.phase_label ? g.phase_label + " · " : "") + (g.progress_text || g.status))}</span>
-        <span class="timing">${genTiming(g, Date.now())}</span>
-      </div>
-      <div class="acts">
-        <button class="btn ${g.selected ? "btn-primary" : ""}" data-act="select" ${g.status !== "done" ? "disabled" : ""}>
-          ${g.selected ? "★ 選択中" : "これを選ぶ"}</button>
-        <button class="btn" data-act="export" ${g.status !== "done" ? "disabled" : ""}>書き出し</button>
-      </div>
-    </div>`;
-  }).join("");
+      : (g.status === "error" ? '<span class="tag err">エラー</span>' : ""));
+    setText(card.querySelector(".stage"), genIndeterminate(g)
+      ? genStateText(g)
+      : (g.phase_label ? g.phase_label + " · " : "") + (g.progress_text || g.status));
+    setText(card.querySelector(".timing"), genTiming(g, now));
 
+    const pick = card.querySelector('[data-act="select"]');
+    setText(pick, g.selected ? "★ 選択中" : "これを選ぶ");
+    setClass(pick, "btn-primary", g.selected);
+    pick.disabled = g.status !== "done";
+    card.querySelector('[data-act="export"]').disabled = g.status !== "done";
+  });
+
+  pruneChildren(root, keys);
   $("finish").hidden = !state.selected;
 }
 
