@@ -114,7 +114,7 @@ def is_running(pod_id=None):
         return False
 
 
-def start(pod_id=None, wait_seconds=300):
+def start(pod_id=None, wait_seconds=300, should_abort=None):
     """Start the Pod and wait until it is both RUNNING and reachable.
 
     A restarted Pod reports desiredStatus=RUNNING *before* RunPod publishes its
@@ -124,16 +124,38 @@ def start(pod_id=None, wait_seconds=300):
     So we wait for the mapping too, not just the status.
     """
     pid = pod_id or config.pod_id()
+    # Before the POST, not only inside the wait: a Pod started after the
+    # operator gave up is a Pod nobody is watching.
+    if should_abort and should_abort():
+        raise RunPodError("起動が中断されたため Pod %s を起動しませんでした" % pid)
     _call("POST", "/pods/%s/start" % pid, payload={})
     deadline = time.time() + wait_seconds
     info = describe(pid)
     while time.time() < deadline:
-        if info.get("desiredStatus") == "RUNNING" and info.get("sshPort"):
+        if should_abort and should_abort():
+            break
+        if endpoint_ready(info, pid):
             break
         time.sleep(5)
         info = describe(pid)
     _persist_endpoint(info)
     return info
+
+
+def endpoint_ready(info, pod_id):
+    """RUNNING is not the same as reachable.
+
+    A Pod reports desiredStatus=RUNNING before RunPod publishes publicIp and
+    the host port mapped to container port 22. Waiting on the status alone
+    returns an address that does not exist yet -- and the old code then filled
+    the gap from the previous Pod's state. All four must be true, from THIS
+    Pod's own payload, before anything may SSH to it.
+    """
+    return bool(info
+                and info.get("podId") == pod_id
+                and info.get("desiredStatus") == "RUNNING"
+                and info.get("publicIp")
+                and info.get("sshPort"))
 
 
 def actual_gpu(pod_id=None):
@@ -250,7 +272,7 @@ def delete_pod(pod_id, active_pod_id=None, volume_id=None):
     return {"deleted": pod_id, "networkVolumePreserved": vid}
 
 
-def create_pod(spec, wait_seconds=420):
+def create_pod(spec, wait_seconds=420, should_abort=None):
     """Create a Pod from a recreate spec and wait until it is usable.
 
     Used to move the H3 environment to a different host when the machine the
@@ -262,6 +284,8 @@ def create_pod(spec, wait_seconds=420):
     This never touches any existing Pod.
     """
     body = {k: v for k, v in spec.items() if not k.endswith("_note")}
+    if should_abort and should_abort():
+        raise RunPodError("起動が中断されたため Pod を作成しませんでした")
     created = _call("POST", "/pods", payload=body, timeout=120)
     pid = created.get("id")
     if not pid:
@@ -269,7 +293,9 @@ def create_pod(spec, wait_seconds=420):
     deadline = time.time() + wait_seconds
     info = describe(pid)
     while time.time() < deadline:
-        if info.get("desiredStatus") == "RUNNING" and info.get("sshPort"):
+        if should_abort and should_abort():
+            break
+        if endpoint_ready(info, pid):
             break
         time.sleep(5)
         info = describe(pid)
@@ -288,9 +314,14 @@ def activate_pod(info):
         state["previousPodId"] = previous
     state["podId"] = info.get("podId")
     state["comfyUrl"] = info.get("comfyUrl")
-    for key in ("publicIp", "sshPort"):
-        if info.get(key):
-            state[key] = info[key]
+    # Switching Pods replaces the endpoint; it never inherits one. Written
+    # unconditionally -- including as None -- so an unresolved address is
+    # recorded as unresolved rather than as the previous Pod's.
+    complete = bool(info.get("publicIp") and info.get("sshPort"))
+    state["publicIp"] = info.get("publicIp") or None
+    state["sshPort"] = info.get("sshPort") or None
+    state["endpoint_pod_id"] = info.get("podId") if complete else None
+    state["endpoint_started_at"] = info.get("lastStartedAt") if complete else None
     if info.get("gpu"):
         state["plannedGpuTypeId"] = info["gpu"]
     if info.get("costPerHr"):
@@ -322,6 +353,9 @@ def stop(pod_id=None, verify_seconds=90):
             continue
         if info.get("desiredStatus") == "EXITED":
             info["stopVerified"] = True
+            # The address dies with the container. Leaving it on disk is what
+            # let a stopped machine's ip:port be dialled again days later.
+            _persist_endpoint(info)
             return info
     info = info or {"podId": pid}
     info["stopVerified"] = False
@@ -440,38 +474,114 @@ def watchdog_status():
 
 
 def _persist_endpoint(info):
-    """A restarted Pod usually gets a new public IP / SSH port; keep
-    results/runpod_state.json truthful so pod_ssh.sh keeps working."""
-    if not info.get("publicIp") and not info.get("sshPort"):
-        return
+    """Keep the recorded SSH endpoint truthful AND owned by a named Pod.
+
+    An address is recorded only when all of it is true at once: it is the
+    ACTIVE Pod, that Pod is RUNNING, and both halves came from the SAME payload.
+    Anything else clears the endpoint rather than repairing it.
+
+    Merging field by field is what broke START GPU on 2026-09-07: a new Pod
+    ffw0tip8217ep0 was created while RunPod had not yet published its
+    publicIp/portMappings, the previous Pod's address survived in the state
+    file, and SSH dialled 195.26.233.15:57633 -- a stopped machine. start_h3.sh
+    never ran, ComfyUI was never started, and the sequence waited seven minutes.
+
+    A Pod id alone is too weak a key to prevent that. It survives a stop and a
+    restart; an SSH endpoint does not, because the host port is assigned per
+    container lifetime and may belong to another tenant after EXITED. So
+    ownership is keyed on (Pod id, lastStartedAt), and only a lifetime that is
+    still RUNNING may hold an address at all. The single concession -- a
+    RUNNING payload that has not republished the address yet leaves the stored
+    pair alone -- is bounded to the identical lifetime.
+    """
+    pid = info.get("podId")
+    ip = info.get("publicIp") or None
+    port = info.get("sshPort") or None
+    started = info.get("lastStartedAt")
+    running = info.get("desiredStatus") == "RUNNING"
     try:
         state = config.load_runpod_state()
-        changed = False
-        for key, value in (("publicIp", info.get("publicIp")), ("sshPort", info.get("sshPort"))):
-            if value and state.get(key) != value:
-                state[key] = value
-                changed = True
-        if changed:
-            state["lastUpdated"] = time.strftime("%Y-%m-%d")
-            tmp = config.RUNPOD_STATE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2, ensure_ascii=False)
-            os.replace(tmp, config.RUNPOD_STATE)
+        if not pid or (state.get("podId") and pid != state.get("podId")):
+            # Not the active Pod: its address is not ours to record. start()
+            # persists before activate_pod switches the file over, so without
+            # this the file could durably name one Pod beside another's address
+            # -- which usable_endpoint() would refuse but pod_ssh.sh would dial.
+            return
+        if running and ip and port:
+            new = (ip, port, pid, started)          # complete, from ONE payload
+        elif (running and state.get("endpoint_pod_id") == pid
+                and state.get("endpoint_started_at") == started
+                and state.get("publicIp") and state.get("sshPort")):
+            return                                  # same lifetime, not republished yet
+        else:
+            # Stopped, or nothing published yet. Either way there is no address.
+            # Halves are never mixed across payloads and never survive a stop:
+            # a host port belongs to one lifetime of one container, and after
+            # EXITED it may be another tenant's.
+            new = (None, None, None, None)
+        if (state.get("publicIp"), state.get("sshPort"),
+                state.get("endpoint_pod_id"), state.get("endpoint_started_at")) == new:
+            return
+        (state["publicIp"], state["sshPort"],
+         state["endpoint_pod_id"], state["endpoint_started_at"]) = new
+        state["lastUpdated"] = time.strftime("%Y-%m-%d")
+        tmp = config.RUNPOD_STATE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, config.RUNPOD_STATE)
     except OSError:
         pass
 
 
-def ssh(command, timeout=600):
-    """Run one command on the Pod via the existing scripts/pod_ssh.sh.
+def usable_endpoint(pod_id=None):
+    """((ip, port), None) only when the recorded endpoint provably belongs to
+    the active Pod; otherwise (None, why).
 
-    The endpoint is refreshed first: pod_ssh.sh reads results/runpod_state.json,
-    and that file is only as fresh as the last start. One API call here is much
-    cheaper than a 7-minute timeout on a stale port.
+    This is what makes "new Pod id + old Pod address" impossible to express: an
+    address with no owner, a foreign owner, or a missing half is not an
+    endpoint, and callers must not guess the rest.
     """
-    refresh_endpoint()
+    want = pod_id or config.pod_id()
+    state = config.load_runpod_state()
+    owner = state.get("endpoint_pod_id")
+    ip, port = state.get("publicIp"), state.get("sshPort")
+    if want and state.get("podId") and want != state.get("podId"):
+        return None, "%s はアクティブな Pod ではありません（%s）" % (want, state.get("podId"))
+    if not want:
+        return None, "アクティブな Pod がありません"
+    if not owner:
+        return None, "endpoint の所有 Pod が不明です（未取得）"
+    if owner != want:
+        return None, "endpoint は %s のものです（アクティブは %s）" % (owner, want)
+    if not ip or not port:
+        return None, "endpoint が不完全です（ip=%r port=%r）" % (ip, port)
+    return (ip, port), None
+
+
+SSH_NO_ENDPOINT = 125          # distinct from 124 (timeout) and from ssh's own codes
+
+
+def ssh(command, timeout=600, pod_id=None):
+    """Run one command on the Pod, or refuse if the address is not provably its.
+
+    The endpoint is refreshed first, then checked for ownership: an address
+    that belongs to another Pod, has no owner, or is missing a half is not
+    dialled at all. Refusing costs a second; dialling a stopped machine cost
+    seven minutes of a paid Pod on 2026-09-07.
+
+    The validated pair is passed to pod_ssh.sh explicitly rather than left for
+    it to re-read, so the file cannot change underneath the call.
+    """
+    refresh_endpoint(pod_id)
+    endpoint, why = usable_endpoint(pod_id)
+    if endpoint is None:
+        return SSH_NO_ENDPOINT, "", "SSH しませんでした: %s" % why
+    ip, port = endpoint
     script = os.path.join(config.PROJECT_DIR, "scripts", "pod_ssh.sh")
+    env = dict(os.environ, H3_POD_SSH_IP=str(ip), H3_POD_SSH_PORT=str(port))
     try:
-        proc = subprocess.run(["bash", script, command], capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(["bash", script, command], capture_output=True,
+                              text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return 124, "", "ssh timed out after %ss" % timeout
     return proc.returncode, proc.stdout, proc.stderr

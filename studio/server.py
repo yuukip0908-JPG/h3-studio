@@ -151,6 +151,10 @@ def _start_comfyui_only(force=False):
         _COMFY_START["busy"] = True
     try:
         code, out, err = runpod_ctl.start_comfyui()
+        if code == runpod_ctl.SSH_NO_ENDPOINT:
+            return {"ok": False, "reason": "no_ssh_endpoint", "exit_code": code,
+                    "comfy_ready": False, "detail": (err or "")[-800:],
+                    "error": "Pod の SSH 接続先が確定していません: %s" % (err or "").strip()[:200]}
         ready = False
         for _ in range(30):
             if MANAGER.client.is_alive():
@@ -350,7 +354,7 @@ def _start_gpu(confirm_gpu=None, wait_seconds=0):
             "error": status["error"]}
 
 
-def _stop_gpu(force=False):
+def _stop_gpu(force=False, reason="STOP GPU が押されました"):
     """STOP GPU: refuse while a job is active unless forced, then stop and verify.
 
     The network volume is never touched -- /pods/{id}/stop only releases the
@@ -361,13 +365,13 @@ def _stop_gpu(force=False):
     # RunPod reporting EXITED is a job queued at a Pod that is going away.
     MANAGER.begin_stop()
     try:
-        return _stop_gpu_inner(force)
+        return _stop_gpu_inner(force, reason)
     finally:
         MANAGER.end_stop()
         _invalidate_pod_cache()
 
 
-def _stop_gpu_inner(force=False):
+def _stop_gpu_inner(force=False, _stop_reason="STOP GPU が押されました"):
     if MANAGER.is_busy() and not force:
         # `needs_force` is the whole point of this refusal: until it existed the
         # UI sent force:false and nothing else, so the branch below -- cancel,
@@ -381,9 +385,23 @@ def _stop_gpu_inner(force=False):
     if force and MANAGER.is_busy():
         MANAGER.cancel_all()
         steps.append("cancelled active jobs")
+    # Only now, past the needs_force refusal above: cancelling a start that is
+    # not followed by a stop leaves an acquired Pod running with no ComfyUI and
+    # no way to start one, because the UI disables START while a Pod is RUNNING.
+    # A start in flight is stopped here so the sequence does not keep polling a
+    # Pod that STOP is taking away: on 2026-09-07 a stop at 14:19 left the panel
+    # "starting ComfyUI" for four more minutes.
+    if STARTER is not None and STARTER.status()["busy"]:
+        STARTER.cancel(_stop_reason)
+        steps.append("cancelled GPU start in progress")
     try:
-        code, _, _ = runpod_ctl.stop_comfyui()
-        steps.append("stop_h3.sh exit=%d" % code)
+        code, _, err = runpod_ctl.stop_comfyui()
+        if code == runpod_ctl.SSH_NO_ENDPOINT:
+            # Nothing ran. Reporting an exit code for a script that was never
+            # executed sends the operator to the Pod for a Mac-side problem.
+            steps.append("ComfyUI stop skipped (%s)" % (err or "").strip()[:120])
+        else:
+            steps.append("stop_h3.sh exit=%d" % code)
     except Exception as e:  # noqa: BLE001 - the Pod stop below is what matters
         steps.append("ComfyUI stop skipped (%s)" % e)
     info = runpod_ctl.stop()
@@ -391,7 +409,10 @@ def _stop_gpu_inner(force=False):
     steps.append("Pod desiredStatus=%s%s" % (info.get("desiredStatus"),
                                              "" if verified else " (\u672a\u78ba\u8a8d)"))
     runpod_ctl.heartbeat(busy=False)
-    if STARTER is not None and STARTER.state == startup.READY:
+    if STARTER is not None and not STARTER.status()["busy"]:
+        # The Pod is gone, so no finished attempt still describes anything real
+        # -- including a cancelled one, whose red text would otherwise stay in
+        # the panel until the next START.
         STARTER.reset()
     return {"ok": True, "verified": verified, "steps": steps,
             "pod_state": info.get("desiredStatus"),
@@ -1090,9 +1111,15 @@ def build_app(comfy=None):
         MANAGER.notice("warn", "Cost guard: idle -- the Pod will be stopped in %ds." % seconds_left)
 
     def on_stop():
+        # A start in progress is not idleness. /api/status is the only request
+        # the UI makes while watching one, and GUARD.touch() skips it, so
+        # without this the guard could stop the Pod mid-start -- and, since the
+        # stop cancels the start, report it to the operator as their own STOP.
+        if STARTER is not None and STARTER.status()["busy"]:
+            return
         MANAGER.notice("warn", "Cost guard: idle limit reached, stopping the Pod.")
         try:
-            result = _stop_gpu(force=False)
+            result = _stop_gpu(force=False, reason="アイドルのため自動停止しました")
             MANAGER.notice("info" if result.get("ok") else "error",
                            "Cost guard: %s" % (result.get("error") or "Pod stopped, volume preserved."))
         except runpod_ctl.RunPodError as e:

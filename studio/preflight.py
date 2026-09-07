@@ -20,6 +20,17 @@ import os
 
 from . import config, graph
 
+# A refused SSH is a known-bad answer, not an unknown one. rc 125 means the
+# Studio declined to dial because the recorded endpoint does not provably
+# belong to the active Pod; mapping it to "unknown" let a Pod the Studio cannot
+# reach pass the blocking post-start checks and be reported GPU READY.
+SSH_REFUSED = 125
+
+
+def _ssh_ok(rc, value):
+    """None only for an answer we genuinely do not have."""
+    return False if rc == SSH_REFUSED else (value if rc == 0 else None)
+
 REQUIRED_WORKFLOWS = (
     "IMAGE_TRACE_DRAFT.api.json", "IMAGE_TRACE_FINAL.api.json",
     "MOTION_TRACE_DRAFT.api.json", "MOTION_TRACE_FINAL.api.json",
@@ -192,7 +203,7 @@ def online_checks(ssh, object_info, actual_gpu=None, expected_price=None, live_p
                    "ls /workspace/ComfyUI/models/diffusion_models 2>/dev/null | wc -l")
     lines = [x.strip() for x in (o or "").splitlines() if x.strip()]
     mounted = bool(lines) and lines[0] == "MOUNTED"
-    out.append(_check("volume_mounted", "Network Volume のマウント", mounted if rc == 0 else None,
+    out.append(_check("volume_mounted", "Network Volume のマウント", _ssh_ok(rc, mounted),
                       "/workspace: %s / diffusion_models: %s"
                       % (lines[0] if lines else "?", lines[1] if len(lines) > 1 else "?")))
 
@@ -222,7 +233,7 @@ def online_checks(ssh, object_info, actual_gpu=None, expected_price=None, live_p
                    "/workspace/ComfyUI/models/vae 2>/dev/null")
     present = o or ""
     missing_models = [m for m in REQUIRED_MODELS if m not in present]
-    out.append(_check("models", "モデル一式", not missing_models if rc == 0 else None,
+    out.append(_check("models", "モデル一式", _ssh_ok(rc, not missing_models),
                       "欠落: %s" % (missing_models or "なし")))
 
     rc, o, _ = ssh("bash /workspace/H3_CLOUD_REPRO/scripts/doctor.sh 2>&1 | tail -5")

@@ -38,7 +38,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from studio import (comfy_client, config, graph, history, jobs,  # noqa: E402
-                    longdraft, mediaprobe, runpod_ctl)
+                    longdraft, mediaprobe, runpod_ctl, startup)
 from studio.tests import mock_comfy  # noqa: E402
 
 
@@ -1493,6 +1493,10 @@ class FakeCtl:
         self.stopped = []
         self.activated = []
         self.watchdogs = []
+        self.aborts_offered = []
+        # What the API would say about each Pod. Drives the "Pod went away
+        # mid-start" case without a network.
+        self.states = {}
 
     # --- the surface GpuStarter uses ---
     def list_pods(self):
@@ -1504,26 +1508,38 @@ class FakeCtl:
     def have_api_key(self):
         return True
 
-    def start(self, pod_id=None, wait_seconds=300):
+    def start(self, pod_id=None, wait_seconds=300, should_abort=None):
         self.start_calls.append(pod_id)
+        self.aborts_offered.append(should_abort)
         if callable(self._start):
             return self._start(pod_id)
         raise self.RunPodError("no start behaviour configured")
 
-    def create_pod(self, spec, wait_seconds=420):
+    def create_pod(self, spec, wait_seconds=420, should_abort=None):
         self.create_calls.append(spec)
+        self.aborts_offered.append(should_abort)
         if callable(self._create):
             return self._create(spec)
         raise self.RunPodError("no create behaviour configured")
 
     def activate_pod(self, info):
         self.activated.append(info)
+        # The real one writes results/runpod_state.json, and the starter's abort
+        # check reads config.pod_id() from there. A fake that only remembered
+        # would make every start look like the Pod had been swapped.
+        from studio import runpod_ctl
+        runpod_ctl.activate_pod(info)
+
+    def describe(self, pod_id=None):
+        return {"podId": pod_id, "desiredStatus": self.states.get(pod_id, "RUNNING"),
+                "publicIp": "203.0.113.7", "sshPort": 40000,
+                "lastStartedAt": "2026-09-07T14:10:00Z"}
 
     def stop(self, pod_id=None, verify_seconds=90):
         self.stopped.append(pod_id)
         return {"podId": pod_id, "desiredStatus": "EXITED", "stopVerified": True}
 
-    def ssh(self, command, timeout=600):
+    def ssh(self, command, timeout=600, pod_id=None):
         """A healthy Pod, answering each pre-flight probe the way a real one does."""
         from studio import preflight
         if "mountpoint" in command:
@@ -1549,9 +1565,26 @@ def _pod(pid, status="EXITED", gpu="NVIDIA RTX 6000 Ada Generation", price=0.84,
 
 
 def _ready_info(pid="p", gpu="NVIDIA RTX 6000 Ada Generation", price=0.84):
+    """A Pod that is RUNNING *and* addressable.
+
+    The address is not decoration: acquisition rejects a Pod without one, which
+    is the whole of FIX 2. A helper that omitted it would have every test here
+    silently asserting the behaviour that caused the 2026-09-07 incident.
+    """
     return {"podId": pid, "desiredStatus": "RUNNING", "gpu": gpu, "costPerHr": price,
             "networkVolumeId": "olmj77x4pc", "volumeMountPath": "/workspace",
+            "publicIp": "203.0.113.7", "sshPort": 40000, "lastStartedAt": "2026-09-07T14:10:00Z",
             "comfyUrl": "http://127.0.0.1:8188"}
+
+
+def _unaddressed_info(pid="p", **kw):
+    """RUNNING, but RunPod has not published publicIp / portMappings yet.
+
+    Exactly what create_pod returned for ffw0tip8217ep0 on 2026-09-07.
+    """
+    info = _ready_info(pid, **kw)
+    info["publicIp"], info["sshPort"] = "", None
+    return info
 
 
 def _healthy_object_info():
@@ -1623,6 +1656,20 @@ class GpuPlanTests(unittest.TestCase):
 
 class GpuStartSequenceTests(unittest.TestCase):
     """START GPU: what it may start, what it must ask about, when it gives up."""
+
+    def setUp(self):
+        # activate_pod() writes the state file for real, because the abort check
+        # reads config.pod_id() back out of it. Point it somewhere disposable:
+        # a test must never rewrite the operator's live Pod record.
+        self.tmp = tempfile.mkdtemp(prefix="h3-start-")
+        self._saved_state = config.RUNPOD_STATE
+        config.RUNPOD_STATE = os.path.join(self.tmp, "runpod_state.json")
+        with open(config.RUNPOD_STATE, "w", encoding="utf-8") as f:
+            json.dump({"networkVolumeId": "olmj77x4pc"}, f)
+
+    def tearDown(self):
+        config.RUNPOD_STATE = self._saved_state
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_a_running_pod_blocks_a_second_start(self):
         """Two Pods on one network volume means two ComfyUI on one cache dir."""
@@ -4651,6 +4698,451 @@ class RenderReuseTests(unittest.TestCase):
         src = self._src()
         self.assertIn("pruneChildren(root, keys)", src)
         self.assertIn("function pruneChildren(", src)
+
+
+# --------------------------------------------------------------------------
+# START GPU endpoint ownership. On 2026-09-07 a new Pod ffw0tip8217ep0 was
+# created while RunPod had not yet published its address; the previous Pod's
+# 195.26.233.15:57633 survived in the state file, SSH dialled that stopped
+# machine, start_h3.sh never ran, and the sequence waited seven minutes for a
+# ComfyUI nobody had started.
+class EndpointOwnershipTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="h3-endpoint-")
+        self._saved = config.RUNPOD_STATE
+        config.RUNPOD_STATE = os.path.join(self.tmp, "runpod_state.json")
+        self._write({"podId": "A", "publicIp": "1.1.1.1", "sshPort": 1111,
+                     "endpoint_pod_id": "A", "networkVolumeId": "olmj77x4pc"})
+
+    def tearDown(self):
+        config.RUNPOD_STATE = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, obj):
+        with open(config.RUNPOD_STATE, "w", encoding="utf-8") as f:
+            json.dump(obj, f)
+
+    def _state(self):
+        with open(config.RUNPOD_STATE, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    # ---- Pod replacement ----
+    def test_a_new_pod_never_inherits_the_old_pods_address(self):
+        """The exact failure: B is created before RunPod publishes its address."""
+        runpod_ctl.activate_pod({"podId": "B", "comfyUrl": "https://B-8188.proxy.runpod.net",
+                                 "publicIp": None, "sshPort": None})
+        st = self._state()
+        self.assertEqual(st["podId"], "B")
+        self.assertIsNone(st["publicIp"], "A's address survived the switch")
+        self.assertIsNone(st["sshPort"])
+        self.assertIsNone(st["endpoint_pod_id"], "an unresolved endpoint claimed an owner")
+        endpoint, why = runpod_ctl.usable_endpoint()
+        self.assertIsNone(endpoint)
+        self.assertIn("不明", why)
+
+    def test_a_new_pod_with_a_complete_address_takes_it_wholesale(self):
+        runpod_ctl.activate_pod({"podId": "B", "comfyUrl": "u",
+                                 "publicIp": "2.2.2.2", "sshPort": 2222})
+        st = self._state()
+        self.assertEqual((st["publicIp"], st["sshPort"], st["endpoint_pod_id"]),
+                         ("2.2.2.2", 2222, "B"))
+        self.assertEqual(runpod_ctl.usable_endpoint()[0], ("2.2.2.2", 2222))
+
+    def test_a_refresh_for_a_different_pod_writes_nothing_at_all(self):
+        """B's address is not the active Pod's to record. See EndpointLifetimeTests."""
+        runpod_ctl._persist_endpoint({"podId": "B", "desiredStatus": "RUNNING",
+                                      "publicIp": "2.2.2.2", "sshPort": 2222})
+        st = self._state()
+        self.assertEqual((st["publicIp"], st["sshPort"], st["endpoint_pod_id"]),
+                         ("1.1.1.1", 1111, "A"), "another Pod's address reached A's record")
+
+    def test_the_same_pod_keeps_its_address_only_within_one_lifetime(self):
+        """RunPod publishes the port a moment after RUNNING, so holding the old
+        value until then is correct -- but only for the same lifetime, and only
+        while the Pod is still up."""
+        runpod_ctl._persist_endpoint({"podId": "A", "desiredStatus": "RUNNING",
+                                      "publicIp": None, "sshPort": None})
+        st = self._state()
+        self.assertEqual((st["publicIp"], st["sshPort"], st["endpoint_pod_id"]),
+                         ("1.1.1.1", 1111, "A"))
+        runpod_ctl._persist_endpoint({"podId": "A", "desiredStatus": "EXITED",
+                                      "publicIp": None, "sshPort": None})
+        self.assertIsNone(self._state()["publicIp"], "a stopped Pod kept its address")
+
+    # ---- partial endpoints ----
+    def test_half_an_address_is_not_an_address(self):
+        for ip, port in (("2.2.2.2", None), (None, 2222)):
+            self._write({"podId": "B", "publicIp": ip, "sshPort": port,
+                         "endpoint_pod_id": "B"})
+            endpoint, why = runpod_ctl.usable_endpoint()
+            self.assertIsNone(endpoint, "SSH allowed with ip=%r port=%r" % (ip, port))
+            self.assertIn("不完全", why)
+        self._write({"podId": "B", "publicIp": "2.2.2.2", "sshPort": 2222,
+                     "endpoint_pod_id": "B"})
+        self.assertEqual(runpod_ctl.usable_endpoint()[0], ("2.2.2.2", 2222))
+
+    # ---- ownership ----
+    def test_an_address_owned_by_another_pod_is_refused(self):
+        self._write({"podId": "B", "publicIp": "1.1.1.1", "sshPort": 1111,
+                     "endpoint_pod_id": "A"})
+        endpoint, why = runpod_ctl.usable_endpoint()
+        self.assertIsNone(endpoint, "new Pod id met old Pod address")
+        self.assertIn("A", why)
+
+    def test_an_unowned_address_is_refused(self):
+        self._write({"podId": "B", "publicIp": "1.1.1.1", "sshPort": 1111})
+        self.assertIsNone(runpod_ctl.usable_endpoint()[0])
+
+    def test_ssh_refuses_without_dialling_anything(self):
+        """Refusing costs a second. Dialling a stopped machine cost seven minutes."""
+        self._write({"podId": "B", "publicIp": "1.1.1.1", "sshPort": 1111,
+                     "endpoint_pod_id": "A"})
+        calls = []
+        orig_run, orig_refresh = runpod_ctl.subprocess.run, runpod_ctl.refresh_endpoint
+        runpod_ctl.subprocess.run = lambda *a, **k: calls.append(a) or None
+        runpod_ctl.refresh_endpoint = lambda pod_id=None: None
+        try:
+            rc, out, err = runpod_ctl.ssh("echo hi")
+        finally:
+            runpod_ctl.subprocess.run, runpod_ctl.refresh_endpoint = orig_run, orig_refresh
+        self.assertEqual(rc, runpod_ctl.SSH_NO_ENDPOINT)
+        self.assertEqual(calls, [], "ssh was executed against an unowned address")
+        self.assertIn("SSH しませんでした", err)
+
+    def test_ssh_passes_the_checked_address_instead_of_leaving_it_to_be_re_read(self):
+        self._write({"podId": "B", "publicIp": "2.2.2.2", "sshPort": 2222,
+                     "endpoint_pod_id": "B"})
+        seen = {}
+
+        class _P:
+            returncode, stdout, stderr = 0, "ok", ""
+
+        orig_run, orig_refresh = runpod_ctl.subprocess.run, runpod_ctl.refresh_endpoint
+        runpod_ctl.subprocess.run = lambda *a, **k: seen.update(k) or _P()
+        runpod_ctl.refresh_endpoint = lambda pod_id=None: None
+        try:
+            runpod_ctl.ssh("echo hi")
+        finally:
+            runpod_ctl.subprocess.run, runpod_ctl.refresh_endpoint = orig_run, orig_refresh
+        self.assertEqual(seen["env"]["H3_POD_SSH_IP"], "2.2.2.2")
+        self.assertEqual(seen["env"]["H3_POD_SSH_PORT"], "2222")
+
+    # ---- readiness ----
+    def test_running_is_not_the_same_as_reachable(self):
+        ready = runpod_ctl.endpoint_ready
+        self.assertFalse(ready({"podId": "B", "desiredStatus": "RUNNING",
+                                "publicIp": "", "sshPort": 2222}, "B"))
+        self.assertFalse(ready({"podId": "B", "desiredStatus": "RUNNING",
+                                "publicIp": "2.2.2.2", "sshPort": None}, "B"))
+        self.assertFalse(ready({"podId": "B", "desiredStatus": "PENDING",
+                                "publicIp": "2.2.2.2", "sshPort": 2222}, "B"))
+        self.assertFalse(ready({"podId": "OTHER", "desiredStatus": "RUNNING",
+                                "publicIp": "2.2.2.2", "sshPort": 2222}, "B"))
+        self.assertTrue(ready({"podId": "B", "desiredStatus": "RUNNING",
+                               "publicIp": "2.2.2.2", "sshPort": 2222}, "B"))
+
+
+class StartCancellationTests(unittest.TestCase):
+    """A start that can no longer succeed must say so at its next check, not at
+    its timeout. On 2026-09-07 a STOP at 14:19 left the panel "starting ComfyUI"
+    for four more minutes, and the sequence would have run to 22 minutes."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="h3-cancel-")
+        self._saved = config.RUNPOD_STATE
+        config.RUNPOD_STATE = os.path.join(self.tmp, "runpod_state.json")
+        with open(config.RUNPOD_STATE, "w", encoding="utf-8") as f:
+            json.dump({"networkVolumeId": "olmj77x4pc"}, f)
+
+    def tearDown(self):
+        config.RUNPOD_STATE = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _starter(self, ctl, on_comfy_check):
+        from studio import startup
+        st = startup.GpuStarter(
+            ctl=ctl,
+            comfy_ready=lambda: on_comfy_check(st) or False,
+            start_comfy=lambda: (0, "", ""),
+            object_info=lambda: _healthy_object_info(),
+            watchdog=ctl.spawn_watchdog)
+        return st
+
+    def _run(self, st, timeout=15):
+        st.begin()
+        deadline = time.time() + timeout
+        while time.time() < deadline and st.status()["busy"]:
+            time.sleep(0.05)
+        self.assertFalse(st.status()["busy"], "the sequence never stopped: %s" % st.state)
+        return st
+
+    def test_stop_during_the_comfyui_wait_cancels_the_start(self):
+        from studio import startup
+        ctl = FakeCtl(pods=[_pod("A")], start=lambda pid: _ready_info(pid))
+        checks = []
+        st = self._starter(ctl, lambda s: checks.append(1) or s.cancel("STOP GPU が押されました"))
+        self._run(st)
+        self.assertEqual(st.state, startup.CANCELLED)
+        self.assertNotEqual(st.state, startup.READY)
+        self.assertIn("STOP GPU", st.error)
+        self.assertLessEqual(len(checks), 3, "it kept polling after the cancel")
+
+    def test_a_pod_that_exits_mid_start_ends_the_sequence(self):
+        from studio import startup
+        ctl = FakeCtl(pods=[_pod("A")], start=lambda pid: _ready_info(pid))
+
+        def exit_the_pod(_st):
+            ctl.states["A"] = "EXITED"
+
+        st = self._run(self._starter(ctl, exit_the_pod))
+        self.assertEqual(st.state, startup.CANCELLED)
+        self.assertIn("停止しました", st.error)
+
+    def test_a_start_does_not_follow_the_active_pod_somewhere_else(self):
+        """The sequence belongs to the Pod it acquired. If the active Pod
+        changes underneath it, it stops -- it does not adopt the new one."""
+        from studio import startup
+        ctl = FakeCtl(pods=[_pod("A")], start=lambda pid: _ready_info(pid))
+
+        def swap_the_pod(_st):
+            with open(config.RUNPOD_STATE, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            state["podId"] = "B"
+            with open(config.RUNPOD_STATE, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+
+        st = self._run(self._starter(ctl, swap_the_pod))
+        self.assertEqual(st.state, startup.CANCELLED)
+        self.assertIn("B", st.error)
+        self.assertEqual(st.pod_id, "A", "the sequence switched Pods instead of stopping")
+
+    def test_a_cancelled_start_is_not_busy_and_can_be_started_again(self):
+        from studio import startup
+        ctl = FakeCtl(pods=[_pod("A")], start=lambda pid: _ready_info(pid))
+        st = self._run(self._starter(ctl, lambda s: s.cancel("test")))
+        self.assertFalse(st.status()["busy"])
+        st.reset()
+        self.assertEqual(st.state, startup.IDLE)
+        self.assertFalse(st._cancel.is_set(), "the cancel flag outlived the attempt")
+
+    def test_the_long_waits_are_given_a_way_to_give_up(self):
+        """Acquisition can block for minutes inside the control plane."""
+        ctl = FakeCtl(pods=[_pod("A")], start=lambda pid: _ready_info(pid))
+        self._run(self._starter(ctl, lambda s: s.cancel("test")))
+        self.assertTrue(ctl.aborts_offered, "no abort callback reached ctl.start")
+        self.assertTrue(all(callable(a) for a in ctl.aborts_offered))
+
+
+
+class AcquisitionAcceptanceTests(unittest.TestCase):
+    """RUNNING is not acceptance.
+
+    The first round of this fix recorded a null endpoint correctly and refused
+    the SSH correctly -- and still burned the incident's full 420 seconds,
+    because acquisition accepted the unaddressed Pod anyway and nothing read the
+    refusal. These are the two gates that close that.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="h3-accept-")
+        self._saved = config.RUNPOD_STATE
+        config.RUNPOD_STATE = os.path.join(self.tmp, "runpod_state.json")
+        with open(config.RUNPOD_STATE, "w", encoding="utf-8") as f:
+            json.dump({"networkVolumeId": "olmj77x4pc"}, f)
+
+    def tearDown(self):
+        config.RUNPOD_STATE = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _starter(self, ctl, start_comfy=None, calls=None):
+        from studio import startup
+        return startup.GpuStarter(
+            ctl=ctl,
+            comfy_ready=lambda: (calls.append("ready") if calls is not None else None) or False,
+            start_comfy=start_comfy or (lambda: (0, "", "")),
+            object_info=lambda: _healthy_object_info(),
+            watchdog=ctl.spawn_watchdog)
+
+    def _run(self, st, timeout=15):
+        st.begin()
+        deadline = time.time() + timeout
+        while time.time() < deadline and st.status()["busy"]:
+            time.sleep(0.05)
+        self.assertFalse(st.status()["busy"], "the sequence never stopped: %s" % st.state)
+        return st
+
+    def test_a_running_pod_with_no_published_address_is_not_accepted(self):
+        calls = []
+        ctl = FakeCtl(pods=[_pod("A")], start=lambda pid: _unaddressed_info(pid))
+        began = time.time()
+        st = self._run(self._starter(ctl, calls=calls))
+        self.assertNotEqual(st.state, startup.READY)
+        self.assertNotIn(st.state, startup.RUNNING_STATES)
+        self.assertEqual(calls, [], "it waited for a ComfyUI on a Pod it could not address")
+        self.assertLess(time.time() - began, 10, "it waited out a timeout instead of answering")
+        self.assertEqual(ctl.activated, [], "an unaddressable Pod was made the active Pod")
+
+    def test_the_reason_names_the_address_not_the_status(self):
+        """"RUNNING にならなかった" sent the operator looking for a capacity problem."""
+        ctl = FakeCtl(pods=[], create=lambda spec: _unaddressed_info("new"))
+        st = self._run(self._starter(ctl))
+        self.assertIn("住所", st.error or "")
+
+    def test_a_pod_acquired_but_not_accepted_is_stopped(self):
+        """It bills from the moment it exists, so it is never left behind."""
+        ctl = FakeCtl(pods=[], create=lambda spec: _unaddressed_info("new"))
+        st = self._run(self._starter(ctl))
+        self.assertIn("new", ctl.stopped)
+        self.assertIn("new", ctl.watchdogs, "an acquired Pod was left unwatched")
+        self.assertIsNone(st.pod_id)
+
+    def test_a_cancel_during_acquisition_does_not_abandon_a_pod(self):
+        """STOP GPU mid-acquire used to create a Pod, then forget it existed.
+
+        A cancel makes create_pod stop waiting, so it returns the Pod as RunPod
+        last described it -- RUNNING, address not yet published. That Pod is not
+        acceptable, was never made active, and so is the one nothing else would
+        ever stop: activate_pod never ran, so STOP GPU would stop the PREVIOUS
+        Pod and report "stopped, volume preserved" while this one billed.
+        """
+        def create(spec):
+            st.cancel("STOP GPU が押されました")
+            return _unaddressed_info("created")
+        ctl = FakeCtl(pods=[], create=create)
+        st = self._starter(ctl)
+        self._run(st)
+        self.assertEqual(st.state, startup.CANCELLED)
+        self.assertIn("created", ctl.stopped, "a Pod was created and then abandoned")
+        self.assertIn("created", ctl.watchdogs, "and it was not even watched")
+
+    def test_a_pod_accepted_before_the_cancel_is_left_for_stop_gpu(self):
+        """Once activated it is the active Pod, so STOP GPU stops it. Stopping it
+        here as well would race that, and STOP GPU is what asked to cancel."""
+        def start(pid):
+            st.cancel("STOP GPU が押されました")
+            return _ready_info(pid)
+        ctl = FakeCtl(pods=[_pod("A")], start=start)
+        st = self._starter(ctl)
+        self._run(st)
+        self.assertEqual(st.state, startup.CANCELLED)
+        self.assertEqual(ctl.stopped, [])
+        self.assertEqual(config.pod_id(), "A", "the accepted Pod is not the active one")
+
+    def test_a_cancel_is_not_shown_as_a_failed_stage(self):
+        def start(pid):
+            st.cancel("STOP GPU が押されました")
+            return _ready_info(pid)
+        ctl = FakeCtl(pods=[_pod("A")], start=start)
+        st = self._starter(ctl)
+        self._run(st)
+        self.assertEqual(st.state, startup.CANCELLED)
+        self.assertEqual([g for g in st.status()["stages"] if g["state"] == "failed"], [])
+
+    def test_a_refused_ssh_does_not_become_a_seven_minute_comfyui_wait(self):
+        calls = []
+        ctl = FakeCtl(pods=[_pod("A")], start=lambda pid: _ready_info(pid))
+        refused = (runpod_ctl.SSH_NO_ENDPOINT, "", "SSH しませんでした: endpoint が不完全です")
+        began = time.time()
+        st = self._run(self._starter(ctl, start_comfy=lambda: refused, calls=calls))
+        self.assertEqual(st.state, startup.FAILED)
+        self.assertIn("SSH", st.error)
+        self.assertNotIn("7分", st.error, "a refused SSH was reported as a slow ComfyUI")
+        self.assertLessEqual(len(calls), 1, "it polled for a ComfyUI that was never started")
+        self.assertLess(time.time() - began, 10)
+
+    def test_a_refused_ssh_cannot_pass_the_blocking_post_start_checks(self):
+        """rc 125 is a known-bad answer; "unknown" never blocks."""
+        from studio import preflight
+        refused = lambda cmd, timeout=600, pod_id=None: (runpod_ctl.SSH_NO_ENDPOINT, "", "no endpoint")
+        checks = preflight.online_checks(ssh=refused, object_info=lambda: None)
+        by_key = {c["key"]: c for c in checks}
+        self.assertIs(by_key["volume_mounted"]["ok"], False)
+        self.assertIs(by_key["models"]["ok"], False)
+        blocking = [c for c in checks if c["ok"] is False and c["key"] in preflight.BLOCKING_ONLINE]
+        self.assertTrue(blocking, "a Pod the Studio cannot reach passed the blocking checks")
+
+
+class EndpointLifetimeTests(unittest.TestCase):
+    """A Pod id survives a stop and a restart; an SSH endpoint does not.
+
+    Ownership keyed on the id alone still certified the incident's exact
+    address as "owned" once the Pod had stopped, so the key is
+    (Pod id, lastStartedAt) and only a RUNNING lifetime may hold an address.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="h3-life-")
+        self._saved = config.RUNPOD_STATE
+        config.RUNPOD_STATE = os.path.join(self.tmp, "runpod_state.json")
+
+    def tearDown(self):
+        config.RUNPOD_STATE = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _put(self, **kw):
+        with open(config.RUNPOD_STATE, "w", encoding="utf-8") as f:
+            json.dump(kw, f)
+
+    def _state(self):
+        with open(config.RUNPOD_STATE, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_a_stopped_pod_keeps_no_address(self):
+        self._put(podId="A", publicIp="195.26.233.15", sshPort=57633,
+                  endpoint_pod_id="A", endpoint_started_at="T1")
+        runpod_ctl._persist_endpoint({"podId": "A", "desiredStatus": "EXITED",
+                                      "publicIp": "", "sshPort": None, "lastStartedAt": "T1"})
+        self.assertEqual(runpod_ctl.usable_endpoint("A")[0], None)
+
+    def test_halves_are_never_mixed_across_lifetimes(self):
+        """A host port belongs to one container lifetime, and may later be another tenant's."""
+        self._put(podId="A", publicIp="1.1.1.1", sshPort=1111,
+                  endpoint_pod_id="A", endpoint_started_at="T1")
+        runpod_ctl._persist_endpoint({"podId": "A", "desiredStatus": "RUNNING",
+                                      "publicIp": "9.9.9.9", "sshPort": None, "lastStartedAt": "T2"})
+        self.assertEqual(runpod_ctl.usable_endpoint("A")[0], None)
+        self.assertNotEqual(self._state().get("sshPort"), 1111)
+
+    def test_one_lifetime_may_hold_its_address_while_the_api_catches_up(self):
+        self._put(podId="A", publicIp="1.1.1.1", sshPort=1111,
+                  endpoint_pod_id="A", endpoint_started_at="T1")
+        runpod_ctl._persist_endpoint({"podId": "A", "desiredStatus": "RUNNING",
+                                      "publicIp": "", "sshPort": None, "lastStartedAt": "T1"})
+        self.assertEqual(runpod_ctl.usable_endpoint("A")[0], ("1.1.1.1", 1111))
+
+    def test_another_pods_address_is_never_written_into_the_active_pods_record(self):
+        """start() persists before activate_pod switches the file over."""
+        self._put(podId="A", publicIp=None, sshPort=None, endpoint_pod_id=None)
+        runpod_ctl._persist_endpoint({"podId": "B", "desiredStatus": "RUNNING",
+                                      "publicIp": "8.8.8.8", "sshPort": 8888, "lastStartedAt": "T"})
+        state = self._state()
+        self.assertIsNone(state.get("publicIp"))
+        self.assertIsNone(state.get("endpoint_pod_id"))
+
+    def test_the_shell_transport_applies_the_same_ownership_test(self):
+        """pod_ssh.sh is the SSH transport for the other scripts, not only for Python."""
+        sandbox = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(sandbox, "scripts"))
+        os.makedirs(os.path.join(sandbox, "results"))
+        shutil.copy(os.path.join(config.PROJECT_DIR, "scripts", "pod_ssh.sh"),
+                    os.path.join(sandbox, "scripts", "pod_ssh.sh"))
+        script = os.path.join(sandbox, "scripts", "pod_ssh.sh")
+        state = os.path.join(sandbox, "results", "runpod_state.json")
+
+        def run():
+            return subprocess.run(["bash", script, "echo hi"], capture_output=True,
+                                  text=True, timeout=60)
+
+        for record in ({"podId": "A", "publicIp": "1.2.3.4", "sshPort": 111, "endpoint_pod_id": "B"},
+                       {"podId": "A", "publicIp": None, "sshPort": None, "endpoint_pod_id": None}):
+            with open(state, "w", encoding="utf-8") as f:
+                json.dump(record, f)
+            proc = run()
+            self.assertEqual(proc.returncode, runpod_ctl.SSH_NO_ENDPOINT,
+                             "the shell path dialled anyway: %r" % (proc.stderr,))
+
+        os.unlink(state)      # `set -e` used to kill the script before the guard
+        self.assertEqual(run().returncode, runpod_ctl.SSH_NO_ENDPOINT)
 
 
 if __name__ == "__main__":

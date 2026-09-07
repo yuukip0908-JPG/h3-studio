@@ -21,7 +21,7 @@ five minute session becomes an hour.
 import threading
 import time
 
-from . import config, gpu_plan, preflight
+from . import config, gpu_plan, preflight, runpod_ctl
 
 IDLE = "idle"
 RUNNING_STATES = ("preflight", "guard", "acquiring", "starting_comfyui", "checking")
@@ -29,6 +29,7 @@ NEEDS_CONFIRMATION = "needs_confirmation"
 READY = "ready"
 NO_CAPACITY = "no_capacity"
 FAILED = "failed"
+CANCELLED = "cancelled"
 
 STAGES = (
     ("guard", "二重起動の確認"),
@@ -48,6 +49,20 @@ def _is_capacity(message):
     return any(m in str(message) for m in CAPACITY_MARKERS)
 
 
+def _why_unusable(info):
+    """Why an acquired Pod was not accepted, in the operator's terms.
+
+    "RUNNING にならなかった" used to cover both cases, which sent the operator
+    looking for a capacity problem when RunPod had simply not published the
+    address yet.
+    """
+    info = info or {}
+    if info.get("desiredStatus") != "RUNNING":
+        return "RUNNING にならなかった（%s）" % (info.get("desiredStatus") or "状態不明")
+    return "RUNNING だが RunPod がまだ SSH の住所を公開していません（ip=%s port=%s）" % (
+        info.get("publicIp") or "未公開", info.get("sshPort") or "未公開")
+
+
 class GpuStarter:
     """One start attempt at a time, observable while it runs."""
 
@@ -60,11 +75,16 @@ class GpuStarter:
         self.on_event = on_event or (lambda level, text: None)
         self.watchdog = watchdog                # (pod_id) -> None, may be None
         self._lock = threading.Lock()
+        # Set by cancel(). Every wait in the sequence checks it, so a STOP does
+        # not leave a start polling a Pod that is going away -- on 2026-09-07 a
+        # STOP at 14:19 left the sequence "starting ComfyUI" until 14:23.
+        self._cancel = threading.Event()
         self._thread = None
         self.reset()
 
     # -------------------------------------------------------------- state
     def reset(self):
+        self._cancel.clear()
         self.state = IDLE
         self.stages = [{"key": k, "label": l, "state": "pending", "detail": ""} for k, l in STAGES]
         self.offers = []
@@ -75,10 +95,105 @@ class GpuStarter:
         self.capacity_blocked = False
         self.approved_gpu = None
         self.pod_id = None
+        self.cancel_reason = None
+        self._last_pod_check = 0.0
+        self._pod_check_warned = False
+        # A Pod this sequence started or created but has not accepted. It bills
+        # from the moment it exists, so it is tracked from that moment too.
+        self.accepted = False
         self.price_card = None
         self.online = []
         self.started_at = None
         self.finished_at = None
+
+    POD_CHECK_SECONDS = 10.0
+
+    def cancel(self, reason="停止が要求されました"):
+        """Ask the running sequence to stop at its next check.
+
+        Cheap and idempotent: it sets a flag. The sequence is what decides
+        where it is safe to give up, and it never leaves a Pod running as a
+        side effect of being cancelled -- stopping the Pod is STOP GPU's job,
+        and STOP GPU is what calls this.
+        """
+        with self._lock:
+            self.cancel_reason = reason
+            self._cancel.set()
+
+    # Checked inside every wait. Three ways a start stops being worth
+    # finishing, all of them cheap to detect and expensive to ignore.
+    def _abort_reason(self):
+        if self._cancel.is_set():
+            return getattr(self, "cancel_reason", "停止が要求されました")
+        if self.pod_id:
+            # Free: the active Pod id is a local file.
+            if config.pod_id() and config.pod_id() != self.pod_id:
+                return ("この起動は %s のものですが、アクティブな Pod が %s に変わりました"
+                        % (self.pod_id, config.pod_id()))
+            # Costs a RunPod call, so it is asked at most every POD_CHECK_SECONDS
+            # rather than on every pass of a 5-second loop.
+            now = time.time()
+            if now - self._last_pod_check >= self.POD_CHECK_SECONDS:
+                self._last_pod_check = now
+                try:
+                    if self.ctl.describe(self.pod_id).get("desiredStatus") == "EXITED":
+                        return "Pod %s が停止しました" % self.pod_id
+                except Exception as e:  # noqa: BLE001 - unknown is not a reason to give up
+                    # Not fatal, but not silent either: while this is failing
+                    # the "Pod went away" half of the abort check is not being
+                    # made, and the sequence is back to waiting out a timeout.
+                    if not self._pod_check_warned:
+                        self._pod_check_warned = True
+                        self.on_event("warn", "Pod の状態を確認できません（停止の検知が遅れます）: %s"
+                                      % str(e)[:150])
+        return None
+
+    def _abort(self, stage, reason):
+        # "pending", not "failed": a start the operator stopped is not a broken
+        # start, and the panel must not show a red cross for one until the next
+        # START clears it.
+        self._stage(stage, "pending", reason)
+        self._release(reason)
+        self.error = reason
+        self.state = CANCELLED
+        self.finished_at = time.time()
+        self.on_event("warn", "GPU 起動を中断しました: %s" % reason)
+        return None
+
+    def _claim(self, info):
+        """Take ownership of a Pod the moment it exists.
+
+        Acquisition can produce a Pod it then rejects -- cancelled mid-wait, or
+        RUNNING without a published address. Recording the id here, before the
+        decision, is what makes an abandoned Pod impossible: everything that
+        gives up afterwards knows what it has to stop.
+        """
+        pid = (info or {}).get("podId")
+        if not pid or pid == self.pod_id:
+            return
+        self.pod_id = pid
+        if self.watchdog:
+            try:
+                self.watchdog(pid)
+            except Exception as e:  # noqa: BLE001 - the valve is best-effort
+                self.on_event("warn", "ウォッチドッグを起動できませんでした: %s" % str(e)[:150])
+
+    def _release(self, why):
+        """Stop a Pod this sequence obtained but will not use.
+
+        Only for one it never accepted: once accepted, stopping is STOP GPU's
+        job, and STOP GPU is what asked to cancel.
+        """
+        if not self.pod_id or self.accepted:
+            return
+        pid, self.pod_id = self.pod_id, None
+        try:
+            self.ctl.stop(pid)
+            self.on_event("warn", "使わない Pod %s を停止しました（%s）" % (pid, why))
+        except Exception as e:  # noqa: BLE001
+            self.on_event("error", "Pod %s を停止できませんでした: %s。"
+                                   "課金が続いている可能性があるので状態表示で確認してください。"
+                          % (pid, str(e)[:150]))
 
     def _stage(self, key, state, detail=""):
         for s in self.stages:
@@ -89,6 +204,7 @@ class GpuStarter:
                 return
 
     def _fail(self, stage, message, state=FAILED):
+        self._release(message)
         self._stage(stage, "failed", message)
         self.error = message
         self.state = state
@@ -163,18 +279,27 @@ class GpuStarter:
 
         # ---- acquire: one restart, one create, five minutes ---------------
         self.state = "acquiring"
+        if self._cancel.is_set():
+            return self._abort("acquire", self.cancel_reason)
         deadline = time.time() + config.ACQUIRE_DEADLINE_SECONDS
         info, why = self._acquire(pods, deadline)
+        if self._cancel.is_set():
+            return self._abort("acquire", self.cancel_reason)
         if info is None:
             if self.offers:
+                # Offering a paid card is still a sequence that ends without a
+                # Pod: anything acquisition obtained on the way must be let go
+                # here too, or it bills while the panel waits for a yes.
+                self._release(why)
                 self._stage("acquire", "failed", why)
+                self.error = why
                 self.state = NEEDS_CONFIRMATION
                 self.finished_at = time.time()
                 self.on_event("warn", why)
                 return
             return self._fail("acquire", why, state=NO_CAPACITY)
 
-        self.pod_id = info.get("podId")
+        self.pod_id = info.get("podId")     # already claimed; kept for clarity
         live_price = info.get("costPerHr")
         self.price_card = gpu_plan.price_card(info.get("gpu"), live_price)
 
@@ -195,11 +320,8 @@ class GpuStarter:
         self._stage("acquire", "done", "%s / %s / $%.2f/時"
                     % (self.pod_id, self.price_card.get("label"), live_price or 0))
 
-        if self.watchdog:
-            try:
-                self.watchdog(self.pod_id)
-            except Exception as e:  # noqa: BLE001 - the valve is best-effort
-                self.on_event("warn", "ウォッチドッグを起動できませんでした: %s" % str(e)[:150])
+        # The watchdog was armed by _claim(), the moment the Pod existed --
+        # arming it only here would leave a rejected Pod unwatched.
 
         # ---- volume -------------------------------------------------------
         vid = config.network_volume_id()
@@ -210,14 +332,37 @@ class GpuStarter:
 
         # ---- ComfyUI ------------------------------------------------------
         self.state = "starting_comfyui"
+        stop_now = self._abort_reason()
+        if stop_now:
+            return self._abort("comfyui", stop_now)
         if self.comfy_ready():
             self._stage("comfyui", "done", "すでに応答している")
         else:
             rc, out, err = self.start_comfy()
+            if rc == runpod_ctl.SSH_NO_ENDPOINT:
+                # Not a ComfyUI problem and not a slow boot: nothing was run.
+                # Waiting the seven minutes would only bill for the delay and
+                # then blame start_h3.sh, which is what happened on 2026-09-07.
+                return self._fail("comfyui",
+                                  "Pod の SSH 接続先が確定していないため ComfyUI を起動できませんでした: %s"
+                                  % (err or "").strip()[:200])
+            # The wait that follows is the long one, so it gets its own budget:
+            # a check spent before start_comfy() must not silence the first
+            # check after it, when the Pod may have gone away in between.
+            self._last_pod_check = 0.0
+            stop_now = self._abort_reason()
+            if stop_now:
+                return self._abort("comfyui", stop_now)
             boot_deadline = time.time() + 420
             while time.time() < boot_deadline:
                 if self.comfy_ready():
                     break
+                # A stopped Pod, a cancelled start or a Pod that is no longer
+                # ours will never answer. Waiting out the seven minutes only
+                # delays the truth -- and on a Pod that is still up, bills for it.
+                stop_now = self._abort_reason()
+                if stop_now:
+                    return self._abort("comfyui", stop_now)
                 time.sleep(5)
             else:
                 return self._fail("comfyui", "ComfyUI が7分以内に応答しませんでした（start_h3.sh exit=%s）: %s"
@@ -226,6 +371,9 @@ class GpuStarter:
 
         # ---- post-start checks: report, never repair ----------------------
         self.state = "checking"
+        stop_now = self._abort_reason()
+        if stop_now:
+            return self._abort("checks", stop_now)
         try:
             real = self.ctl.actual_gpu()
             if real and real.get("name"):
@@ -286,11 +434,14 @@ class GpuStarter:
             self._stage("acquire", "active", "既存 Pod %s を再起動" % pod.get("id"))
             try:
                 info = self.ctl.start(pod.get("id"),
-                                      wait_seconds=max(30, int(deadline - time.time())))
-                if info.get("desiredStatus") == "RUNNING":
+                                      wait_seconds=max(30, int(deadline - time.time())),
+                                      should_abort=self._cancel.is_set)
+                self._claim(info)
+                if runpod_ctl.endpoint_ready(info, pod.get("id")):
                     self.ctl.activate_pod(info)
+                    self.accepted = True
                     return info, ""
-                tried.append("%s: RUNNING にならなかった" % pod.get("id"))
+                tried.append("%s: %s" % (pod.get("id"), _why_unusable(info)))
             except Exception as e:  # noqa: BLE001
                 if _is_capacity(e):
                     self.capacity_blocked = True
@@ -299,17 +450,22 @@ class GpuStarter:
                     tried.append("%s: %s" % (pod.get("id"), str(e)[:120]))
 
         # 2) create one, with only the cards we may start unattended.
+        if self._cancel.is_set():
+            return None, self.cancel_reason or "起動が中断されました"
         wanted = [self.approved_gpu] if self.approved_gpu else gpu_plan.auto_start_gpu_ids()
         spec = config.create_pod_body(wanted)
         if spec.get("imageName") and create_used < config.MAX_CREATE_ATTEMPTS and time.time() < deadline:
             create_used += 1
             self._stage("acquire", "active", "新規 Pod を作成: %s" % ", ".join(wanted))
             try:
-                info = self.ctl.create_pod(spec, wait_seconds=max(60, int(deadline - time.time())))
-                if info.get("desiredStatus") == "RUNNING":
+                info = self.ctl.create_pod(spec, wait_seconds=max(60, int(deadline - time.time())),
+                                           should_abort=self._cancel.is_set)
+                self._claim(info)
+                if runpod_ctl.endpoint_ready(info, (info or {}).get("podId")):
                     self.ctl.activate_pod(info)
+                    self.accepted = True
                     return info, ""
-                tried.append("新規作成: RUNNING にならなかった")
+                tried.append("新規作成: %s" % _why_unusable(info))
             except Exception as e:  # noqa: BLE001
                 if _is_capacity(e):
                     self.capacity_blocked = True
