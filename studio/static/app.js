@@ -483,11 +483,30 @@ function renderGpu(g) {
   const chk = $("stop-after-gen");
   if (chk && document.activeElement !== chk) chk.checked = Boolean(as.stop_after_generation);
 
+  /* Two separate facts, because reading one as the other is what let a Pod bill
+     unattended on 2026-09-07: the heartbeat says the STUDIO is alive (the Studio
+     writes it), the pulse says the WATCHDOG is alive (only the watchdog writes
+     it). "enabled" has only ever meant "configured". */
   const wd = g.watchdog || {};
-  $("watchdog-note").textContent = !wd.enabled
-    ? "独立ウォッチドッグ: OFF"
-    : `独立ウォッチドッグ: Studio が落ちても最大 ${wd.stale_minutes} 分で、通し起動でも ${wd.max_minutes} 分でGPUを停止します`
-      + (wd.heartbeat_age_seconds == null ? "（未起動）" : `（最終確認 ${wd.heartbeat_age_seconds} 秒前）`);
+  const note = $("watchdog-note");
+  if (!wd.enabled) {
+    note.textContent = "独立ウォッチドッグ: OFF";
+    note.classList.remove("warn");
+  } else if (wd.running === true) {
+    note.textContent = `独立ウォッチドッグ: 稼働中（${wd.pulse_age_seconds} 秒前に確認`
+      + (wd.pulse_pid ? ` / pid ${wd.pulse_pid}` : "") + "）。"
+      + `Studio が落ちても最大 ${wd.stale_minutes} 分で、通し起動でも ${wd.max_minutes} 分でGPUを停止します`;
+    note.classList.remove("warn");
+  } else if (wd.running === null) {
+    note.textContent = "独立ウォッチドッグ: 状態を確認できません（pulse ファイルが読めません）。守られているか不明です。";
+    note.classList.add("warn");
+  } else if (st === "RUNNING") {
+    note.textContent = "独立ウォッチドッグ: 動いていません。Studio が落ちても Pod は止まりません — 終わったら STOP GPU を押してください。";
+    note.classList.add("warn");
+  } else {
+    note.textContent = "独立ウォッチドッグ: 待機（Pod 起動時に開始します）";
+    note.classList.remove("warn");
+  }
 
   /* START is enabled whenever the Pod is provably not already running.
      It is disabled only for reasons we can actually name:
@@ -1084,16 +1103,37 @@ $("gpu-offer").addEventListener("click", (e) => {
 
 $("btn-gpu-stop").addEventListener("click", async () => {
   if (!confirm("Pod を停止します（課金停止）。Network Volume とモデル・キャッシュ・出力は保持されます。")) return;
+
+  const stop = (force) => api("/api/gpu/stop", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force: force }),
+  });
+
   try {
-    const r = await api("/api/gpu/stop", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force: false }),
-    });
+    let r = await stop(false);
+    /* A busy Pod refuses, and the refusal is the only route to the force path.
+       The escalation is never automatic: the operator is told what will be
+       interrupted and has to say yes. Declining sends nothing, so the
+       generation keeps running and the Pod keeps billing -- their call. */
+    if (!r.ok && r.needs_force) {
+      const n = r.active_jobs || 0;
+      const ok = confirm(
+        `生成中の処理が ${n} 件あります。\n\n`
+        + "生成を中断して GPU を強制停止しますか？\n"
+        + "・実行中の生成は中止され、完了していない動画は失われます\n"
+        + "・完了済みの動画・Network Volume・モデル・キャッシュは保持されます");
+      if (!ok) {
+        notice("info", "停止をやめました。生成は続いていて、GPU は課金中のままです。", 0);
+        pollStatus();
+        return;
+      }
+      r = await stop(true);
+    }
     /* "Stop requested" and "stopped" are different states and the difference is
        money, so say which one this was. */
     if (r.ok && r.verified) notice("info", "GPU を停止しました（RunPod で EXITED を確認済み）。Volume は保持されています。");
     else if (r.ok) notice("warn", r.error || "停止要求は通りましたが EXITED を確認できていません。", 0);
-    else notice("warn", r.error);
+    else notice("warn", r.error || "GPU を停止できませんでした。", 0);
   } catch (e) {
     /* Stopping runs stop_h3.sh over SSH and then waits for RunPod to report
        EXITED, which can outlast the browser's patience. The server does not

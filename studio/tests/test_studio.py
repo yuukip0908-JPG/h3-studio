@@ -12,6 +12,9 @@ Everything here runs with no GPU, no Pod and no billing. What it proves:
     including the two asymmetries that drive the presets: Prompt Cinema is
     resolution-independent, Image Trace is not;
   * the stdlib WebSocket client really talks to a real WebSocket server;
+  * Reliability Phase 0 holds: every RunPod call is bounded, the watchdog
+    writes its own proof of life, the Studio survives the shell that started
+    it, and a busy Pod can still be stopped -- after the operator says so;
   * the whole INPUT -> DRAFT x4 -> SELECT -> FINAL -> EXPORT flow works,
     including history and the "only the selected one is finished" rule.
 
@@ -35,7 +38,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from studio import (comfy_client, config, graph, history, jobs,  # noqa: E402
-                    longdraft, mediaprobe)
+                    longdraft, mediaprobe, runpod_ctl)
 from studio.tests import mock_comfy  # noqa: E402
 
 
@@ -1233,7 +1236,8 @@ class ApiServerTests(StudioTestCase):
         self.assertTrue(wait_until(self.manager.is_busy, 10))
         r = self.post("/api/gpu/stop", {"force": False})
         self.assertFalse(r["ok"])
-        self.assertIn("still running", r["error"])
+        self.assertIn("生成中", r["error"])
+        self.assertIs(r["needs_force"], True)
 
 
 class LocalOnlyGuardTests(ApiServerTests):
@@ -3007,6 +3011,446 @@ class LongDraftApiTests(ApiServerTests):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self.urllib.urlopen(req, timeout=10)
         self.assertEqual(cm.exception.code, 403)
+
+
+# --------------------------------------------------------------------------
+# Reliability Phase 0. Four changes that cost nothing and remove the two
+# expensive exposures seen on 2026-09-07: a Pod that could not be stopped from
+# the product, and a Pod that billed unattended after the Studio vanished.
+# Everything here runs offline. No Pod is started, stopped, created or deleted.
+class _StubApi:
+    """A stand-in RunPod API that can answer, stall, or be unreachable."""
+
+    def __init__(self, delay=0.0, status="RUNNING"):
+        import http.server
+        import threading as th
+        self.delay = delay
+        self.status = status
+        self.hits = []
+        outer = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
+
+            def do_GET(self):
+                outer.hits.append(self.path)
+                if outer.delay:
+                    time.sleep(outer.delay)
+                body = ('{"id":"podX","desiredStatus":"%s"}' % outer.status).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        self.httpd = http.server.HTTPServer(("127.0.0.1", 0), H)
+        self.port = self.httpd.server_address[1]
+        self.thread = th.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def base(self):
+        return "http://127.0.0.1:%d/v1" % self.port
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def _rp(base, path="/pods/podX", env=None, timeout=30):
+    """Run the real rp() from scripts/runpod_env.sh and report what it did."""
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    e = dict(os.environ)
+    e.update({"RUNPOD_API_KEY": "test-key-not-a-real-one", "RUNPOD_API_BASE": base})
+    e.update(env or {})
+    script = 'source "%s/scripts/runpod_env.sh"; rp GET "%s"; echo "RC=$?:$RP_HTTP_CODE"' % (root, path)
+    started = time.time()
+    proc = subprocess.run(["bash", "-c", script], env=e, cwd=root,
+                          capture_output=True, text=True, timeout=timeout)
+    return {"elapsed": time.time() - started, "out": proc.stdout, "err": proc.stderr}
+
+
+class RunPodTimeoutTests(unittest.TestCase):
+    """0-1: every RunPod call is bounded.
+
+    The call that must never hang is the one that stops a billing Pod, and both
+    the UI's stop path and gpu_watchdog.sh reach the API through rp().
+    """
+
+    def test_a_healthy_api_still_answers_normally(self):
+        api = _StubApi()
+        try:
+            r = _rp(api.base)
+        finally:
+            api.close()
+        self.assertIn("RC=0:200", r["out"])
+        self.assertIn('"desiredStatus":"RUNNING"', r["out"])
+        self.assertEqual(api.hits, ["/v1/pods/podX"])
+
+    def test_a_stalled_api_is_cut_off_by_the_total_timeout(self):
+        api = _StubApi(delay=8.0)
+        try:
+            r = _rp(api.base, env={"RUNPOD_MAX_TIME": "1", "RUNPOD_CONNECT_TIMEOUT": "5"})
+        finally:
+            api.close()
+        self.assertLess(r["elapsed"], 6.0, "rp() waited past --max-time")
+        self.assertIn("RC=1:000", r["out"],
+                      "a timeout must be reported as a failure, not as an empty success")
+
+    def test_an_unreachable_api_does_not_hang_the_caller(self):
+        # 198.51.100.0/24 is TEST-NET-2 and is not routable, so this is a
+        # connect that never completes rather than a refusal.
+        r = _rp("http://198.51.100.9:81/v1",
+                env={"RUNPOD_CONNECT_TIMEOUT": "1", "RUNPOD_MAX_TIME": "5"}, timeout=25)
+        self.assertLess(r["elapsed"], 10.0, "rp() hung on an unreachable host")
+        self.assertIn("RC=1:000", r["out"])
+
+    def test_a_timeout_does_not_abort_a_caller_running_under_set_e(self):
+        """gpu_watchdog.sh and runpod_status.sh call rp() from `set -e` scripts.
+
+        Before the timeouts, curl's non-zero exit escaped through the command
+        substitution; adding a timeout makes that failure ordinary rather than
+        exceptional, so the caller must survive it and keep going.
+        """
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        script = ('set -euo pipefail; source "%s/scripts/runpod_env.sh"; '
+                  'rp GET /pods/podX >/dev/null 2>&1 || echo "handled"; echo "still-here"' % root)
+        env = dict(os.environ)
+        env.update({"RUNPOD_API_KEY": "k", "RUNPOD_API_BASE": "http://198.51.100.9:81/v1",
+                    "RUNPOD_CONNECT_TIMEOUT": "1", "RUNPOD_MAX_TIME": "3"})
+        proc = subprocess.run(["bash", "-c", script], env=env, cwd=root,
+                              capture_output=True, text=True, timeout=25)
+        self.assertIn("handled", proc.stdout)
+        self.assertIn("still-here", proc.stdout, "the caller died with the failed call")
+
+
+class WatchdogPulseTests(unittest.TestCase):
+    """0-2: the valve writes its own proof of life.
+
+    The heartbeat is written by the Studio, so it says the Studio is alive and
+    nothing about the watchdog. On 2026-09-07 the watchdog died with the Studio
+    while the panel still reported the Pod as guarded.
+    """
+
+    def setUp(self):
+        self.api = _StubApi()
+        self.tmp = tempfile.mkdtemp(prefix="h3-pulse-")
+        self.pulse = os.path.join(self.tmp, "pulse")
+        self.heartbeat = os.path.join(self.tmp, "heartbeat")
+        # An old heartbeat, so any change to it is visible.
+        self.hb_epoch = int(time.time()) - 5
+        with open(self.heartbeat, "w", encoding="utf-8") as f:
+            f.write("%d 0\n" % self.hb_epoch)
+        self.proc = None
+
+    def tearDown(self):
+        if self.proc and self.proc.poll() is None:
+            self.proc.kill()
+            self.proc.wait(timeout=10)
+        self.api.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _arm(self, stale_minutes=1000):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        env = dict(os.environ)
+        env.update({
+            "RUNPOD_API_KEY": "test-key-not-a-real-one",
+            "RUNPOD_API_BASE": self.api.base,
+            "H3_WATCHDOG_INTERVAL": "1",
+            "H3_WATCHDOG_HEARTBEAT": self.heartbeat,
+            "H3_WATCHDOG_PULSE": self.pulse,
+            "H3_WATCHDOG_LOG": os.path.join(self.tmp, "watchdog.log"),
+        })
+        self.proc = subprocess.Popen(
+            ["bash", os.path.join(root, "scripts", "gpu_watchdog.sh"),
+             "podX", "1000", str(stale_minutes)],
+            env=env, cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return self.proc
+
+    def _read(self):
+        with open(self.pulse, "r", encoding="utf-8") as f:
+            return f.read().split()
+
+    def test_the_pulse_appears_as_soon_as_the_watchdog_is_armed(self):
+        """Not one interval later: armed and provably alive must coincide."""
+        self._arm()
+        self.assertTrue(wait_until(lambda: os.path.exists(self.pulse), 10),
+                        "no pulse after arming")
+        parts = self._read()
+        self.assertEqual(parts[1], str(self.proc.pid), "the pulse must name the process")
+        self.assertEqual(parts[2], "podX")
+        self.assertLessEqual(abs(int(parts[0]) - int(time.time())), 10)
+
+    def test_the_pulse_keeps_advancing_while_the_watchdog_runs(self):
+        self._arm()
+        self.assertTrue(wait_until(lambda: os.path.exists(self.pulse), 10))
+        first = int(self._read()[0])
+        self.assertTrue(wait_until(lambda: int(self._read()[0]) > first, 12),
+                        "the pulse never advanced")
+
+    def test_the_watchdog_never_writes_the_studio_heartbeat(self):
+        """Two files, two writers. If the valve wrote the heartbeat, the
+        heartbeat would prove nothing about the Studio either."""
+        self._arm()
+        self.assertTrue(wait_until(lambda: os.path.exists(self.pulse), 10))
+        time.sleep(2.5)
+        with open(self.heartbeat, "r", encoding="utf-8") as f:
+            self.assertEqual(int(f.read().split()[0]), self.hb_epoch)
+
+    def test_the_pulse_stops_when_the_watchdog_is_killed(self):
+        """This is the case that went undetected: the valve dies, the Studio
+        keeps writing its heartbeat, and nothing says the Pod is unguarded."""
+        self._arm()
+        self.assertTrue(wait_until(lambda: os.path.exists(self.pulse), 10))
+        self.proc.kill()
+        self.proc.wait(timeout=10)
+        last = int(self._read()[0])
+        time.sleep(3.0)
+        self.assertEqual(int(self._read()[0]), last, "the pulse advanced after the valve died")
+        # ...while a Studio heartbeat written now would still look perfectly
+        # fresh, which is exactly why the heartbeat alone could never catch this.
+        with open(self.heartbeat, "w", encoding="utf-8") as f:
+            f.write("%d 0\n" % int(time.time()))
+        self.assertGreater(int(time.time()) - last, 2)
+
+    def test_a_watchdog_that_exits_on_purpose_leaves_no_pulse(self):
+        """The Pod is EXITED, so there is nothing to guard and no valve to claim."""
+        self.api.close()
+        self.api = _StubApi(status="EXITED")
+        self._arm()
+        self.assertTrue(wait_until(lambda: os.path.exists(self.pulse), 10))
+        self.proc.wait(timeout=20)
+        self.assertFalse(os.path.exists(self.pulse),
+                         "a clean exit must remove the pulse rather than let it age into a lie")
+
+
+class WatchdogStatusTests(unittest.TestCase):
+    """0-2, the reading half: `enabled` means configured, `running` means alive."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="h3-wds-")
+        self._saved = (config.WATCHDOG_HEARTBEAT, config.WATCHDOG_PULSE)
+        config.WATCHDOG_HEARTBEAT = os.path.join(self.tmp, "heartbeat")
+        config.WATCHDOG_PULSE = os.path.join(self.tmp, "pulse")
+
+    def tearDown(self):
+        config.WATCHDOG_HEARTBEAT, config.WATCHDOG_PULSE = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_pulse(self, age_seconds, pid=4242, pod="podX"):
+        with open(config.WATCHDOG_PULSE, "w", encoding="utf-8") as f:
+            f.write("%d %d %s 60\n" % (int(time.time()) - age_seconds, pid, pod))
+
+    def test_a_fresh_studio_heartbeat_does_not_mean_a_running_watchdog(self):
+        """The exact misreading that let a Pod bill unattended."""
+        runpod_ctl.heartbeat(busy=False)
+        s = runpod_ctl.watchdog_status()
+        self.assertIsNotNone(s["heartbeat_age_seconds"])
+        self.assertLess(s["heartbeat_age_seconds"], 5)
+        self.assertIs(s["running"], False)
+        self.assertTrue(s["enabled"], "enabled still means configured, and still is")
+
+    def test_a_fresh_pulse_reports_a_running_watchdog(self):
+        self._write_pulse(3)
+        s = runpod_ctl.watchdog_status()
+        self.assertIs(s["running"], True)
+        self.assertLessEqual(s["pulse_age_seconds"], 5)
+        self.assertEqual(s["pulse_pid"], 4242)
+        self.assertEqual(s["pulse_pod_id"], "podX")
+
+    def test_a_stale_pulse_is_not_a_running_watchdog(self):
+        self._write_pulse(config.WATCHDOG_PULSE_STALE_SECONDS + 30)
+        self.assertIs(runpod_ctl.watchdog_status()["running"], False)
+
+    def test_an_unreadable_pulse_is_unknown_not_safe(self):
+        """Unknown is reported as unknown -- the same rule the rest of this
+        project follows for an unreachable ComfyUI."""
+        with open(config.WATCHDOG_PULSE, "w", encoding="utf-8") as f:
+            f.write("not-a-timestamp\n")
+        self.assertIsNone(runpod_ctl.watchdog_status()["running"])
+
+    def test_arming_clears_a_dead_predecessors_pulse(self):
+        """A killed watchdog leaves its pulse behind; a new one must not be
+        answered for by its predecessor's file."""
+        self._write_pulse(1, pid=999999)
+        self.assertIs(runpod_ctl.watchdog_status()["running"], True)
+        spawned = []
+
+        class _FakeProc:
+            pid = 4321
+
+        orig = runpod_ctl.subprocess.Popen
+        try:
+            runpod_ctl.subprocess.Popen = lambda *a, **k: spawned.append(a) or _FakeProc()
+            runpod_ctl.spawn_watchdog("podX")
+        finally:
+            runpod_ctl.subprocess.Popen = orig
+        self.assertTrue(spawned, "the watchdog was not started")
+        self.assertFalse(os.path.exists(config.WATCHDOG_PULSE),
+                         "the predecessor's pulse still vouches for a process that is gone")
+
+
+class StudioLauncherTests(unittest.TestCase):
+    """0-3: the Studio must not die with the shell that started it.
+
+    Verified by what the OS reports, not by what the script says it does: an
+    independent session shows up as its own process group with the launcher
+    gone, and that is precisely what `nohup ... &` does not give.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="h3-launch-")
+        self.pid_file = os.path.join(self.tmp, "studio.pid")
+        self.root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        self.port = s.getsockname()[1]
+        s.close()
+
+    def tearDown(self):
+        self._stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _env(self):
+        e = dict(os.environ)
+        e.update({
+            "H3_STUDIO_PORT": str(self.port),
+            "H3_STUDIO_PID_FILE": self.pid_file,
+            "H3_STUDIO_LOG": os.path.join(self.tmp, "studio.log"),
+            # Never let a test touch the operator's real valve files.
+            "H3_WATCHDOG_HEARTBEAT": os.path.join(self.tmp, "heartbeat"),
+            "H3_WATCHDOG_PULSE": os.path.join(self.tmp, "pulse"),
+            "H3_STUDIO_OPEN": "0",
+        })
+        return e
+
+    def _start(self):
+        return subprocess.run(["bash", os.path.join(self.root, "scripts", "start_studio.sh")],
+                              env=self._env(), cwd=self.root, capture_output=True,
+                              text=True, timeout=90)
+
+    def _stop(self):
+        try:
+            subprocess.run(["bash", os.path.join(self.root, "scripts", "stop_studio.sh")],
+                           env=self._env(), cwd=self.root, capture_output=True,
+                           text=True, timeout=60)
+        except Exception:                      # noqa: BLE001
+            pass
+
+    def _pid(self):
+        with open(self.pid_file, "r", encoding="utf-8") as f:
+            return int(f.read().strip())
+
+    def test_the_studio_outlives_the_shell_that_launched_it(self):
+        r = self._start()
+        self.assertIn("READY", r.stdout, r.stdout + r.stderr)
+        pid = self._pid()
+        os.kill(pid, 0)                       # alive, and the launcher has exited
+        out = subprocess.run(["ps", "-o", "pgid=,ppid=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=20).stdout.split()
+        pgid, ppid = int(out[0]), int(out[1])
+        self.assertEqual(pgid, pid, "the Studio is still in the launcher's process group")
+        self.assertNotEqual(pgid, os.getpgid(0), "same group as this test runner")
+        self.assertEqual(ppid, 1, "the launcher is still the parent, so it did not detach")
+
+    def test_starting_twice_does_not_start_a_second_studio(self):
+        self.assertIn("READY", self._start().stdout)
+        first = self._pid()
+        again = self._start()
+        self.assertIn("already running", again.stdout)
+        self.assertEqual(self._pid(), first, "the pid file was overwritten by a second start")
+
+    def test_the_pid_file_is_removed_on_stop_and_the_process_is_gone(self):
+        self.assertIn("READY", self._start().stdout)
+        pid = self._pid()
+        self._stop()
+        self.assertFalse(os.path.exists(self.pid_file))
+        self.assertTrue(wait_until(lambda: not _alive(pid), 15), "the Studio survived stop")
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+class ForceStopTests(ApiServerTests):
+    """0-4: a busy Pod can be stopped, but only after the operator says so.
+
+    Until this landed the UI sent force:false and nothing else, so the branch in
+    _stop_gpu that cancels and then stops could not be reached by any operator
+    action -- a Pod with a wedged generation could not be stopped from the
+    product at all.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # _stop_gpu reaches runpod_ctl.stop() (RunPod REST) and stop_comfyui()
+        # (ssh to the Pod). Neither may be exercised for real: this suite runs
+        # with no GPU, and a test that stopped the operator's Pod would be a
+        # far worse bug than the one it is checking.
+        self._stops = []
+        self._orig_stop = (runpod_ctl.stop, runpod_ctl.stop_comfyui)
+        runpod_ctl.stop = lambda *a, **k: (self._stops.append("stop") or
+                                           {"desiredStatus": "EXITED", "stopVerified": True,
+                                            "networkVolumeId": "vol1"})
+        runpod_ctl.stop_comfyui = lambda *a, **k: (0, "", "")
+
+    def tearDown(self):
+        runpod_ctl.stop, runpod_ctl.stop_comfyui = self._orig_stop
+        super().tearDown()
+
+    def _start_a_slow_job(self):
+        mock_comfy.STATE.job_seconds = 6.0
+        self.post("/api/generate", {"mode": "prompt_cinema", "prompt": "slow",
+                                    "quality": "draft", "variations": 1, "duration": 2.0,
+                                    "aspect_ratio": graph.ASPECT_RATIOS[0]})
+        self.assertTrue(wait_until(self.manager.is_busy, 10))
+
+    def test_an_idle_pod_stops_without_any_confirmation(self):
+        self.assertFalse(self.manager.is_busy())
+        r = self.post("/api/gpu/stop", {"force": False})
+        self.assertTrue(r["ok"])
+        self.assertNotIn("needs_force", r)
+
+    def test_a_busy_pod_refuses_and_says_how_to_proceed(self):
+        self._start_a_slow_job()
+        r = self.post("/api/gpu/stop", {"force": False})
+        self.assertFalse(r["ok"])
+        self.assertIs(r["needs_force"], True, "the UI cannot offer an escalation it is not told about")
+        self.assertGreaterEqual(r["active_jobs"], 1)
+        self.assertIn("生成中", r["error"], "the refusal is read by the operator, in Japanese")
+        self.assertTrue(self.manager.is_busy(), "a refusal must not cancel anything")
+
+    def test_force_cancels_the_running_generation_and_stops(self):
+        self._start_a_slow_job()
+        r = self.post("/api/gpu/stop", {"force": True})
+        self.assertTrue(r["ok"])
+        self.assertIn("cancelled active jobs", " ".join(r["steps"]))
+        self.assertTrue(wait_until(lambda: not self.manager.is_busy(), 10))
+        self.assertTrue(r["network_volume_preserved"])
+
+    def test_the_ui_escalates_only_behind_an_explicit_confirmation(self):
+        """A source check, because the bug was in the front end and nothing in
+        the Python suite could see it: the handler hard-coded force:false, so
+        the server's force branch was dead code."""
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "studio", "static", "app.js")
+        with open(path, "r", encoding="utf-8") as f:
+            src = f.read()
+        handler = src.split('$("btn-gpu-stop").addEventListener')[1].split("$(\"stop-after-gen\")")[0]
+        self.assertIn("needs_force", handler, "the UI never notices the refusal")
+        self.assertIn("stop(true)", handler, "the UI can still never send force")
+        self.assertIn("confirm(", handler, "force must be behind an explicit confirmation")
+        self.assertLess(handler.index("confirm(", handler.index("needs_force")),
+                        handler.index("stop(true)"),
+                        "force is sent before the operator is asked")
 
 
 if __name__ == "__main__":

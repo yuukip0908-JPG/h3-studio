@@ -28,10 +28,30 @@ STALE_MINUTES="${3:-15}"
 # valve nobody can exercise is a safety valve nobody can trust.
 INTERVAL="${H3_WATCHDOG_INTERVAL:-60}"
 HEARTBEAT="${H3_WATCHDOG_HEARTBEAT:-$DIR/results/gpu_watchdog_heartbeat}"
+# The pulse is this process's own proof of life, and it is deliberately NOT the
+# heartbeat: the heartbeat is written by the Studio, so a fresh one says the
+# Studio is alive and says nothing at all about the valve. On 2026-09-07 the
+# watchdog died with the Studio while the panel still showed the Pod as guarded,
+# because there was no file that only the watchdog could write. This is it.
+PULSE="${H3_WATCHDOG_PULSE:-$DIR/results/gpu_watchdog_pulse}"
 LOG="${H3_WATCHDOG_LOG:-$DIR/results/logs/gpu_watchdog.log}"
 mkdir -p "$(dirname "$LOG")"
 
 say(){ echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] watchdog $POD_ID: $*" >> "$LOG"; }
+
+# "<epoch> <pid> <pod_id> <interval_seconds>". Written through a rename so a
+# reader in another process never catches a truncated file -- the same rule the
+# Studio's heartbeat follows.
+pulse(){
+  mkdir -p "$(dirname "$PULSE")" 2>/dev/null || true
+  printf '%s %s %s %s\n' "$(date +%s)" "$$" "$POD_ID" "$INTERVAL" > "$PULSE.tmp" 2>/dev/null \
+    && mv -f "$PULSE.tmp" "$PULSE" 2>/dev/null || true
+}
+# Stopping on purpose means there is no valve any more, and saying so plainly
+# beats leaving a file that only ages into a lie. A kill leaves it behind, which
+# is why every reader must judge the pulse by its age, not its existence.
+drop_pulse(){ rm -f "$PULSE" "$PULSE.tmp" 2>/dev/null || true; }
+trap drop_pulse EXIT
 
 source "$DIR/scripts/runpod_env.sh"
 
@@ -42,9 +62,13 @@ started=$(date +%s)
 GRACE_MINUTES="${H3_WATCHDOG_GRACE_MINUTES:-30}"
 hard_ceiling=$(( MAX_MINUTES + GRACE_MINUTES ))
 say "armed: max ${MAX_MINUTES}m, stale ${STALE_MINUTES}m, interval ${INTERVAL}s, heartbeat $HEARTBEAT"
+# Before the first sleep, so "armed" and "provably alive" become true together
+# rather than one interval apart.
+pulse
 
 while true; do
   sleep "$INTERVAL"
+  pulse
 
   state="$(rp GET "/pods/$POD_ID" 2>/dev/null \
       | python3 -c 'import json,sys

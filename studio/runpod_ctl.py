@@ -344,6 +344,12 @@ def spawn_watchdog(pod_id, max_minutes=None, stale_minutes=None):
             str(max_minutes or config.WATCHDOG_MAX_MINUTES),
             str(stale_minutes or config.WATCHDOG_STALE_MINUTES)]
     heartbeat(busy=False)          # so a fresh watchdog never sees a stale file
+    # Drop any pulse left behind by a killed predecessor, so "running" cannot be
+    # answered by a dead process's file while the new one is still starting.
+    try:
+        os.remove(config.WATCHDOG_PULSE)
+    except OSError:
+        pass
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             stdin=subprocess.DEVNULL, start_new_session=True,
                             cwd=config.PROJECT_DIR)
@@ -393,11 +399,22 @@ def heartbeat(busy=False):
 
 def watchdog_status():
     """What the valve knows, for the UI. Absence of a heartbeat is reported as
-    absence, never as safety."""
+    absence, never as safety.
+
+    `enabled` has always meant "configured", and still does. It was read as
+    "guarded" on 2026-09-07 while no watchdog existed, so the two facts are now
+    reported separately: the heartbeat says the Studio is alive (the Studio
+    writes it), and the pulse says the valve is alive (only the watchdog writes
+    it). `running` is the second one, and it is None -- not False -- when the
+    pulse cannot be read at all, because unreadable is not the same as absent.
+    """
     out = {"enabled": bool(config.WATCHDOG_MAX_MINUTES),
            "max_minutes": config.WATCHDOG_MAX_MINUTES,
            "stale_minutes": config.WATCHDOG_STALE_MINUTES,
-           "heartbeat_age_seconds": None}
+           "heartbeat_age_seconds": None,
+           "pulse_age_seconds": None, "pulse_pid": None, "pulse_pod_id": None,
+           "pulse_stale_seconds": config.WATCHDOG_PULSE_STALE_SECONDS,
+           "running": False}
     try:
         with open(config.WATCHDOG_HEARTBEAT, "r", encoding="utf-8") as f:
             parts = f.read().split()
@@ -405,6 +422,20 @@ def watchdog_status():
         out["busy"] = parts[1] == "1" if len(parts) > 1 else None
     except (OSError, ValueError, IndexError):
         pass
+    try:
+        with open(config.WATCHDOG_PULSE, "r", encoding="utf-8") as f:
+            parts = f.read().split()
+        age = max(0, int(time.time() - int(parts[0])))
+        out["pulse_age_seconds"] = age
+        out["pulse_pid"] = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        out["pulse_pod_id"] = parts[2] if len(parts) > 2 else None
+        out["running"] = age <= config.WATCHDOG_PULSE_STALE_SECONDS
+    except FileNotFoundError:
+        # The watchdog removes its pulse when it exits on purpose, and never
+        # wrote one if it was never started. Both mean "no valve".
+        out["running"] = False
+    except (OSError, ValueError, IndexError):
+        out["running"] = None
     return out
 
 

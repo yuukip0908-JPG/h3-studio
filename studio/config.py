@@ -53,7 +53,15 @@ MAX_CREATE_ATTEMPTS = 1
 # a process that is not the Studio, so a crashed or killed Studio cannot leave a
 # GPU billing forever. 0 disables it.
 WATCHDOG_MAX_MINUTES = int(os.environ.get("H3_WATCHDOG_MAX_MINUTES", "180"))
-WATCHDOG_HEARTBEAT = os.path.join(RESULTS_DIR, "gpu_watchdog_heartbeat")
+WATCHDOG_HEARTBEAT = os.environ.get(
+    "H3_WATCHDOG_HEARTBEAT", os.path.join(RESULTS_DIR, "gpu_watchdog_heartbeat"))
+# The watchdog's own proof of life, written only by scripts/gpu_watchdog.sh.
+# Separate from the heartbeat on purpose -- see that script's comment.
+WATCHDOG_PULSE = os.environ.get(
+    "H3_WATCHDOG_PULSE", os.path.join(RESULTS_DIR, "gpu_watchdog_pulse"))
+# The valve ticks once a minute, so two missed ticks is "not running". A number
+# below one interval would call a healthy watchdog dead between beats.
+WATCHDOG_PULSE_STALE_SECONDS = int(os.environ.get("H3_WATCHDOG_PULSE_STALE", "150"))
 WATCHDOG_LOG = os.path.join(RESULTS_DIR, "logs", "gpu_watchdog.log")
 WATCHDOG_STALE_MINUTES = int(os.environ.get("H3_WATCHDOG_STALE_MINUTES", "15"))
 

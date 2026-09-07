@@ -13,8 +13,8 @@ if [[ -z "$PY" ]]; then
 fi
 [[ -n "$PY" ]] || { echo "ERROR: no python3 >= 3.9 found" >&2; exit 1; }
 
-PID_FILE="$DIR/results/studio.pid"
-LOG="$DIR/results/logs/studio.log"
+PID_FILE="${H3_STUDIO_PID_FILE:-$DIR/results/studio.pid}"
+LOG="${H3_STUDIO_LOG:-$DIR/results/logs/studio.log}"
 mkdir -p "$(dirname "$LOG")"
 PORT="${H3_STUDIO_PORT:-8010}"
 
@@ -26,13 +26,35 @@ rm -f "$PID_FILE"
 
 cd "$DIR"
 echo "[$(date '+%F %T')] START H3 Studio ($PY)" >> "$LOG"
-nohup "$PY" -m studio.server >> "$LOG" 2>&1 < /dev/null &
-pid=$!; echo "$pid" > "$PID_FILE"
+
+# Started in its OWN session, not merely with nohup. nohup only ignores SIGHUP;
+# the child stays in this shell's process group and session, so anything that
+# signals or reaps the group takes the Studio with it -- and the Studio's
+# watchdog child with that. On 2026-09-07 exactly that happened: the Studio
+# vanished with no traceback and no crash report while a Pod kept billing, and
+# an instance started from an interactive terminal survived the same window.
+# setsid(1) does not exist on macOS; setsid(2) via Python does, and it is the
+# same call runpod_ctl.spawn_watchdog already relies on.
+pid="$("$PY" - "$PY" "$DIR" "$LOG" <<'LAUNCH'
+import subprocess, sys
+py, root, log = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(log, "a", encoding="utf-8") as f:
+    proc = subprocess.Popen([py, "-m", "studio.server"], cwd=root,
+                            stdout=f, stderr=f, stdin=subprocess.DEVNULL,
+                            start_new_session=True)
+print(proc.pid)
+LAUNCH
+)"
+[[ "$pid" =~ ^[0-9]+$ ]] || { echo "ERROR: could not launch H3 Studio (launcher said: $pid)" >&2; exit 1; }
+echo "$pid" > "$PID_FILE"
 
 for i in $(seq 1 40); do
   if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/api/config" >/dev/null 2>&1; then
     echo "H3 Studio READY -> http://127.0.0.1:$PORT/  (pid $pid, log $LOG)"
-    command -v open >/dev/null && open "http://127.0.0.1:$PORT/" || true
+    # Opening a browser is right for a person and wrong for anything automated,
+    # including the test that checks this script really detaches.
+    [[ "${H3_STUDIO_OPEN:-1}" == "1" ]] && command -v open >/dev/null \
+      && open "http://127.0.0.1:$PORT/" || true
     exit 0
   fi
   kill -0 "$pid" 2>/dev/null || { echo "H3 Studio exited early:"; tail -30 "$LOG"; rm -f "$PID_FILE"; exit 1; }

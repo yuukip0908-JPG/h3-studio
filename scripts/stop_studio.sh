@@ -3,7 +3,7 @@
 # GPU, or scripts/runpod_stop.sh, for that).
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PID_FILE="$DIR/results/studio.pid"
+PID_FILE="${H3_STUDIO_PID_FILE:-$DIR/results/studio.pid}"
 [[ -f "$PID_FILE" ]] || { echo "H3 Studio not running (no $PID_FILE)"; exit 0; }
 pid="$(cat "$PID_FILE")"
 if kill -0 "$pid" 2>/dev/null; then

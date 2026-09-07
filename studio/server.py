@@ -242,7 +242,14 @@ def _stop_gpu(force=False):
     "stopped", so the result carries what RunPod says the Pod is afterwards.
     """
     if MANAGER.is_busy() and not force:
-        return {"ok": False, "error": "a generation is still running; cancel it first or use force"}
+        # `needs_force` is the whole point of this refusal: until it existed the
+        # UI sent force:false and nothing else, so the branch below -- cancel,
+        # then stop -- could not be reached by any operator action, and a Pod
+        # with a wedged job could not be stopped from the product at all.
+        # The server still never infers consent; it only says what would work.
+        n = MANAGER.active_count()
+        return {"ok": False, "needs_force": True, "active_jobs": n,
+                "error": "生成中の処理が %d 件あります。中止して GPU を停止するには確認が必要です。" % n}
     steps = []
     if force and MANAGER.is_busy():
         MANAGER.cancel_all()
