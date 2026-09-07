@@ -1405,47 +1405,482 @@ class PodStartTests(unittest.TestCase):
         self.assertEqual(persisted[-1]["sshPort"], 28041)
 
 
-class CapacityErrorTests(unittest.TestCase):
+class FakeCtl:
+    """A RunPod control plane that never touches the network.
+
+    GpuStarter takes its client as a parameter precisely so the acquisition
+    rules can be tested without a card, an account or a bill.
+    """
+
+    def __init__(self, pods=None, start=None, create=None, volume_id="olmj77x4pc"):
+        from studio import runpod_ctl
+        self.RunPodError = runpod_ctl.RunPodError
+        self.pods = pods if pods is not None else []
+        self._start = start
+        self._create = create
+        self.volume_id = volume_id
+        self.start_calls = []
+        self.create_calls = []
+        self.stopped = []
+        self.activated = []
+        self.watchdogs = []
+
+    # --- the surface GpuStarter uses ---
+    def list_pods(self):
+        return list(self.pods)
+
+    def volume(self, volume_id=None):
+        return {"id": self.volume_id, "size": 200, "dataCenterId": "US-WA-1"}
+
+    def have_api_key(self):
+        return True
+
+    def start(self, pod_id=None, wait_seconds=300):
+        self.start_calls.append(pod_id)
+        if callable(self._start):
+            return self._start(pod_id)
+        raise self.RunPodError("no start behaviour configured")
+
+    def create_pod(self, spec, wait_seconds=420):
+        self.create_calls.append(spec)
+        if callable(self._create):
+            return self._create(spec)
+        raise self.RunPodError("no create behaviour configured")
+
+    def activate_pod(self, info):
+        self.activated.append(info)
+
+    def stop(self, pod_id=None, verify_seconds=90):
+        self.stopped.append(pod_id)
+        return {"podId": pod_id, "desiredStatus": "EXITED", "stopVerified": True}
+
+    def ssh(self, command, timeout=600):
+        """A healthy Pod, answering each pre-flight probe the way a real one does."""
+        from studio import preflight
+        if "mountpoint" in command:
+            return 0, "MOUNTED\n3\n", ""
+        if "models" in command:
+            return 0, "\n".join(preflight.REQUIRED_MODELS), ""
+        if "doctor.sh" in command:
+            return 0, "PASS=29 FAIL=0 WARN=0\n", ""
+        return 0, "OK\n", ""
+
+    def actual_gpu(self, pod_id=None):
+        return {"name": "NVIDIA RTX 6000 Ada Generation", "memory_total": "49140 MiB"}
+
+    def spawn_watchdog(self, pod_id, **kw):
+        self.watchdogs.append(pod_id)
+        return 4242
+
+
+def _pod(pid, status="EXITED", gpu="NVIDIA RTX 6000 Ada Generation", price=0.84,
+         volume="olmj77x4pc", created="2026-09-06"):
+    return {"id": pid, "name": "h3", "desiredStatus": status, "gpuTypeIds": [gpu] if gpu else None,
+            "costPerHr": price, "networkVolumeId": volume, "createdAt": created}
+
+
+def _ready_info(pid="p", gpu="NVIDIA RTX 6000 Ada Generation", price=0.84):
+    return {"podId": pid, "desiredStatus": "RUNNING", "gpu": gpu, "costPerHr": price,
+            "networkVolumeId": "olmj77x4pc", "volumeMountPath": "/workspace",
+            "comfyUrl": "http://127.0.0.1:8188"}
+
+
+def _healthy_object_info():
+    from studio import graph, preflight
+    info = {name: {} for name in preflight.REQUIRED_NODE_CLASSES}
+    info[graph.REF_STRENGTH_NODE] = {}
+    info[graph.TURBO_LORA_NODE] = {"input": {"required": {"lora_name": [[
+        graph.TURBO_LORAS["fl2va"]["file"]]]}}}
+    return info
+
+
+def _run_starter(ctl, confirm_gpu=None, comfy_ready=True, object_info=None, timeout=20):
+    from studio import startup
+    if object_info is None:
+        object_info = _healthy_object_info()
+    st = startup.GpuStarter(
+        ctl=ctl,
+        comfy_ready=lambda: comfy_ready,
+        start_comfy=lambda: (0, "", ""),
+        object_info=lambda: object_info,
+        watchdog=ctl.spawn_watchdog)
+    st.begin(confirm_gpu=confirm_gpu)
+    deadline = time.time() + timeout
+    while time.time() < deadline and st.status()["busy"]:
+        time.sleep(0.05)
+    return st
+
+
+class GpuPlanTests(unittest.TestCase):
+    """Which cards may start on their own, and what the operator is shown."""
+
+    def test_the_baseline_card_is_the_only_one_that_starts_unattended(self):
+        from studio import gpu_plan
+        self.assertEqual(gpu_plan.auto_start_gpu_ids(), ["NVIDIA RTX 6000 Ada Generation"])
+        self.assertTrue(gpu_plan.may_auto_start("NVIDIA RTX 6000 Ada Generation"))
+
+    def test_an_expensive_card_never_starts_unattended(self):
+        from studio import gpu_plan
+        self.assertEqual(gpu_plan.tier("NVIDIA A100-SXM4-80GB"), gpu_plan.EXPENSIVE)
+        self.assertFalse(gpu_plan.may_auto_start("NVIDIA A100-SXM4-80GB"))
+        self.assertIn("NVIDIA A100-SXM4-80GB", gpu_plan.offer_gpu_ids())
+
+    def test_an_unpriced_card_is_treated_as_expensive_not_as_probably_fine(self):
+        from studio import gpu_plan
+        self.assertEqual(gpu_plan.tier("NVIDIA L40S"), gpu_plan.UNKNOWN)
+        self.assertFalse(gpu_plan.may_auto_start("NVIDIA L40S"))
+        self.assertFalse(gpu_plan.may_auto_start("something nobody has heard of"))
+
+    def test_a_live_price_overrides_the_catalogue(self):
+        """What the account is charged is what decides, not what we wrote down."""
+        from studio import gpu_plan
+        self.assertFalse(gpu_plan.may_auto_start("NVIDIA RTX 6000 Ada Generation", 2.50))
+
+    def test_price_card_shows_what_thirty_and_sixty_minutes_cost(self):
+        from studio import gpu_plan
+        card = gpu_plan.price_card("NVIDIA RTX 6000 Ada Generation")
+        self.assertEqual(card["usd_per_hour"], 0.84)
+        self.assertEqual(card["usd_30min"], 0.42)
+        self.assertEqual(card["usd_60min"], 0.84)
+        self.assertTrue(card["auto_start"])
+        expensive = gpu_plan.price_card("NVIDIA A100-SXM4-80GB")
+        self.assertFalse(expensive["auto_start"])
+        self.assertIn("warning", expensive)
+
+    def test_recommendation_is_the_cheap_verified_card(self):
+        from studio import gpu_plan
+        self.assertEqual(gpu_plan.recommended()["gpu"], "NVIDIA RTX 6000 Ada Generation")
+
+
+class GpuStartSequenceTests(unittest.TestCase):
+    """START GPU: what it may start, what it must ask about, when it gives up."""
+
+    def test_a_running_pod_blocks_a_second_start(self):
+        """Two Pods on one network volume means two ComfyUI on one cache dir."""
+        from studio import startup
+        ctl = FakeCtl(pods=[_pod("running-one", status="RUNNING")])
+        st = _run_starter(ctl)
+        self.assertEqual(st.state, startup.FAILED)
+        self.assertIn("すでに動いています", st.error)
+        self.assertEqual(ctl.start_calls, [])
+        self.assertEqual(ctl.create_calls, [])
+
     def test_no_free_gpu_is_reported_as_retryable_not_as_a_fault(self):
         """RunPod answers HTTP 500 when the Pod's host is fully allocated.
 
         A stopped Pod can only restart on the host it is bound to, so this is a
-        wait, not a failure -- the Studio must say so rather than surfacing a
-        bare 502. Measured against the live API on 2026-09-06.
+        wait, not a failure -- and it stays a wait even when paid alternatives
+        are offered alongside. Measured against the live API on 2026-09-06.
         """
-        from studio import runpod_ctl, server as srv
-        orig_describe, orig_start = runpod_ctl.describe, runpod_ctl.start
+        from studio import startup
+
+        def refuse(pod_id=None):
+            raise ctl.RunPodError(
+                'RunPod POST /pods/p/start -> HTTP 500: {"error":"start pod: There are '
+                'not enough free GPUs on the host machine to start this pod.","status":500}')
+
+        ctl = FakeCtl(pods=[_pod("p")], start=refuse, create=refuse)
+        st = _run_starter(ctl)
+        self.assertIn(st.state, (startup.NEEDS_CONFIRMATION, startup.NO_CAPACITY))
+        self.assertTrue(st.capacity_blocked)
+        self.assertIn("在庫", st.error or st.stages[2]["detail"])
+        self.assertEqual(ctl.stopped, [])
+
+    def test_a_non_capacity_error_is_a_failure_not_a_wait(self):
+        """A 401 must never be dressed up as "come back later"."""
+        from studio import startup
+
+        def unauthorized(*a, **kw):
+            raise ctl.RunPodError("HTTP 401: unauthorized")
+
+        ctl = FakeCtl(pods=[_pod("p")], start=unauthorized, create=unauthorized)
+        st = _run_starter(ctl)
+        self.assertFalse(st.capacity_blocked)
+        self.assertNotEqual(st.state, startup.READY)
+        self.assertIn("401", str(st.stages[2]["detail"]) + str(st.error))
+
+    def test_an_expensive_existing_pod_is_offered_never_restarted(self):
+        """The A100 the account is currently pointed at must not restart itself."""
+        from studio import startup
+        ctl = FakeCtl(pods=[_pod("a100", gpu="NVIDIA A100-SXM4-80GB", price=1.59)],
+                      create=lambda spec: (_ for _ in ()).throw(
+                          ctl.RunPodError("There are no instances currently available")))
+        st = _run_starter(ctl)
+        self.assertEqual(ctl.start_calls, [], "an expensive Pod was restarted without asking")
+        self.assertEqual(st.state, startup.NEEDS_CONFIRMATION)
+        self.assertTrue(any(o["gpu"] == "NVIDIA A100-SXM4-80GB" for o in st.offers))
+
+    def test_confirmation_allows_the_expensive_card(self):
+        from studio import startup
+        ctl = FakeCtl(pods=[_pod("a100", gpu="NVIDIA A100-SXM4-80GB", price=1.59)],
+                      start=lambda pod_id: _ready_info("a100", "NVIDIA A100-SXM4-80GB", 1.59))
+        st = _run_starter(ctl, confirm_gpu="NVIDIA A100-SXM4-80GB")
+        self.assertEqual(st.state, startup.READY, st.error)
+        self.assertEqual(ctl.start_calls, ["a100"])
+        self.assertEqual(st.price_card["usd_per_hour"], 1.59)
+
+    def test_only_the_cheap_card_is_requested_when_creating(self):
+        from studio import startup
+        ctl = FakeCtl(pods=[], create=lambda spec: _ready_info("new"))
+        st = _run_starter(ctl)
+        self.assertEqual(st.state, startup.READY, st.error)
+        self.assertEqual(ctl.create_calls[0]["gpuTypeIds"], ["NVIDIA RTX 6000 Ada Generation"])
+
+    def test_one_restart_and_one_create_then_it_answers(self):
+        """The old acquisition loop hunted for an hour. A button gets two tries."""
+        from studio import config
+
+        def refuse(*a, **kw):
+            raise ctl.RunPodError("There are not enough free GPUs on the host machine")
+
+        ctl = FakeCtl(pods=[_pod("a"), _pod("b"), _pod("c")], start=refuse, create=refuse)
+        st = _run_starter(ctl)
+        self.assertEqual(len(ctl.start_calls), config.MAX_RESTART_ATTEMPTS)
+        self.assertEqual(len(ctl.create_calls), config.MAX_CREATE_ATTEMPTS)
+        self.assertIsNotNone(st.finished_at)
+
+    def test_a_pod_that_comes_up_over_budget_is_stopped_immediately(self):
+        """RunPod deciding to hand over a pricier card is not consent."""
+        from studio import startup
+        ctl = FakeCtl(pods=[], create=lambda spec: _ready_info("surprise", "NVIDIA H100 NVL", 3.99))
+        st = _run_starter(ctl)
+        self.assertEqual(st.state, startup.FAILED)
+        self.assertEqual(ctl.stopped, ["surprise"])
+        self.assertIn("即停止", st.error)
+
+    def test_ready_arms_the_independent_watchdog(self):
+        from studio import startup
+        ctl = FakeCtl(pods=[_pod("p")], start=lambda pod_id: _ready_info("p"))
+        st = _run_starter(ctl)
+        self.assertEqual(st.state, startup.READY, st.error)
+        self.assertEqual(ctl.watchdogs, ["p"])
+        self.assertEqual([s["state"] for s in st.stages],
+                         ["done"] * len(st.stages))
+
+    def test_status_survives_the_request_that_started_it(self):
+        """The browser giving up must not lose the sequence."""
+        from studio import startup
+        ctl = FakeCtl(pods=[_pod("p")], start=lambda pod_id: _ready_info("p"))
+        st = _run_starter(ctl)
+        snapshot = st.status()
+        self.assertEqual(snapshot["state"], startup.READY)
+        self.assertEqual(snapshot["pod_id"], "p")
+        self.assertIsNotNone(snapshot["elapsed_seconds"])
+
+
+class PreflightTests(unittest.TestCase):
+    def test_offline_checks_pass_on_this_checkout(self):
+        from studio import preflight
+        summary = preflight.summarize(preflight.offline_checks(
+            list_pods=lambda: [], get_volume=lambda vid: {"id": vid, "size": 200,
+                                                          "dataCenterId": "US-WA-1"},
+            have_api_key=lambda: True))
+        self.assertTrue(summary["ok"], summary["blocking"])
+        self.assertEqual(summary["fail"], 0)
+
+    def test_a_running_pod_is_a_preflight_failure(self):
+        from studio import preflight
+        checks = preflight.offline_checks(
+            list_pods=lambda: [{"id": "x", "desiredStatus": "RUNNING"}],
+            get_volume=lambda vid: {"id": vid}, have_api_key=lambda: True)
+        guard = [c for c in checks if c["key"] == "no_double_start"][0]
+        self.assertFalse(guard["ok"])
+
+    def test_unknown_is_never_counted_as_a_pass(self):
+        from studio import preflight
+        checks = preflight.offline_checks(list_pods=None, get_volume=None, have_api_key=None)
+        summary = preflight.summarize(checks)
+        self.assertGreater(summary["unknown"], 0)
+        self.assertNotIn(None, [c["ok"] for c in checks if c["ok"] is True])
+
+
+class CostGuardExtraTests(unittest.TestCase):
+    def test_stop_after_generation_waits_for_the_busy_to_idle_edge(self):
+        from studio import runpod_ctl
+        stops = []
+        busy = {"v": True}
+        g = runpod_ctl.CostGuard(lambda: busy["v"], lambda s: None,
+                                 lambda: stops.append(1), interval=0.05)
+        g.set_stop_after_generation(True)
+        g.start()
         try:
-            runpod_ctl.describe = lambda pod_id=None: {"podId": "p", "desiredStatus": "EXITED"}
-
-            def boom(*a, **kw):
-                raise runpod_ctl.RunPodError(
-                    'RunPod POST /pods/p/start -> HTTP 500: {"error":"start pod: There are '
-                    'not enough free GPUs on the host machine to start this pod.","status":500}')
-
-            runpod_ctl.start = boom
-            result = srv._start_gpu()
+            time.sleep(0.25)
+            self.assertEqual(stops, [], "stopped while a generation was running")
+            busy["v"] = False
+            deadline = time.time() + 3
+            while time.time() < deadline and not stops:
+                time.sleep(0.05)
+            self.assertEqual(len(stops), 1)
         finally:
-            runpod_ctl.describe, runpod_ctl.start = orig_describe, orig_start
-        self.assertFalse(result["ok"])
-        self.assertTrue(result["retryable"])
-        self.assertIn("no free GPU", result["error"])
-        self.assertIn("untouched", result["error"])
+            g.stop_thread()
 
-    def test_other_runpod_errors_still_propagate(self):
-        from studio import runpod_ctl, server as srv
-        orig_describe, orig_start = runpod_ctl.describe, runpod_ctl.start
+    def test_the_guard_beats_the_watchdog_heartbeat(self):
+        from studio import config, runpod_ctl
         try:
-            runpod_ctl.describe = lambda pod_id=None: {"podId": "p", "desiredStatus": "EXITED"}
+            os.remove(config.WATCHDOG_HEARTBEAT)
+        except OSError:
+            pass
+        g = runpod_ctl.CostGuard(lambda: False, lambda s: None, lambda: None, interval=0.05)
+        g.start()
+        try:
+            deadline = time.time() + 3
+            while time.time() < deadline and not os.path.exists(config.WATCHDOG_HEARTBEAT):
+                time.sleep(0.05)
+            self.assertTrue(os.path.exists(config.WATCHDOG_HEARTBEAT))
+            with open(config.WATCHDOG_HEARTBEAT, encoding="utf-8") as f:
+                epoch, flag = f.read().split()[:2]
+            self.assertLess(abs(time.time() - int(epoch)), 10)
+            self.assertEqual(flag, "0")
+        finally:
+            g.stop_thread()
 
+    def test_an_unknown_job_state_counts_as_busy(self):
+        from studio import runpod_ctl
+        stops = []
+
+        def explode():
+            raise RuntimeError("job state unavailable")
+
+        g = runpod_ctl.CostGuard(explode, lambda s: None, lambda: stops.append(1), interval=0.05)
+        g.set_stop_after_generation(True)
+        g.start()
+        try:
+            time.sleep(0.3)
+            self.assertEqual(stops, [])
+        finally:
+            g.stop_thread()
+
+
+class StopVerificationTests(unittest.TestCase):
+    def test_stop_waits_for_exited_before_claiming_success(self):
+        from studio import runpod_ctl
+        states = ["RUNNING", "RUNNING", "EXITED"]
+        calls = []
+        orig_call, orig_describe, orig_sleep = runpod_ctl._call, runpod_ctl.describe, time.sleep
+        try:
+            runpod_ctl._call = lambda m, p, payload=None, timeout=30: calls.append((m, p)) or {}
+            runpod_ctl.describe = lambda pod_id=None: {"podId": pod_id,
+                                                       "desiredStatus": states.pop(0) if states else "EXITED"}
+            time.sleep = lambda s: None
+            info = runpod_ctl.stop("p", verify_seconds=30)
+        finally:
+            runpod_ctl._call, runpod_ctl.describe, time.sleep = orig_call, orig_describe, orig_sleep
+        self.assertTrue(info["stopVerified"])
+        self.assertEqual(info["desiredStatus"], "EXITED")
+        self.assertEqual(calls[0], ("POST", "/pods/p/stop"))
+
+    def test_an_unconfirmed_stop_is_not_reported_as_verified(self):
+        from studio import runpod_ctl
+        orig_call, orig_describe, orig_sleep = runpod_ctl._call, runpod_ctl.describe, time.sleep
+        try:
+            runpod_ctl._call = lambda m, p, payload=None, timeout=30: {}
+            runpod_ctl.describe = lambda pod_id=None: {"podId": pod_id, "desiredStatus": "RUNNING"}
+            time.sleep = lambda s: None
+            info = runpod_ctl.stop("p", verify_seconds=1)
+        finally:
+            runpod_ctl._call, runpod_ctl.describe, time.sleep = orig_call, orig_describe, orig_sleep
+        self.assertFalse(info["stopVerified"])
+
+
+class BillingTests(unittest.TestCase):
+    """Real charges are reported as facts; everything else says so."""
+
+    def test_today_is_summed_from_real_rows(self):
+        from studio import runpod_ctl, server as srv
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        orig = (runpod_ctl.billing_pods, runpod_ctl.billing_volumes)
+        try:
+            runpod_ctl.billing_pods = lambda s, e, bucket_size=None, pod_id=None: [
+                {"amount": 0.25, "podId": "a", "time": today + " 00:00:00"},
+                {"amount": 0.10, "podId": "b", "time": today + " 00:00:00"},
+                {"amount": 9.99, "podId": "a", "time": "2020-01-01 00:00:00"},
+            ]
+            runpod_ctl.billing_volumes = lambda s, e, bucket_size=None: [
+                {"amount": 0.04, "startDate": today + " 00:00:00"}]
+            out = srv._billing_summary()
+        finally:
+            runpod_ctl.billing_pods, runpod_ctl.billing_volumes = orig
+        self.assertTrue(out["available"])
+        self.assertAlmostEqual(out["pods_today_usd"], 0.35, places=4)
+        self.assertAlmostEqual(out["volume_today_usd"], 0.04, places=4)
+        self.assertEqual(out["by_pod"]["a"], 10.24)
+
+    def test_an_unreadable_bill_is_reported_not_guessed(self):
+        from studio import runpod_ctl, server as srv
+        orig = (runpod_ctl.billing_pods, runpod_ctl.billing_volumes)
+        try:
             def boom(*a, **kw):
-                raise runpod_ctl.RunPodError("HTTP 401: unauthorized")
+                raise runpod_ctl.RunPodError("HTTP 403")
 
-            runpod_ctl.start = boom
+            runpod_ctl.billing_pods = boom
+            runpod_ctl.billing_volumes = boom
+            out = srv._billing_summary()
+        finally:
+            runpod_ctl.billing_pods, runpod_ctl.billing_volumes = orig
+        self.assertFalse(out["available"])
+        self.assertNotIn("pods_today_usd", out)
+        self.assertIn("403", out["pods_error"])
+
+
+class PodDeletionGuardTests(unittest.TestCase):
+    """Cleanup runs the same four checks every time, or it does not run."""
+
+    def _fake(self, pod):
+        from studio import runpod_ctl
+        calls = []
+
+        def call(method, path, payload=None, timeout=30):
+            calls.append((method, path))
+            if method == "GET":
+                return pod
+            return {}
+
+        return call, calls
+
+    def test_refuses_the_active_pod(self):
+        from studio import runpod_ctl
+        with self.assertRaises(runpod_ctl.RunPodError):
+            runpod_ctl.delete_pod("keep", active_pod_id="keep")
+
+    def test_refuses_a_running_pod(self):
+        from studio import runpod_ctl
+        call, calls = self._fake({"id": "x", "desiredStatus": "RUNNING",
+                                  "networkVolumeId": "olmj77x4pc", "volumeInGb": 0})
+        orig = runpod_ctl._call
+        try:
+            runpod_ctl._call = call
             with self.assertRaises(runpod_ctl.RunPodError):
-                srv._start_gpu()
+                runpod_ctl.delete_pod("x", active_pod_id="other", volume_id="olmj77x4pc")
         finally:
-            runpod_ctl.describe, runpod_ctl.start = orig_describe, orig_start
+            runpod_ctl._call = orig
+        self.assertNotIn(("DELETE", "/pods/x"), calls)
+
+    def test_refuses_a_pod_with_its_own_volume(self):
+        from studio import runpod_ctl
+        call, calls = self._fake({"id": "x", "desiredStatus": "EXITED",
+                                  "networkVolumeId": "olmj77x4pc", "volumeInGb": 40})
+        orig = runpod_ctl._call
+        try:
+            runpod_ctl._call = call
+            with self.assertRaises(runpod_ctl.RunPodError):
+                runpod_ctl.delete_pod("x", active_pod_id="other", volume_id="olmj77x4pc")
+        finally:
+            runpod_ctl._call = orig
+        self.assertNotIn(("DELETE", "/pods/x"), calls)
+
+    def test_deletes_a_disposable_pod_and_keeps_the_volume(self):
+        from studio import runpod_ctl
+        call, calls = self._fake({"id": "x", "desiredStatus": "EXITED",
+                                  "networkVolumeId": "olmj77x4pc", "volumeInGb": 0})
+        orig = runpod_ctl._call
+        try:
+            runpod_ctl._call = call
+            out = runpod_ctl.delete_pod("x", active_pod_id="other", volume_id="olmj77x4pc")
+        finally:
+            runpod_ctl._call = orig
+        self.assertEqual(out["deleted"], "x")
+        self.assertEqual(out["networkVolumePreserved"], "olmj77x4pc")
+        self.assertIn(("DELETE", "/pods/x"), calls)
 
 
 class PodMigrationTests(unittest.TestCase):
@@ -1634,6 +2069,113 @@ class CostGuardTests(unittest.TestCase):
         from studio import runpod_ctl
         guard = runpod_ctl.CostGuard(lambda: False, lambda s: None, lambda: None)
         self.assertFalse(guard.status()["enabled"])
+
+
+class WatchdogTests(unittest.TestCase):
+    """The safety valve for a Studio that is no longer there.
+
+    The Cost Guard runs inside the Studio process, so every way that process can
+    die is a way to leave a GPU billing. This is the part that is supposed to
+    survive that, which means it is the part that has to be exercised rather
+    than assumed: these tests run the real shell script against a stand-in
+    RunPod API and check what it actually does.
+    """
+
+    def setUp(self):
+        import http.server
+        import tempfile
+        import threading as th
+
+        self.calls = []
+        calls = self.calls
+
+        class Fake(http.server.BaseHTTPRequestHandler):
+            def _reply(self, obj):
+                body = json.dumps(obj).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                calls.append(("GET", self.path))
+                self._reply({"id": "podX", "desiredStatus": "RUNNING"})
+
+            def do_POST(self):
+                calls.append(("POST", self.path))
+                self._reply({})
+
+            def log_message(self, *a):
+                pass
+
+        self.httpd = http.server.HTTPServer(("127.0.0.1", 0), Fake)
+        self.port = self.httpd.server_address[1]
+        self.thread = th.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self, heartbeat_age_seconds, stale_minutes, busy=0, seconds=4.0, max_minutes=1000):
+        import subprocess
+        hb = os.path.join(self.tmp, "heartbeat")
+        with open(hb, "w", encoding="utf-8") as f:
+            f.write("%d %d\n" % (int(time.time()) - heartbeat_age_seconds, busy))
+        env = dict(os.environ)
+        env.update({
+            "RUNPOD_API_KEY": "test-key-not-a-real-one",
+            "RUNPOD_API_BASE": "http://127.0.0.1:%d/v1" % self.port,
+            "H3_WATCHDOG_INTERVAL": "1",
+            "H3_WATCHDOG_HEARTBEAT": hb,
+            "H3_WATCHDOG_LOG": os.path.join(self.tmp, "watchdog.log"),
+        })
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        proc = subprocess.Popen(
+            ["bash", os.path.join(root, "scripts", "gpu_watchdog.sh"),
+             "podX", str(max_minutes), str(stale_minutes)],
+            env=env, cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            proc.wait(timeout=seconds)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            proc.wait(timeout=5)
+        return [c for c in self.calls if c[0] == "POST"]
+
+    def test_a_stale_heartbeat_stops_the_pod(self):
+        """The Studio has gone away and the Pod is still running: stop it."""
+        stops = self._run(heartbeat_age_seconds=3600, stale_minutes=1)
+        self.assertIn(("POST", "/v1/pods/podX/stop"), stops)
+
+    def test_a_live_studio_is_left_alone(self):
+        """A fresh heartbeat means the Cost Guard is on duty; do not interfere."""
+        stops = self._run(heartbeat_age_seconds=0, stale_minutes=10)
+        self.assertEqual(stops, [])
+
+    def test_the_absolute_limit_holds_while_a_generation_runs(self):
+        """Never cut a generation off at the deadline; the ceiling is separate."""
+        stops = self._run(heartbeat_age_seconds=0, stale_minutes=10, busy=1,
+                          max_minutes=0, seconds=3.5)
+        self.assertEqual(stops, [])
+
+    def test_the_absolute_limit_stops_an_idle_pod(self):
+        stops = self._run(heartbeat_age_seconds=0, stale_minutes=10, busy=0,
+                          max_minutes=0, seconds=4.0)
+        self.assertIn(("POST", "/v1/pods/podX/stop"), stops)
+
+    def test_spawn_refuses_when_the_script_is_missing(self):
+        from studio import config, runpod_ctl
+        orig = config.PROJECT_DIR
+        try:
+            config.PROJECT_DIR = self.tmp
+            with self.assertRaises(runpod_ctl.RunPodError):
+                runpod_ctl.spawn_watchdog("podX")
+        finally:
+            config.PROJECT_DIR = orig
 
 
 if __name__ == "__main__":

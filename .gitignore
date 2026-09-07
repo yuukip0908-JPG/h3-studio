@@ -7,3 +7,5 @@ results/studio/
 studio/**/__pycache__/
 results/logs/studio.log
 results/*.pid
+results/gpu_watchdog_heartbeat
+results/logs/gpu_watchdog.log

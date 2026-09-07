@@ -63,6 +63,18 @@ Image Trace と Motion Trace の Draft と Final は解像度（Motion Traceはd
 Motion Traceは `MiniMaxH3CLIPCachedRef2VA` + `minimax_h3_ref2va_pruned_int8_convrot`
 （fl2vaと**同一バイト数**。sha256でしか区別できない）。追加custom nodeは不要。
 
+## GPU 運用の原則（2026-09-07 確立）
+安いGPUを優先 / 高額GPUは勝手に使わない / GPUを探し続けない / Podを増やし続けない /
+GPU ON後に環境修理をしない / 状態をユーザーへ見せる / 終わったら確実に止める。
+
+- 自動起動してよいのは **価格が既知で $1.00/時以下、かつ baseline 実測済み**のカードのみ
+  （現状 RTX 6000 Ada 48GB $0.84 だけ）。価格不明は高額扱い
+- START GPU 1回につき restart 1回・create 1回・**5分**まで。背景で探し続けない
+- **本体は Network Volume `olmj77x4pc`**。Pod は使い捨て。コードに Pod ID を書かない
+- RUNNING な Pod が1つでもあれば新規起動を拒否（同一ボリューム二重起動の禁止）
+- 課金は `GET /billing/pods` / `/billing/networkvolumes` が実データ。
+  推定値には必ず「推定」と書く。取得できないときは「取得できません」と書く
+
 ## 切り分け
 - Studio起動不可 → Mac側。`results/logs/studio.log`。Podは無関係
 - GPU情報がUNKNOWN → RunPod API / Keychain。`scripts/runpod_status.sh`

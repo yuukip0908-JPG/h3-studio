@@ -22,11 +22,15 @@ if __package__ in (None, ""):  # allow `python3 studio/server.py`
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "studio"
 
-from . import comfy_client, config, graph, history, jobs, mediaprobe, runpod_ctl  # noqa: E402
+from . import (comfy_client, config, gpu_plan, graph, history, jobs, mediaprobe,  # noqa: E402
+               preflight, runpod_ctl, startup)
 
 STARTED_AT = time.time()
 MANAGER = None
 GUARD = None
+# START GPU runs here, not inside the HTTP request that asked for it, so a
+# closed tab cannot orphan a Pod that is coming up and billing.
+STARTER = None
 # Pod id the JobManager is currently bound to, so a host migration can be
 # detected without second-guessing an explicitly overridden ComfyUI URL.
 BOUND_POD_ID = None
@@ -83,8 +87,42 @@ def _gpu_status():
         secs = _running_seconds(out.get("last_started_at"))
         out["session_seconds"] = secs
         if secs is not None and out.get("hourly_usd"):
+            # Arithmetic on an hourly rate, not a charge RunPod has reported.
+            # It is labelled an estimate wherever it is shown.
             out["session_cost_usd"] = round(secs / 3600.0 * out["hourly_usd"], 3)
+            out["session_cost_is_estimate"] = True
+
+    # What the operator has to see before anything starts billing.
+    out["recommended"] = gpu_plan.recommended()
+    out["price"] = gpu_plan.price_card(out.get("gpu"), out.get("cost_per_hr"))
+    out["network_volume_id"] = config.network_volume_id()
+    out["watchdog"] = runpod_ctl.watchdog_status()
+    out["auto_stop_recommended_minutes"] = config.RECOMMENDED_AUTO_STOP_MINUTES
+    out["start"] = STARTER.status() if STARTER else {"state": startup.IDLE, "stages": [], "offers": []}
+    out["billing"] = _billing_cached()
     return out
+
+
+_BILLING_CACHE = {"at": 0.0, "value": None}
+_BILLING_TTL = 120.0
+
+
+def _billing_cached(force=False):
+    """Billing is a network call and the UI polls every 1.5s; cache it.
+
+    A stale-but-real number beats a fresh guess, and the payload carries its own
+    age so nothing has to pretend it is live.
+    """
+    now = time.time()
+    if force or _BILLING_CACHE["value"] is None or now - _BILLING_CACHE["at"] > _BILLING_TTL:
+        try:
+            _BILLING_CACHE["value"] = _billing_summary()
+        except Exception as e:  # noqa: BLE001
+            _BILLING_CACHE["value"] = {"available": False, "pods_error": str(e)[:200]}
+        _BILLING_CACHE["at"] = now
+    value = dict(_BILLING_CACHE["value"] or {})
+    value["age_seconds"] = round(now - _BILLING_CACHE["at"])
+    return value
 
 
 def _running_seconds(stamp):
@@ -113,58 +151,95 @@ def _running_seconds(stamp):
     return None
 
 
-def _start_gpu():
-    """START GPU: Pod start -> RUNNING -> ComfyUI start -> health check."""
-    steps = []
-    info = runpod_ctl.describe()
-    if info.get("desiredStatus") != "RUNNING":
-        steps.append("starting Pod %s" % info.get("podId"))
-        try:
-            info = runpod_ctl.start()
-        except runpod_ctl.RunPodError as e:
-            # A stopped Pod can only restart on the host it is bound to. When
-            # that host is fully allocated RunPod answers HTTP 500 "There are
-            # not enough free GPUs on the host machine to start this pod."
-            # That is a capacity condition, not a fault: nothing is lost and
-            # retrying later usually works, so say so instead of surfacing a
-            # bare 502. (Measured 2026-09-06.)
-            message = str(e)
-            if "not enough free GPUs" in message or "no instances currently available" in message:
-                return {"ok": False, "steps": steps, "retryable": True,
-                        "error": "RunPod currently has no free GPU on this Pod's host. "
-                                 "The Pod, its container disk and the network volume are "
-                                 "untouched -- press START GPU again in a few minutes, or "
-                                 "check the RunPod console for availability."}
-            raise
-    else:
-        steps.append("Pod already RUNNING")
-    if info.get("desiredStatus") != "RUNNING":
-        return {"ok": False, "steps": steps, "error": "Pod did not reach RUNNING"}
+def _billing_window(days=1):
+    end = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    start = time.strftime("%Y-%m-%dT00:00:00Z", time.gmtime(time.time() - (days - 1) * 86400))
+    return start, end
 
-    MANAGER.rebind(config.comfy_url())
-    if MANAGER.client.is_alive():
-        steps.append("ComfyUI already healthy")
-        return {"ok": True, "steps": steps, "comfy_url": MANAGER.client.base}
 
-    steps.append("starting ComfyUI over SSH")
-    code, out, err = runpod_ctl.start_comfyui()
-    steps.append("start_h3.sh exit=%d" % code)
-    deadline = time.time() + 420
-    while time.time() < deadline:
-        if MANAGER.client.is_alive():
-            steps.append("ComfyUI healthy")
-            MANAGER.rebind(config.comfy_url())
-            return {"ok": True, "steps": steps, "comfy_url": MANAGER.client.base}
-        time.sleep(5)
-    return {"ok": False, "steps": steps,
-            "error": "ComfyUI did not become healthy in 7 min. ssh stderr: %s" % (err or out)[-600:]}
+def _billing_summary(days=2):
+    """Real charges from RunPod. Anything that cannot be read says so.
+
+    rest.runpod.io/v1 does expose /billing/pods and /billing/networkvolumes --
+    they are in its OpenAPI document even though /billing itself 400s. Daily
+    buckets are what the account is actually charged, so they are reported as
+    fact; the in-flight session is arithmetic on an hourly rate and is labelled
+    an estimate everywhere it appears.
+    """
+    start, end = _billing_window(days)
+    out = {"window": {"start": start, "end": end}, "available": True}
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    try:
+        rows = runpod_ctl.billing_pods(start, end)
+        out["pods_today_usd"] = round(sum(r.get("amount") or 0 for r in rows
+                                          if str(r.get("time", "")).startswith(today)), 4)
+        out["pods_window_usd"] = round(sum(r.get("amount") or 0 for r in rows), 4)
+        by_pod = {}
+        for r in rows:
+            pid = r.get("podId") or "?"
+            by_pod[pid] = round(by_pod.get(pid, 0) + (r.get("amount") or 0), 4)
+        out["by_pod"] = by_pod
+    except Exception as e:  # noqa: BLE001 - never invent a number
+        out["available"] = False
+        out["pods_error"] = str(e)[:200]
+    try:
+        vol = runpod_ctl.billing_volumes(start, end)
+        out["volume_today_usd"] = round(sum(r.get("amount") or 0 for r in vol
+                                            if str(r.get("startDate", "")).startswith(today)), 4)
+        out["volume_window_usd"] = round(sum(r.get("amount") or 0 for r in vol), 4)
+    except Exception as e:  # noqa: BLE001
+        out["volume_error"] = str(e)[:200]
+    return out
+
+
+def _comfy_object_info():
+    try:
+        return MANAGER.client.object_info()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _build_starter():
+    return startup.GpuStarter(
+        ctl=runpod_ctl,
+        comfy_ready=lambda: MANAGER.client.is_alive(),
+        start_comfy=runpod_ctl.start_comfyui,
+        object_info=_comfy_object_info,
+        on_event=lambda level, text: MANAGER.notice(level, text),
+        watchdog=runpod_ctl.spawn_watchdog)
+
+
+def _start_gpu(confirm_gpu=None, wait_seconds=0):
+    """Begin a start and answer immediately.
+
+    The old version did the whole thing inside the request. Pod start plus
+    ComfyUI boot is minutes; browsers gave up, the page said "error", and the
+    Pod came up anyway. Now the request only starts the sequence -- /api/status
+    carries the stage list, so a reload picks up exactly where it left off.
+    """
+    global STARTER
+    if STARTER is None:
+        STARTER = _build_starter()
+    status = STARTER.begin(confirm_gpu=confirm_gpu)
+    if wait_seconds:
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline and STARTER.status()["busy"]:
+            time.sleep(0.2)
+        status = STARTER.status()
+    return {"ok": status["state"] == startup.READY, "accepted": True, "start": status,
+            "steps": [st["label"] for st in status["stages"] if st["state"] == "done"],
+            "retryable": status["state"] == startup.NO_CAPACITY or bool(status.get("capacity_blocked")),
+            "needs_confirmation": status["state"] == startup.NEEDS_CONFIRMATION,
+            "offers": status["offers"],
+            "error": status["error"]}
 
 
 def _stop_gpu(force=False):
-    """STOP GPU: refuse while a job is active unless forced, then stop the Pod.
+    """STOP GPU: refuse while a job is active unless forced, then stop and verify.
 
     The network volume is never touched -- /pods/{id}/stop only releases the
-    GPU. Terminate is not reachable from the Studio at all.
+    GPU. Terminate is not reachable from the Studio at all. "Requested" is not
+    "stopped", so the result carries what RunPod says the Pod is afterwards.
     """
     if MANAGER.is_busy() and not force:
         return {"ok": False, "error": "a generation is still running; cancel it first or use force"}
@@ -178,9 +253,20 @@ def _stop_gpu(force=False):
     except Exception as e:  # noqa: BLE001 - the Pod stop below is what matters
         steps.append("ComfyUI stop skipped (%s)" % e)
     info = runpod_ctl.stop()
-    steps.append("Pod desiredStatus=%s" % info.get("desiredStatus"))
-    return {"ok": True, "steps": steps, "network_volume_preserved": True,
-            "network_volume": info.get("networkVolumeId")}
+    verified = bool(info.get("stopVerified"))
+    steps.append("Pod desiredStatus=%s%s" % (info.get("desiredStatus"),
+                                             "" if verified else " (\u672a\u78ba\u8a8d)"))
+    runpod_ctl.heartbeat(busy=False)
+    if STARTER is not None and STARTER.state == startup.READY:
+        STARTER.reset()
+    return {"ok": True, "verified": verified, "steps": steps,
+            "pod_state": info.get("desiredStatus"),
+            "network_volume_preserved": True,
+            "network_volume": info.get("networkVolumeId") or config.network_volume_id(),
+            "error": None if verified else
+            "\u505c\u6b62\u8981\u6c42\u306f\u901a\u308a\u307e\u3057\u305f\u304c EXITED "
+            "\u3092\u78ba\u8a8d\u3067\u304d\u3066\u3044\u307e\u305b\u3093\u3002"
+            "\u72b6\u614b\u8868\u793a\u3067\u78ba\u8a8d\u3057\u3066\u304f\u3060\u3055\u3044\u3002"}
 
 
 # --------------------------------------------------------------------------
@@ -276,6 +362,25 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET":
             if path == "/api/status":
                 return self._json(self._status_payload())
+            if path == "/api/preflight":
+                checks = preflight.offline_checks(
+                    list_pods=runpod_ctl.list_pods,
+                    get_volume=runpod_ctl.volume,
+                    have_api_key=runpod_ctl.have_api_key)
+                return self._json(preflight.summarize(checks))
+            if path == "/api/billing":
+                return self._json(_billing_cached(force=query.get("refresh") == ["1"]))
+            if path == "/api/gpu/plan":
+                return self._json({
+                    "recommended": gpu_plan.recommended(),
+                    "auto_start": [gpu_plan.price_card(g) for g in gpu_plan.auto_start_gpu_ids()],
+                    "needs_confirmation": [gpu_plan.price_card(g) for g in gpu_plan.offer_gpu_ids()],
+                    "max_auto_usd_per_hour": gpu_plan.AUTO_START_MAX_USD_PER_HOUR,
+                    "min_vram_gb": gpu_plan.MIN_VRAM_GB,
+                    "acquire_deadline_seconds": config.ACQUIRE_DEADLINE_SECONDS,
+                    "max_restart_attempts": config.MAX_RESTART_ATTEMPTS,
+                    "max_create_attempts": config.MAX_CREATE_ATTEMPTS,
+                })
             if path == "/api/config":
                 return self._json({
                     "modes": list(graph.MODES),
@@ -284,6 +389,7 @@ class Handler(BaseHTTPRequestHandler):
                     "experimental_presets": graph.EXPERIMENTAL_PRESETS,
                     "variation_choices": [1, 4, 8],
                     "auto_stop_choices": config.AUTO_STOP_CHOICES,
+                    "auto_stop_recommended": config.RECOMMENDED_AUTO_STOP_MINUTES,
                     "reference_strength": {
                         "default": graph.REF_STRENGTH_DEFAULT,
                         "min": graph.REF_STRENGTH_MIN,
@@ -343,11 +449,17 @@ class Handler(BaseHTTPRequestHandler):
             out = MANAGER.export(data["generation_id"], dest)
             return self._json({"ok": True, "path": out})
         if path == "/api/gpu/start":
-            return self._json(_start_gpu())
+            # confirm_gpu is how an expensive card is allowed in: the plain
+            # button never selects one, and the server never infers consent.
+            return self._json(_start_gpu(confirm_gpu=data.get("confirm_gpu"),
+                                         wait_seconds=float(data.get("wait_seconds") or 0)))
         if path == "/api/gpu/stop":
             return self._json(_stop_gpu(force=bool(data.get("force"))))
         if path == "/api/gpu/auto_stop":
-            GUARD.set_idle_minutes(data.get("minutes", 0))
+            if "minutes" in data:
+                GUARD.set_idle_minutes(data.get("minutes", 0))
+            if "stop_after_generation" in data:
+                GUARD.set_stop_after_generation(data.get("stop_after_generation"))
             return self._json({"ok": True, "auto_stop": GUARD.status()})
         return self._error(404, "unknown endpoint")
 
@@ -629,6 +741,8 @@ def build_app(comfy=None):
 
     GUARD = runpod_ctl.CostGuard(MANAGER.is_busy, on_warn, on_stop)
     GUARD.start()
+    global STARTER
+    STARTER = _build_starter()
     return MANAGER, GUARD
 
 
@@ -638,6 +752,13 @@ def main():
     url = "http://%s:%d/" % (config.STUDIO_HOST, config.STUDIO_PORT)
     print("H3 Studio on %s  (ComfyUI: %s)" % (url, MANAGER.client.base))
     print("auto-stop: %s" % ("OFF" if not GUARD.idle_minutes else "%d min" % GUARD.idle_minutes))
+    rec = gpu_plan.recommended()
+    if rec:
+        print("recommended GPU: %s  $%.2f/hr (30min ~$%.2f)"
+              % (rec["label"], rec["usd_per_hour"], rec["usd_30min"]))
+    print("watchdog: %s" % ("OFF" if not config.WATCHDOG_MAX_MINUTES
+                            else "%d min absolute, %d min stale"
+                            % (config.WATCHDOG_MAX_MINUTES, config.WATCHDOG_STALE_MINUTES)))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

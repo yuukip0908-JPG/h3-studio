@@ -40,6 +40,22 @@ RUNPOD_API_BASE = os.environ.get("RUNPOD_API_BASE", "https://rest.runpod.io/v1")
 DEFAULT_AUTO_STOP_MINUTES = int(os.environ.get("H3_AUTO_STOP_MINUTES", "0"))
 AUTO_STOP_CHOICES = [0, 20, 30, 60]
 AUTO_STOP_WARN_FRACTION = 0.75  # warn at 75% of the idle budget
+RECOMMENDED_AUTO_STOP_MINUTES = 30   # shown as a suggestion; never applied silently
+
+# GPU acquisition limits. The old acquisition loop hunted for a card for up to
+# 60 minutes in the background; START GPU is a button, and a button that has
+# not answered in five minutes has failed.
+ACQUIRE_DEADLINE_SECONDS = int(os.environ.get("H3_ACQUIRE_DEADLINE", "300"))
+MAX_RESTART_ATTEMPTS = 1
+MAX_CREATE_ATTEMPTS = 1
+
+# Independent safety valve: an absolute lifetime for a started Pod, enforced by
+# a process that is not the Studio, so a crashed or killed Studio cannot leave a
+# GPU billing forever. 0 disables it.
+WATCHDOG_MAX_MINUTES = int(os.environ.get("H3_WATCHDOG_MAX_MINUTES", "180"))
+WATCHDOG_HEARTBEAT = os.path.join(RESULTS_DIR, "gpu_watchdog_heartbeat")
+WATCHDOG_LOG = os.path.join(RESULTS_DIR, "logs", "gpu_watchdog.log")
+WATCHDOG_STALE_MINUTES = int(os.environ.get("H3_WATCHDOG_STALE_MINUTES", "15"))
 
 
 def load_runpod_state():
@@ -66,6 +82,29 @@ def comfy_url():
     if pid:
         return "https://%s-8188.proxy.runpod.net" % pid
     return "http://127.0.0.1:8188"
+
+
+def network_volume_id():
+    """The H3 environment's real identity.
+
+    A Pod is a rented machine that mounts this volume; it is replaced whenever
+    US-WA-1 refuses a restart. Anything that pins behaviour to a Pod id ages
+    badly -- pin it to the volume instead.
+    """
+    return (os.environ.get("H3_NETWORK_VOLUME")
+            or load_runpod_state().get("networkVolumeId") or "")
+
+
+def recreate_spec():
+    """The Pod recipe: same image, same volume, same ports. Returns {} when the
+    file is missing, so callers can report that as a pre-flight failure rather
+    than crashing at the moment a GPU is wanted."""
+    path = os.path.join(RESULTS_DIR, "pod_migration", "recreate_spec.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return (json.load(f) or {}).get("recreate_spec") or {}
+    except (OSError, ValueError):
+        return {}
 
 
 def gpu_hourly_usd():

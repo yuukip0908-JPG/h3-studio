@@ -100,3 +100,31 @@ input[type=file]{font-size:12px;color:var(--dim)}
 .card .stage{color:var(--fg);opacity:.85}
 .card .timing{font-variant-numeric:tabular-nums;white-space:nowrap}
 #batch-progress{margin:0 0 10px;font-variant-numeric:tabular-nums}
+
+/* --- GPU panel: the operator should be able to answer "what do I press",
+   "what does it cost" and "did it really stop" without reading a log. --- */
+.gpu-card{border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px}
+.gpu-card .state{font-size:15px;font-weight:600;margin-bottom:6px}
+.gpu-card .state.on{color:var(--go)}
+.gpu-card .state.off{color:var(--dim)}
+.gpu-card .gpu-name{font-size:14px}
+.gpu-card .price{font-size:13px;color:var(--dim);margin:4px 0 10px}
+.gpu-card .price b{color:var(--fg);font-weight:600}
+.gpu-card .btn{width:100%}
+.gpu-progress{list-style:none;margin:0 0 10px;padding:0;font-size:13px}
+.gpu-progress li{padding:3px 0;color:var(--dim)}
+.gpu-progress li .mark{display:inline-block;width:1.4em}
+.gpu-progress li.done{color:var(--fg)}
+.gpu-progress li.active{color:var(--fg);font-weight:600}
+.gpu-progress li.failed{color:var(--stop)}
+.gpu-progress li .detail{display:block;margin-left:1.4em;font-size:12px;color:var(--dim)}
+.gpu-offer{border:1px solid #7d6430;background:rgba(217,164,65,.12);border-radius:10px;padding:12px;margin-bottom:10px}
+.gpu-offer h3{margin:0 0 6px;font-size:14px}
+.gpu-offer .opt{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:6px 0}
+.gpu-offer .opt .p{font-size:13px}
+.gpu-offer .actions{display:flex;gap:6px;margin-top:8px}
+.gpu-cost{font-size:13px;margin-bottom:10px}
+.gpu-cost div{display:flex;justify-content:space-between;padding:2px 0}
+.gpu-cost .est{color:var(--dim)}
+.gpu-cost .none{color:var(--dim);font-style:italic}
+.check{display:flex;align-items:center;gap:6px;font-size:13px;margin-top:6px}

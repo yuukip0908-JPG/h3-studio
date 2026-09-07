@@ -209,11 +209,44 @@ fingerprint 集合を比較し、新規エントリが増えていれば MISS �
 
 - 課金の構造的な抑制: **Variations は Draft のみ、Final は選択した 1 本だけ**。
   `submit_final()` は 1 ジョブしか作らない（テストで検証済み）。
+- **GPU の選択が最初の防波堤**（`studio/gpu_plan.py`）。価格が既知で予算内、かつ
+  baseline を実際に走らせたカードだけが自動起動できる。価格不明は「高額扱い」。
+  実価格が承認範囲を超えたPodが起動した場合は即停止する。
 - `CostGuard` は idle 監視。既定 **OFF**（operator が明示的に opt-in）。
-  ジョブ実行中は絶対に停止しない。busy 判定が例外を投げた場合も **busy 扱い**
-  （不明を idle と解釈しない）。
-- Studio は `DELETE /pods`（terminate）を**一切呼ばない**。`POST /pods/{id}/stop` のみ。
-  Network Volume は保持される。
+  ジョブ実行中は絶対に停止しない。busy 判定が例外を投げた場合も **busy 扱い**。
+- **独立ウォッチドッグ**（`scripts/gpu_watchdog.sh`）は Studio と別プロセス。
+  heartbeat 途絶と絶対期限で Pod を止める。Studio が死ぬ経路をすべて塞ぐ唯一の層。
+  Mac のスリープは塞げない（RunPod 側に絶対期限APIが無いため）。
+- 課金の**実額**は `GET /billing/pods` と `GET /billing/networkvolumes` から取る。
+  推定値には必ず「推定」と付ける。取得できないときは「取得できません」と出す。
+- Studio は `DELETE /pods`（terminate）を UI から呼ばない。`POST /pods/{id}/stop` のみ。
+  `runpod_ctl.delete_pod()` は operator の掃除用で、EXITED・非active・共有ボリューム・
+  固有ボリューム無しの4条件をすべて満たさない限り拒否する。Network Volume は保持される。
+
+## 7.5 START GPU は状態機械（`studio/startup.py`）
+
+HTTP リクエストの中で起動を完結させると、Pod 起動 + ComfyUI 起動の数分間に
+ブラウザが諦め、**画面は「失敗」なのにPodは起動して課金が始まる**。
+実際に `studio.log` に BrokenPipe が2件残っている。
+
+    guard → preflight → acquire → volume → comfyui → checks → ready
+
+- `guard`: RUNNING な Pod が1つでもあれば拒否（同一ボリュームに ComfyUI 2つは禁止）
+- `preflight`: GPU不要のチェック（`studio/preflight.py`）。ワークフロー6本・
+  テンプレート・manifest・ボリューム実在・APIキーなど。**ここで落ちればGPUは触らない**
+- `acquire`: restart 1回 + create 1回 + 5分。高額カードは提示のみ
+- `checks`: 起動後チェックは**報告するだけで修理しない**。課金中の環境修理をしない原則
+
+状態は `/api/status` に出るので、ブラウザを閉じても再読み込みで復元できる。
+
+## 7.6 Pod ではなく Network Volume が本体
+
+`olmj77x4pc`（200GB, US-WA-1）に ComfyUI・venv・モデル・CLIPCached cache・
+リポジトリのすべてが載っている。Pod は「そのボリュームを mount した借り物の機械」で、
+US-WA-1 が再起動を断るたびに入れ替わる。
+
+コード側に Pod ID をハードコードしない（`config.network_volume_id()` が起点）。
+`results/runpod_state.json` の `podRoles` に active / backup / temporary を記録する。
 
 ## 8. ファイル構成
 
@@ -224,7 +257,10 @@ studio/
   comfy_client.py   ComfyUI HTTP + 標準ライブラリ WebSocket
   jobs.py           batch/generation の状態機械、進捗、DL、HIT/MISS 判定
   history.py        SQLite（batches / generations）
-  runpod_ctl.py     RunPod REST、SSH 経由の ComfyUI 起動、CostGuard
+  runpod_ctl.py     RunPod REST、SSH 経由の ComfyUI 起動、CostGuard、課金取得
+  gpu_plan.py       どのGPUを自動起動してよいか、いくらかかるか（純粋・GPU不要）
+  preflight.py      GPU-OFF / GPU-ON のチェック一式
+  startup.py        START GPU の状態機械（別スレッドで進行し、UIは状態を見るだけ）
   server.py         HTTP サーバとルーティング
   templates/        baseline から取得した flattened API prompt
   static/           index.html / app.js / style.css

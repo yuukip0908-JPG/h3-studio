@@ -716,3 +716,92 @@ UI 側に実害が2点あったので直した:
 REST v1 に課金エンドポイントが無く、GraphQL は現APIキーを 403 で拒否する
 （Bearer / 生 / x-api-key の3形式とも）。Chrome拡張も未接続でコンソールを開けない。
 **金額は未確認のまま**。Network Volume は1個（200GB）で Pod 数に依存しない。
+
+---
+
+## 2026-09-07 — 運用環境として仕上げる（GPU未使用・課金ゼロ）
+
+生成機能は増やしていない。3モード・Draft→Final・CLIPCached・History・ETA・
+Cost Guard・`results/V2_READY`・Network Volume・baseline はすべて無変更。
+
+### 1. START GPU が「安いGPUを選ぶ入口」になった
+
+以前は `runpod_state.json` の Pod を起こすだけで、取得ループは**空いていた
+カードを何でも取った**。A100 $1.59/時 を2回掴んだのはこれが原因。
+
+新しい規則（`studio/gpu_plan.py`、GPU不要で全部テスト可能）:
+
+| 分類 | 条件 | 動作 |
+|---|---|---|
+| preferred | 価格既知 ≤$1.00/時 かつ **baseline実測済み** | **自動起動**（現状 RTX 6000 Ada $0.84 のみ） |
+| allowed | 価格は範囲内だが baseline 未検証 | 確認を求める |
+| expensive | $1.00/時 超（A100 $1.59 など） | 確認を求める |
+| unknown | **価格が取得できない** | 確認を求める（「たぶん大丈夫」は作らない） |
+
+価格の出所はこのアカウントで実際に走らせた Pod の `costPerHr` だけ。
+RunPod REST v1 に GPU カタログは無く（OpenAPI で確認）、GraphQL は現キーを 403 で拒否する。
+**起動したPodの実単価が承認範囲を超えていたら、その場で停止して失敗を返す。**
+
+### 2. 探し続けない
+
+`ACQUIRE_DEADLINE_SECONDS=300` / restart 1回 / create 1回。
+以前の `ab_acquire_and_run.sh` は最大60分バックグラウンドで探し続けたが、
+UIのボタンとしてはそれは正しくない。取れなければ「在庫なし」と答えて終わる。
+
+### 3. ブラウザが切れても起動は続き、状態は復元される
+
+起動は `studio/startup.py` の状態機械としてサーバ側スレッドで進む
+（guard → preflight → acquire → volume → comfyui → checks → ready）。
+`/api/status` に工程が出るので、再読み込みで途中から表示できる。
+**以前は数分かかる起動をHTTPリクエスト内で完結させており、ブラウザが諦めると
+「画面は失敗・Podは起動して課金」になっていた**（`studio.log` に BrokenPipe 2件）。
+
+### 4. GPU を触る前に落ちる（pre-flight）
+
+`studio/preflight.py`。GPU-OFF で10項目（APIキー / ボリューム実在 / 二重起動 /
+作成レシピ / ワークフロー6本 / テンプレート3モード / manifest / 出力先 / ウォッチドッグ）。
+**実測: PASS=10 FAIL=0**（実APIに対して、GPUなしで実行）。
+起動後チェックは報告のみで**修理はしない**（課金中に環境を直さない原則）。
+
+### 5. Studio が落ちても止まる安全弁
+
+`scripts/gpu_watchdog.sh` を GPU 起動時に**別プロセス**として切り離して起動する。
+Studio は20秒ごとに heartbeat を書き、途絶15分で停止、絶対期限180分（生成中は+30分）。
+
+**実際に動かして検証した**（`WatchdogTests`、ローカルの偽RunPod APIに対して）:
+heartbeat が古ければ `POST /pods/{id}/stop` を出す / 新しければ何もしない /
+生成中は絶対期限でも待つ / idle なら止める / スクリプトが無ければ spawn を拒否。
+
+途中で1件バグを見つけて直した: heartbeat の busy フラグが読めないとき「空いている」と
+みなして停止していた。CostGuard と同じく**不明は busy 扱い**に修正。
+
+**限界: Mac がスリープすればこれも眠る。** RunPod 側に絶対期限APIは無い（OpenAPI 確認済み）。
+
+### 6. 課金の実額が取れた
+
+`GET /billing/pods` と `GET /billing/networkvolumes`（`/billing` 直下は 400、
+OpenAPI に載っている本当のパスはこの2つ）。今日のGPU料金・保存領域料金を**実データ**で表示し、
+進行中セッションだけ「推定」と明示する。取得不能なら「取得できません」と出す（0にしない）。
+
+この実データで、9/6 に未確認だった件も判明した：**停止中Podのディスクは課金される**
+（2分だけ動かした `ttgvtu9fb864k4` に $0.029 / disk 60GB が計上されていた）。
+
+### 7. Pod ではなく Volume が本体に
+
+コード内の Pod ID ハードコードは**0件**（確認済み）。`config.network_volume_id()` が起点。
+`runpod_state.json` に `podRoles`（active / backup / temporary）と削除方針を記録。
+`runpod_ctl.delete_pod()` は EXITED・非active・共有ボリューム・固有ボリューム無しの
+**4条件をすべて満たさない限り拒否**する。Network Volume の削除経路は存在しない。
+
+`describe()` の GPU 名詐称も塞いだ: 起動後に nvidia-smi の結果を記録へ書き戻し、
+名前と実価格が食い違う場合は UI に「記録名」と明示する。
+（現在の Pod `y9ts66clj5wml6` の記録を A100-SXM4-80GB / $1.59 に訂正済み）
+
+### 8. テスト
+
+**136件 PASS**（103 → +33）。GPU・課金・ネットワークを一切使わない。
+新規: GPU分類と価格表示 / START状態機械（二重起動拒否・在庫切れ・高額の確認要求・
+再試行回数・予算超過時の即停止・ウォッチドッグ起動・状態の永続）/ pre-flight /
+生成後停止と heartbeat / 停止の検証 / 課金集計 / Pod削除ガード / ウォッチドッグ実動作。
+
+GPU は**一度も起動していない**。Pod は2基とも EXITED のまま。

@@ -5,7 +5,7 @@
   "sshKeyName": "h3-cloud-repro-mac",
   "sshKeyFingerprint": "SHA256:ZAaXMhNmwvzHZ9rLalrIhf4RQB2bMsqONoZ0UWCN3/I",
   "sshPrivateKeyPath": "~/.ssh/runpod_h3_ed25519",
-  "plannedGpuTypeId": "NVIDIA RTX 6000 Ada Generation",
+  "plannedGpuTypeId": "NVIDIA A100-SXM4-80GB",
   "plannedGpuVramGb": 48,
   "plannedGpuUsdPerHour": 0.74,
   "plannedDataCenterId": "US-WA-1",
@@ -32,7 +32,7 @@
   "publicIp": "195.26.233.82",
   "sshPort": 32315,
   "costPerHrTotal": 1.59,
-  "gpuUsdPerHour": 0.74,
+  "gpuUsdPerHour": 1.59,
   "comfyUrl": "https://y9ts66clj5wml6-8188.proxy.runpod.net",
   "accountSpendRatePerHr": 0.867,
   "comfyuiCommit": "169fcf35a2fc163fec31338b816503ddac0d3fcf",
@@ -53,5 +53,13 @@
     "ufhtfdg9ulv3fj"
   ],
   "previousPodId": "ufhtfdg9ulv3fj",
-  "podCleanup": "2026-09-07: six unused EXITED Pods deleted on the operator's instruction (ttgvtu9fb864k4, u3j83y0qfrdc56, jqj722x4jkwcan, otyu05x8yh2v96, sgiaeck1hh0m1l, 3lbxf2rnkjsqte). Nothing unique lived on them -- every persistent path is under /workspace on network volume olmj77x4pc, which was verified present afterwards. Remaining: y9ts66clj5wml6 (current) and ufhtfdg9ulv3fj (original, insurance)."
+  "podCleanup": "2026-09-07: six unused EXITED Pods deleted on the operator's instruction (ttgvtu9fb864k4, u3j83y0qfrdc56, jqj722x4jkwcan, otyu05x8yh2v96, sgiaeck1hh0m1l, 3lbxf2rnkjsqte). Nothing unique lived on them -- every persistent path is under /workspace on network volume olmj77x4pc, which was verified present afterwards. Remaining: y9ts66clj5wml6 (current) and ufhtfdg9ulv3fj (original, insurance).",
+  "gpuVerified": true,
+  "gpuVerifiedFor": "y9ts66clj5wml6",
+  "podRoles": {
+    "active": "y9ts66clj5wml6",
+    "backup": "ufhtfdg9ulv3fj",
+    "temporary": [],
+    "policy": "A Pod is disposable; the network volume is the environment. Delete only when EXITED, not active, mounting olmj77x4pc and carrying no volume of its own (studio.runpod_ctl.delete_pod enforces all four). The volume is never deleted."
+  }
 }

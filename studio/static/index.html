@@ -135,12 +135,35 @@
 
   <section class="panel" id="panel-side">
     <h2>GPU</h2>
-    <dl id="gpu-info" class="kv"></dl>
+
+    <!-- What to press, what it costs, and whether it is running. Everything
+         else about the Pod is detail and lives further down. -->
+    <div id="gpu-card" class="gpu-card"></div>
+
+    <!-- The start is a sequence on the server, so it is shown as one. A reload
+         re-renders whatever stage it is really at. -->
+    <ol id="gpu-progress" class="gpu-progress" hidden></ol>
+
+    <!-- An expensive card is never taken automatically; it is offered here. -->
+    <div id="gpu-offer" class="gpu-offer" hidden></div>
+
     <p class="hint warn" id="gpu-why" hidden></p>
+
+    <div id="gpu-cost" class="gpu-cost"></div>
+
+    <details id="gpu-details">
+      <summary class="hint">Pod の詳細</summary>
+      <dl id="gpu-info" class="kv"></dl>
+      <div id="gpu-checks" class="hint"></div>
+    </details>
+
     <div class="field">
       <label>自動停止</label>
       <select id="auto-stop"></select>
-      <p class="hint">操作がなく生成もしていないとき、GPUを自動で止めます。保存したデータ（Network Volume）は消えません。</p>
+      <label class="check"><input type="checkbox" id="stop-after-gen"> 生成が終わったら停止する</label>
+      <p class="hint">操作がなく生成もしていないとき、GPUを自動で止めます。保存したデータ（Network Volume）は消えません。
+        生成中・仕上げ中・アップロード中・状態不明のときは停止しません。</p>
+      <p class="hint" id="watchdog-note"></p>
     </div>
     <h2>履歴</h2>
     <div id="stats" class="hint"></div>

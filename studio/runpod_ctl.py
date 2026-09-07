@@ -168,6 +168,88 @@ def refresh_endpoint(pod_id=None):
     return info
 
 
+def list_pods():
+    """Every Pod on the account. The Studio needs the whole list, not one id:
+    two Pods on one network volume would put two ComfyUI processes on the same
+    CLIPCached cache directory, which the baseline forbids."""
+    return _call("GET", "/pods")
+
+
+def running_pods(exclude=None):
+    """Pods that are RUNNING (or on their way), excluding one id if given."""
+    out = []
+    for pod in list_pods():
+        if exclude and pod.get("id") == exclude:
+            continue
+        if pod.get("desiredStatus") == "RUNNING":
+            out.append({"id": pod.get("id"), "name": pod.get("name"),
+                        "costPerHr": pod.get("costPerHr")})
+    return out
+
+
+def volume(volume_id=None):
+    """The network volume record. This -- not any Pod id -- is the H3
+    environment: ComfyUI, the venv, the models and the cache all live on it."""
+    vid = volume_id or config.network_volume_id()
+    for v in _call("GET", "/networkvolumes"):
+        if v.get("id") == vid:
+            return v
+    return None
+
+
+def pods_on_volume(volume_id=None):
+    """Pods that mount our network volume, newest first."""
+    vid = volume_id or config.network_volume_id()
+    pods = [p for p in list_pods() if p.get("networkVolumeId") == vid]
+    pods.sort(key=lambda p: str(p.get("createdAt") or ""), reverse=True)
+    return pods
+
+
+def billing_pods(start_time, end_time, bucket_size=None, pod_id=None):
+    """Real money charged for Pods, from RunPod -- never an estimate.
+
+    rest.runpod.io/v1 does have billing endpoints; they are simply absent from
+    the places one looks first (/billing 400s, and the GraphQL endpoint rejects
+    this key). They are in the OpenAPI document: /billing/pods and
+    /billing/networkvolumes, both taking startTime/endTime.
+    """
+    query = "?startTime=%s&endTime=%s" % (start_time, end_time)
+    if bucket_size:
+        query += "&bucketSize=%s" % bucket_size
+    if pod_id:
+        query += "&podId=%s" % pod_id
+    return _call("GET", "/billing/pods" + query, timeout=60)
+
+
+def billing_volumes(start_time, end_time, bucket_size=None):
+    query = "?startTime=%s&endTime=%s" % (start_time, end_time)
+    if bucket_size:
+        query += "&bucketSize=%s" % bucket_size
+    return _call("GET", "/billing/networkvolumes" + query, timeout=60)
+
+
+def delete_pod(pod_id, active_pod_id=None, volume_id=None):
+    """Terminate one Pod, but only when it is provably disposable.
+
+    The Studio never calls this on its own; it exists so a cleanup asked for by
+    the operator runs the same four checks every time instead of by hand.
+    """
+    vid = volume_id or config.network_volume_id()
+    active = active_pod_id or config.pod_id()
+    if pod_id == active:
+        raise RunPodError("refusing: %s is the active Pod" % pod_id)
+    pod = _call("GET", "/pods/%s" % pod_id)
+    if pod.get("desiredStatus") != "EXITED":
+        raise RunPodError("refusing: %s is %s, not EXITED" % (pod_id, pod.get("desiredStatus")))
+    if pod.get("networkVolumeId") != vid:
+        raise RunPodError("refusing: %s does not mount %s -- it may hold data of its own"
+                          % (pod_id, vid))
+    if (pod.get("volumeInGb") or 0) > 0:
+        raise RunPodError("refusing: %s has its own %s GB volume" % (pod_id, pod.get("volumeInGb")))
+    _call("DELETE", "/pods/%s" % pod_id)
+    return {"deleted": pod_id, "networkVolumePreserved": vid}
+
+
 def create_pod(spec, wait_seconds=420):
     """Create a Pod from a recreate spec and wait until it is usable.
 
@@ -221,12 +303,103 @@ def activate_pod(info):
     return state
 
 
-def stop(pod_id=None):
-    """Stop the Pod. Never terminates; the network volume is untouched."""
+def stop(pod_id=None, verify_seconds=90):
+    """Stop the Pod and prove it stopped. Never terminates; the volume is untouched.
+
+    "Stop requested" is not the same as "stopped", and the difference is money,
+    so this polls until RunPod itself reports EXITED rather than trusting the
+    202 on the way out.
+    """
     pid = pod_id or config.pod_id()
     _call("POST", "/pods/%s/stop" % pid, payload={})
-    time.sleep(2)
-    return describe(pid)
+    deadline = time.time() + verify_seconds
+    info = {}
+    while time.time() < deadline:
+        time.sleep(3)
+        try:
+            info = describe(pid)
+        except RunPodError:
+            continue
+        if info.get("desiredStatus") == "EXITED":
+            info["stopVerified"] = True
+            return info
+    info = info or {"podId": pid}
+    info["stopVerified"] = False
+    return info
+
+
+def spawn_watchdog(pod_id, max_minutes=None, stale_minutes=None):
+    """Start the independent safety valve as a detached process.
+
+    It has to outlive this process to be worth anything: the hole it covers is
+    the Studio dying with a Pod still up. start_new_session detaches it from the
+    Studio's process group so a kill or a closed terminal does not take it too.
+    """
+    script = os.path.join(config.PROJECT_DIR, "scripts", "gpu_watchdog.sh")
+    if not os.path.isfile(script):
+        raise RunPodError("watchdog script missing: %s" % script)
+    if not config.WATCHDOG_MAX_MINUTES:
+        return None
+    args = ["bash", script, str(pod_id),
+            str(max_minutes or config.WATCHDOG_MAX_MINUTES),
+            str(stale_minutes or config.WATCHDOG_STALE_MINUTES)]
+    heartbeat(busy=False)          # so a fresh watchdog never sees a stale file
+    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            stdin=subprocess.DEVNULL, start_new_session=True,
+                            cwd=config.PROJECT_DIR)
+    return proc.pid
+
+
+def record_actual_gpu(name, pod_id=None):
+    """Write down the card the Pod really has.
+
+    describe() falls back to the GPU recorded at creation because a RUNNING
+    Pod's payload carries no GPU name, so a migration leaves the state file
+    naming a card that was never allocated. nvidia-smi is the only witness.
+    """
+    if not name:
+        return
+    try:
+        state = config.load_runpod_state()
+        if state.get("plannedGpuTypeId") == name and state.get("gpuVerified"):
+            return
+        state["plannedGpuTypeId"] = name
+        state["gpuVerified"] = True
+        state["gpuVerifiedFor"] = pod_id or state.get("podId")
+        state["lastUpdated"] = time.strftime("%Y-%m-%d")
+        tmp = config.RUNPOD_STATE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, config.RUNPOD_STATE)
+    except OSError:
+        pass
+
+
+def heartbeat(busy=False):
+    """Tell the watchdog the Studio is alive, and whether it is mid-generation."""
+    try:
+        os.makedirs(os.path.dirname(config.WATCHDOG_HEARTBEAT), exist_ok=True)
+        with open(config.WATCHDOG_HEARTBEAT, "w", encoding="utf-8") as f:
+            f.write("%d %d\n" % (int(time.time()), 1 if busy else 0))
+    except OSError:
+        pass
+
+
+def watchdog_status():
+    """What the valve knows, for the UI. Absence of a heartbeat is reported as
+    absence, never as safety."""
+    out = {"enabled": bool(config.WATCHDOG_MAX_MINUTES),
+           "max_minutes": config.WATCHDOG_MAX_MINUTES,
+           "stale_minutes": config.WATCHDOG_STALE_MINUTES,
+           "heartbeat_age_seconds": None}
+    try:
+        with open(config.WATCHDOG_HEARTBEAT, "r", encoding="utf-8") as f:
+            parts = f.read().split()
+        out["heartbeat_age_seconds"] = max(0, int(time.time() - int(parts[0])))
+        out["busy"] = parts[1] == "1" if len(parts) > 1 else None
+    except (OSError, ValueError, IndexError):
+        pass
+    return out
 
 
 def _persist_endpoint(info):
@@ -292,6 +465,10 @@ class CostGuard(threading.Thread):
         self.on_stop = on_stop
         self.interval = interval
         self.idle_minutes = config.DEFAULT_AUTO_STOP_MINUTES
+        # Opt-in, off by default: stopping the GPU the moment a batch ends is
+        # right for a one-shot session and wrong while iterating on a prompt.
+        self.stop_after_generation = False
+        self.was_busy = False
         self.last_activity = time.time()
         self.warned = False
         self._stop = threading.Event()
@@ -308,12 +485,21 @@ class CostGuard(threading.Thread):
         self.idle_minutes = minutes
         self.touch()
 
+    def set_stop_after_generation(self, enabled):
+        self.stop_after_generation = bool(enabled)
+        self.touch()
+
     def status(self):
         if not self.idle_minutes:
-            return {"enabled": False, "idle_minutes": 0, "idle_seconds": 0, "remaining_seconds": None}
+            return {"enabled": False, "idle_minutes": 0, "idle_seconds": 0,
+                    "remaining_seconds": None,
+                    "stop_after_generation": self.stop_after_generation,
+                    "recommended_minutes": config.RECOMMENDED_AUTO_STOP_MINUTES}
         idle = time.time() - self.last_activity
         return {
             "enabled": True,
+            "stop_after_generation": self.stop_after_generation,
+            "recommended_minutes": config.RECOMMENDED_AUTO_STOP_MINUTES,
             "idle_minutes": self.idle_minutes,
             "idle_seconds": round(idle),
             "remaining_seconds": max(0, round(self.idle_minutes * 60 - idle)),
@@ -325,14 +511,36 @@ class CostGuard(threading.Thread):
 
     def run(self):
         while not self._stop.wait(self.interval):
-            if not self.idle_minutes:
-                continue
             try:
                 busy = self.is_busy()
             except Exception:  # noqa: BLE001 - unknown state means busy
                 busy = True
+
+            # Tell the independent watchdog we are alive, every tick, whether or
+            # not idle-stop is on. Its whole purpose is to notice when this
+            # thread has gone away, so the beat must not depend on a setting.
+            heartbeat(busy=busy)
+
             if busy:
+                self.was_busy = True
                 self.touch()
+                continue
+
+            # "Stop when the generation finishes" -- an explicit opt-in, and the
+            # only auto-stop that fires without an idle timer. It waits for the
+            # busy->idle edge, so it can never interrupt work in flight.
+            if self.stop_after_generation and self.was_busy:
+                self.was_busy = False
+                self.last_action = time.time()
+                self.touch()
+                try:
+                    self.on_stop()
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+            self.was_busy = False
+
+            if not self.idle_minutes:
                 continue
             idle = time.time() - self.last_activity
             budget = self.idle_minutes * 60

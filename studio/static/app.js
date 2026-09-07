@@ -67,8 +67,13 @@ async function loadConfig() {
     $("refstrength").disabled = true;
   }
 
+  /* 30 min is marked as the recommendation and is NOT selected for you:
+     an auto-stop that appears without being asked for is a surprise, and this
+     one ends a paid session. */
+  const rec = cfg.auto_stop_recommended || 30;
   $("auto-stop").innerHTML = cfg.auto_stop_choices
-    .map((m) => `<option value="${m}">${m === 0 ? "OFF" : m + " min"}</option>`).join("");
+    .map((m) => `<option value="${m}">${m === 0 ? "OFF" : m + " 分"}${m === rec ? "（推奨）" : ""}</option>`)
+    .join("");
 
   const dq = cfg.draft_quality || { choices: [] };
   $("draftq-seg").innerHTML = dq.choices.map((c) => {
@@ -197,19 +202,27 @@ function renderGpu(g) {
     : st === "EXITED" || st === "STOPPED" ? "chip-exited" : "chip-unknown");
   $("offline-banner").hidden = !g.studio_down;
 
+  /* While the Pod is stopped the last Pod's rate is not what a start would
+     cost -- showing it invited exactly the mistake this panel exists to stop.
+     Stopped: what the recommended card would cost. Running: what it is costing. */
   const cost = [];
-  if (g.hourly_usd) cost.push(`$${Number(g.hourly_usd).toFixed(3)}/時`);
+  const rate = st === "RUNNING" ? g.hourly_usd : (g.recommended || {}).usd_per_hour;
+  if (rate) cost.push(`$${Number(rate).toFixed(2)}/時${st === "RUNNING" ? "" : "（起動したら）"}`);
   if (g.session_cost_usd != null) {
     const m = Math.round((g.session_seconds || 0) / 60);
-    cost.push(`今回の料金: $${g.session_cost_usd.toFixed(2)}（${m}分）`);
+    cost.push(`今回の料金: 推定 $${g.session_cost_usd.toFixed(2)}（${m}分）`);
   }
   $("cost").textContent = cost.join("\n");
 
+  renderGpuCard(g);
+  renderGpuProgress(g.start);
+  renderGpuOffer(g);
+  renderGpuCost(g);
+
   const rows = [
     ["Pod", g.pod_id], ["状態", JP_STATE[st] || st], ["GPU", g.gpu],
-    ["予備のPod", g.previous_pod_id],
-    ["料金", g.hourly_usd ? "$" + Number(g.hourly_usd).toFixed(3) + "/時" : "-"],
-    ["保存領域", g.network_volume],
+    ["保存領域", g.network_volume || g.network_volume_id],
+    ["データセンター", g.datacenter],
     ["ComfyUI", g.comfy_ready ? "準備OK" : "停止中"],
     ["進捗の受信", g.ws_connected ? "接続済み" : "ポーリング"],
     ["実行中", g.active_jobs + " 本"],
@@ -221,24 +234,135 @@ function renderGpu(g) {
     .filter(([, v]) => v !== undefined && v !== null && v !== "")
     .map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
 
+  const checks = (g.start && g.start.online_checks) || [];
+  $("gpu-checks").innerHTML = !checks.length ? "" :
+    "起動後チェック：" + checks.map((c) =>
+      `${c.ok === true ? "OK" : c.ok === false ? "FAIL" : "不明"} ${c.label}`).join(" ／ ");
+
+  const as = g.auto_stop || {};
+  const sel = $("auto-stop");
+  if (sel && document.activeElement !== sel) sel.value = String(as.idle_minutes || 0);
+  const chk = $("stop-after-gen");
+  if (chk && document.activeElement !== chk) chk.checked = Boolean(as.stop_after_generation);
+
+  const wd = g.watchdog || {};
+  $("watchdog-note").textContent = !wd.enabled
+    ? "独立ウォッチドッグ: OFF"
+    : `独立ウォッチドッグ: Studio が落ちても最大 ${wd.stale_minutes} 分で、通し起動でも ${wd.max_minutes} 分でGPUを停止します`
+      + (wd.heartbeat_age_seconds == null ? "（未起動）" : `（最終確認 ${wd.heartbeat_age_seconds} 秒前）`);
+
   /* START is enabled whenever the Pod is provably not already running.
      It is disabled only for reasons we can actually name:
        - the Studio backend is down, so there is nothing to ask;
        - RunPod reports no usable API key, so a start would fail anyway;
-       - the Pod is already RUNNING.
-     A transient RunPod error with a valid key must NOT latch the button off --
-     that is exactly what made it unclickable while the backend was stopped. */
+       - the Pod is already RUNNING, or a start is already in flight.
+     A transient RunPod error with a valid key must NOT latch the button off. */
   const noKey = g.have_api_key === false;
   const unknown = st === "UNKNOWN";
-  $("btn-gpu-start").disabled = Boolean(g.studio_down) || noKey || st === "RUNNING";
+  const starting = Boolean(g.start && g.start.busy);
+  $("btn-gpu-start").disabled = Boolean(g.studio_down) || noKey || st === "RUNNING" || starting;
   $("btn-gpu-stop").disabled = Boolean(g.studio_down) || noKey || st !== "RUNNING";
 
   let why = "";
   if (g.studio_down) why = "H3 Studio backend が停止しています（bash scripts/start_studio.sh）。";
   else if (noKey) why = "RunPod API キーを Keychain から読めません。";
   else if (unknown && g.pod_error) why = "RunPod に問い合わせできません: " + g.pod_error;
+  else if (g.start && g.start.error && !starting) why = g.start.error;
   $("gpu-why").textContent = why;
   $("gpu-why").hidden = !why;
+}
+
+/* The card answers three questions and nothing else: is it on, which GPU, what
+   does it cost. Anything a person has to compute themselves is a number they
+   will get wrong at the wrong moment. */
+function renderGpuCard(g) {
+  const st = g.pod_state || "UNKNOWN";
+  const running = st === "RUNNING";
+  const starting = Boolean(g.start && g.start.busy);
+  const card = running ? (g.price || {}) : (g.recommended || {});
+  const money = (v) => (v == null ? "—" : "$" + Number(v).toFixed(2));
+
+  let head;
+  if (starting) head = '<div class="state">起動中…</div>';
+  else if (running) head = '<div class="state on">実行中</div>';
+  else if (st === "UNKNOWN") head = '<div class="state">状態不明</div>';
+  else head = '<div class="state off">停止中</div>';
+
+  const label = card.label || g.gpu || "—";
+  const hourly = card.usd_per_hour != null ? card.usd_per_hour : g.hourly_usd;
+  const prefix = running ? "" : "おすすめ： ";
+  const price = hourly == null
+    ? '<div class="price none">価格を取得できません</div>'
+    : `<div class="price"><b>${money(hourly)} / 時</b>　30分：約 ${money(hourly * 0.5)}　1時間：約 ${money(hourly)}</div>`;
+
+  $("gpu-card").innerHTML = head
+    + `<div class="gpu-name">${prefix}${label}</div>`
+    + price
+    + (card.warning && !running ? `<p class="hint warn">${card.warning}</p>` : "");
+}
+
+function renderGpuProgress(start) {
+  const el = $("gpu-progress");
+  const stages = (start && start.stages) || [];
+  const show = stages.some((s) => s.state !== "pending");
+  el.hidden = !show;
+  if (!show) return;
+  const MARK = { pending: "·", active: "▶", done: "✓", failed: "✗" };
+  el.innerHTML = stages.map((s) =>
+    `<li class="${s.state}"><span class="mark">${MARK[s.state] || "·"}</span>${s.label}`
+    + (s.detail ? `<span class="detail">${s.detail}</span>` : "") + "</li>").join("");
+}
+
+/* An expensive card is never taken automatically. It is shown with its price
+   and three ways out, and nothing starts until one of them is pressed. */
+function renderGpuOffer(g) {
+  const el = $("gpu-offer");
+  const start = g.start || {};
+  const offers = start.offers || [];
+  const show = start.state === "needs_confirmation" && offers.length;
+  el.hidden = !show;
+  if (!show) return;
+  const money = (v) => (v == null ? "価格不明" : "$" + Number(v).toFixed(2) + " / 時");
+  el.innerHTML =
+    "<h3>RTX 6000 Ada 48GB は現在確保できませんでした</h3>"
+    + '<p class="hint">高額な GPU は確認なしでは起動しません。空き状況によっては、選んでも確保できないことがあります。</p>'
+    + offers.map((o) => `
+      <div class="opt">
+        <span class="p">${o.label}　<b>${money(o.usd_per_hour)}</b>
+          ${o.usd_30min != null ? `　30分：約 $${o.usd_30min.toFixed(2)}` : ""}</span>
+        <button class="btn" data-confirm-gpu="${o.gpu}">これで開始</button>
+      </div>`).join("")
+    + '<div class="actions">'
+    + '<button class="btn" id="btn-gpu-wait">待つ（もう一度 RTX 6000 Ada を探す）</button>'
+    + '<button class="btn" id="btn-gpu-cancel">キャンセル</button>'
+    + "</div>";
+}
+
+/* Real charges are labelled as real; arithmetic on an hourly rate is labelled
+   an estimate; anything unreadable says so instead of showing a zero. */
+function renderGpuCost(g) {
+  const b = g.billing || {};
+  const rows = [];
+  const money = (v) => "$" + Number(v).toFixed(2);
+
+  if (g.session_cost_usd != null) {
+    const m = Math.round((g.session_seconds || 0) / 60);
+    rows.push(`<div><span>現在のセッション（${m}分）</span><span class="est">推定 ${money(g.session_cost_usd)}</span></div>`);
+  } else {
+    rows.push('<div><span>現在のセッション</span><span class="est">$0.00</span></div>');
+  }
+  if (b.available && b.pods_today_usd != null) {
+    rows.push(`<div><span>今日の GPU 料金（実データ）</span><span>${money(b.pods_today_usd)}</span></div>`);
+  } else {
+    rows.push('<div><span>今日の GPU 料金</span><span class="none">取得できません</span></div>');
+  }
+  if (b.volume_today_usd != null) {
+    rows.push(`<div><span>今日の保存領域（実データ）</span><span>${money(b.volume_today_usd)}</span></div>`);
+  } else {
+    rows.push('<div><span>今日の保存領域</span><span class="none">取得できません</span></div>');
+  }
+  rows.push(`<div><span>Network Volume</span><span>${g.network_volume_id || "—"} / 保持中</span></div>`);
+  $("gpu-cost").innerHTML = rows.join("");
 }
 
 /* Files are always selectable. If ComfyUI is not up yet the Studio keeps the
@@ -620,31 +744,45 @@ $("btn-finalize").addEventListener("click", async () => {
   } catch (e) { notice("error", e.message); }
 });
 
-$("btn-gpu-start").addEventListener("click", async () => {
+async function startGpu(confirmGpu) {
   $("btn-gpu-start").disabled = true;
-  notice("info", "GPU を起動しています… Pod start → ComfyUI 起動 → health check", 0);
+  notice("info", confirmGpu ? `${confirmGpu} で起動します…` : "GPU を起動しています…", 4000);
   try {
-    const r = await api("/api/gpu/start", { method: "POST", body: "{}" });
-    if (r.ok) {
-      notice("info", "READY: " + r.steps.join(" → "));
+    /* The server answers as soon as the sequence is accepted, not when it
+       finishes: Pod start plus ComfyUI boot is minutes, and a request left open
+       that long is one the browser eventually abandons -- which used to leave
+       the page saying "error" while the Pod came up and billed. Progress
+       arrives through /api/status, so a reload picks it up unchanged. */
+    const body = JSON.stringify(confirmGpu ? { confirm_gpu: confirmGpu } : {});
+    const r = await api("/api/gpu/start", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body,
+    });
+    if (r.needs_confirmation) {
+      notice("warn", "RTX 6000 Ada を確保できませんでした。GPU パネルで選んでください。", 0);
     } else if (r.retryable) {
-      /* RunPod had no free GPU on this Pod's host. Nothing broke and nothing is
-         billing, so this is a wait, not a failure -- saying "失敗" sends the
-         operator looking for a bug in the Studio that is not there. */
-      notice("warn", "GPU の空き待ちです（RunPod 側の在庫切れ）。Pod・モデル・キャッシュは無事で、課金も発生していません。"
-                   + "数分おいて START GPU をもう一度押してください。" + (r.error ? "（" + r.error + "）" : ""), 0);
-    } else {
-      notice("error", "失敗: " + (r.error || r.steps.join(" → ")));
+      notice("warn", "GPU の空き待ちです。Pod・データは無事で、課金も発生していません。"
+                   + "数分おいて START GPU をもう一度押してください。", 0);
     }
   } catch (e) {
-    /* The start can take longer than the browser is willing to wait: Pod start
-       plus ComfyUI boot is minutes, and the request has been cut off before.
-       The server does not stop when that happens -- the Pod can come up and
-       start billing while this page says "error". Never report that as a plain
-       failure; the next status poll shows what actually happened. */
-    notice("error", "起動リクエストが途中で切れました（" + e.message + "）。"
-                  + "Pod はそのまま起動している可能性があります。状態表示を確認し、"
-                  + "「実行中」になっていて使わないなら STOP GPU を押してください。", 0);
+    notice("error", "起動リクエストを受け付けられませんでした（" + e.message + "）。"
+                  + "状態表示を確認し、動いていて不要なら STOP GPU を押してください。", 0);
+  }
+  pollStatus();
+}
+
+$("btn-gpu-start").addEventListener("click", () => startGpu(null));
+
+$("gpu-offer").addEventListener("click", (e) => {
+  const pick = e.target.closest("[data-confirm-gpu]");
+  if (pick) {
+    const card = pick.previousElementSibling ? pick.parentElement.textContent.trim() : pick.dataset.confirmGpu;
+    if (!confirm("高額な GPU を起動します。\n\n" + card + "\n\nよろしいですか？")) return;
+    return startGpu(pick.dataset.confirmGpu);
+  }
+  if (e.target.id === "btn-gpu-wait") return startGpu(null);
+  if (e.target.id === "btn-gpu-cancel") {
+    $("gpu-offer").hidden = true;
+    notice("info", "起動をキャンセルしました。GPU は起動していません。");
   }
 });
 
@@ -655,8 +793,22 @@ $("btn-gpu-stop").addEventListener("click", async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ force: false }),
     });
-    notice(r.ok ? "info" : "warn", r.ok ? "Pod を停止しました。Volume は保持されています。" : r.error);
+    /* "Stop requested" and "stopped" are different states and the difference is
+       money, so say which one this was. */
+    if (r.ok && r.verified) notice("info", "GPU を停止しました（RunPod で EXITED を確認済み）。Volume は保持されています。");
+    else if (r.ok) notice("warn", r.error || "停止要求は通りましたが EXITED を確認できていません。", 0);
+    else notice("warn", r.error);
   } catch (e) { notice("error", e.message); }
+});
+
+$("stop-after-gen").addEventListener("change", async (e) => {
+  try {
+    await api("/api/gpu/auto_stop", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stop_after_generation: e.target.checked }),
+    });
+    notice("info", e.target.checked ? "生成が終わったらGPUを停止します。" : "生成後の自動停止をやめました。");
+  } catch (err) { notice("error", err.message); }
 });
 
 $("auto-stop").addEventListener("change", async (e) => {
