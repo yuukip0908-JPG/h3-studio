@@ -2210,5 +2210,52 @@ class WatchdogTests(unittest.TestCase):
             config.PROJECT_DIR = orig
 
 
+class MotionPromptTests(unittest.TestCase):
+    """H3 binds references by tag; a prompt without them does not fail loudly.
+
+    It re-renders the source video and ignores the identity image, and the only
+    way to notice is to watch the finished clip -- 46 minutes later for an
+    18-second run. These tests exist because that happened.
+    """
+
+    def test_an_untagged_prompt_is_reported_as_two_problems(self):
+        from studio import graph
+        issues = graph.motion_prompt_issues("画像の女性を動画のダンスにトレースして")
+        self.assertEqual(len(issues), 2)
+        self.assertIn(graph.IDENTITY_TAG, issues[0])
+        self.assertIn(graph.MOTION_TAG, issues[1])
+
+    def test_a_tagged_prompt_has_no_problems(self):
+        from studio import graph
+        self.assertEqual(graph.motion_prompt_issues(
+            "keep the person of <Picture 1>, follow the motion of <Video 1>"), [])
+        self.assertEqual(graph.motion_prompt_issues(graph.build_motion_prompt()), [])
+
+    def test_the_builder_always_names_both_references(self):
+        from studio import graph
+        for person in ("picture", "video"):
+            for background in ("video", "picture", "prompt"):
+                for props in ("keep", "remove"):
+                    p = graph.build_motion_prompt(person=person, background=background,
+                                                  props=props)
+                    self.assertIn(graph.IDENTITY_TAG, p, (person, background, props))
+                    self.assertIn(graph.MOTION_TAG, p, (person, background, props))
+                    self.assertEqual(graph.motion_prompt_issues(p), [])
+
+    def test_the_builder_says_replace_when_the_person_comes_from_the_picture(self):
+        from studio import graph
+        p = graph.build_motion_prompt(person="picture")
+        self.assertIn("Replace the person in <Video 1> with the person in <Picture 1>", p)
+
+    def test_remove_props_is_expressed(self):
+        from studio import graph
+        self.assertIn("not holding anything", graph.build_motion_prompt(props="remove"))
+        self.assertNotIn("not holding anything", graph.build_motion_prompt(props="keep"))
+
+    def test_extra_text_is_appended(self):
+        from studio import graph
+        self.assertIn("neon lighting", graph.build_motion_prompt(extra="neon lighting"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

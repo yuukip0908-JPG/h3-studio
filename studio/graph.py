@@ -104,6 +104,59 @@ def turbo_lora_for(mode):
     return TURBO_LORAS.get("fl2va") if mode in TURBO_MODES else None
 
 
+def motion_prompt_issues(prompt_text):
+    """What is wrong with a Motion Trace prompt, before a GPU is spent on it.
+
+    H3 binds references by tag: the node presents images then videos, so the
+    identity image is <Picture 1> and the source video is <Video 1>. Without
+    them the model is handed a picture and a clip with no statement of which is
+    which, and it does the obvious thing -- follows the 430-frame video and
+    ignores the single image. That failure costs a full generation to discover
+    and looks like "Motion Trace does not work", so it is caught here.
+    """
+    text = prompt_text or ""
+    issues = []
+    if IDENTITY_TAG not in text:
+        issues.append("識別画像を指す %s がプロンプトにありません。"
+                      "これが無いと H3 は画像を人物指定として扱わず、元動画をなぞるだけになります。"
+                      % IDENTITY_TAG)
+    if MOTION_TAG not in text:
+        issues.append("参照動画を指す %s がプロンプトにありません。"
+                      "動き・カメラをどこから取るかが伝わりません。" % MOTION_TAG)
+    return issues
+
+
+def build_motion_prompt(person="picture", clothing="picture", background="video",
+                        props="keep", extra=""):
+    """Compose a tagged Motion Trace prompt from plain choices.
+
+    The tags and the role verbs are the part that has to be right; the wording
+    around them is a starting point, not a validated recipe. Everything here is
+    editable in the UI afterwards.
+    """
+    lines = []
+    if person == "picture":
+        lines.append("Replace the person in %s with the person in %s."
+                     % (MOTION_TAG, IDENTITY_TAG))
+        lines.append("Keep their face, hair and body type exactly as in %s." % IDENTITY_TAG)
+    else:
+        lines.append("Keep the person of %s." % MOTION_TAG)
+    if clothing == "picture":
+        lines.append("Keep the clothing of %s." % IDENTITY_TAG)
+    elif clothing == "video":
+        lines.append("Keep the clothing of %s." % MOTION_TAG)
+    lines.append("Follow the motion, choreography, timing and camera framing of %s." % MOTION_TAG)
+    if background == "video":
+        lines.append("Keep the background and lighting of %s." % MOTION_TAG)
+    elif background == "picture":
+        lines.append("Use the background of %s." % IDENTITY_TAG)
+    if props == "remove":
+        lines.append("They are not holding anything: no bag, no bottle, no props.")
+    if extra.strip():
+        lines.append(extra.strip())
+    return "\n".join(lines)
+
+
 REF_STRENGTH_NODE = "H3StudioReferenceStrength"
 REF_STRENGTH_ID = "h3s_refstrength"
 

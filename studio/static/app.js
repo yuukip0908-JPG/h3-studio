@@ -32,7 +32,14 @@ async function api(path, opts) {
   const text = await r.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { error: text }; }
-  if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+  if (!r.ok) {
+    /* Keep the whole payload on the error: some refusals carry a fix with them
+       (a suggested prompt, for instance) and a bare message throws it away. */
+    const err = new Error(data.error || ("HTTP " + r.status));
+    err.data = data;
+    err.status = r.status;
+    throw err;
+  }
   return data;
 }
 
@@ -577,15 +584,43 @@ $("refsize-seg").addEventListener("click", (e) => {
    image, <Video 1> the source video. Offer the scaffold as a placeholder once;
    never overwrite what the operator has typed. */
 function maybeSuggestTags() {
+  /* The helper panel replaces the old placeholder-only hint. A placeholder
+     disappears the moment anyone types, which is exactly when the advice was
+     needed -- an untagged prompt re-renders the source video and the operator
+     finds out 46 minutes later. */
+  const helper = $("mt-prompt-helper");
+  if (helper) helper.hidden = state.mode !== "motion_trace";
   if (state.mode !== "motion_trace") return;
   const t = $("prompt");
   if (t.value.trim()) return;
   const mt = (state.cfg && state.cfg.motion_trace) || {};
   t.placeholder =
-    "keep the person of " + (mt.identity_tag || "<Picture 1>") +
-    ", follow the motion and camera of " + (mt.motion_tag || "<Video 1>") +
-    "; change the background to a sunlit street";
+    "下の「プロンプトを作る」を押すと、" + (mt.identity_tag || "<Picture 1>") +
+    " と " + (mt.motion_tag || "<Video 1>") + " を使った形で入ります";
 }
+
+async function buildMotionPrompt() {
+  try {
+    const r = await api("/api/motion_prompt", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        person: $("mtp-person").value,
+        clothing: $("mtp-clothing").value,
+        background: $("mtp-background").value,
+        props: $("mtp-props").value,
+        extra: $("mtp-extra").value,
+      }),
+    });
+    const t = $("prompt");
+    if (t.value.trim() && !confirm("いま書かれているプロンプトを置き換えます。よろしいですか？")) return;
+    t.value = r.prompt;
+    t.focus();
+    notice("info", "プロンプトを作りました。そのまま編集できます。");
+  } catch (e) { notice("error", e.message); }
+}
+
+const btnMtp = $("btn-mtp-build");
+if (btnMtp) btnMtp.addEventListener("click", buildMotionPrompt);
 $("quality-seg").addEventListener("click", (e) => {
   const b = e.target.closest("button"); if (!b) return;
   state.quality = b.dataset.quality;
@@ -718,6 +753,20 @@ $("btn-generate").addEventListener("click", async () => {
     renderResults(batch);
     renderCacheHint();
   } catch (e) {
+    /* The one refusal that comes with its own remedy: Motion Trace without
+       reference tags. Offer the working prompt rather than just saying no. */
+    if (e.data && e.data.kind === "motion_prompt_untagged") {
+      notice("warn", e.data.error, 0);
+      if (confirm("プロンプトに <Picture 1> / <Video 1> がありません。\n\n"
+                  + "このままだと元動画をなぞるだけになります。\n"
+                  + "使える形のプロンプトに置き換えますか？\n\n" + e.data.suggested_prompt)) {
+        $("prompt").value = e.data.suggested_prompt;
+        $("prompt").focus();
+        notice("info", "置き換えました。内容を確認してからもう一度「生成する」を押してください。");
+      }
+      $("btn-generate").disabled = false;
+      return;
+    }
     notice("error", e.message);
     $("btn-generate").disabled = false;
   }

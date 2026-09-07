@@ -69,6 +69,36 @@
     <div class="field">
       <label>プロンプト（どんな動画にしたいか）</label>
       <textarea id="prompt" rows="4" placeholder="どんな動きにしたいかを書いてください"></textarea>
+
+      <!-- Motion Trace only. H3 binds references by tag, so a prompt without
+           <Picture 1> / <Video 1> silently re-renders the source video. Rather
+           than asking the operator to remember that, the roles are picked here
+           and the server composes the tagged prompt. -->
+      <div id="mt-prompt-helper" hidden>
+        <p class="hint">どこから何を取るかを選ぶと、H3 が理解できる形のプロンプトを作ります。</p>
+        <div class="mt-opts">
+          <label>人物<select id="mtp-person">
+            <option value="picture">画像の人物に置き換える</option>
+            <option value="video">動画の人物のまま</option>
+          </select></label>
+          <label>服装<select id="mtp-clothing">
+            <option value="picture">画像から</option>
+            <option value="video">動画から</option>
+            <option value="prompt">指定しない</option>
+          </select></label>
+          <label>背景<select id="mtp-background">
+            <option value="video">動画のまま</option>
+            <option value="picture">画像から</option>
+            <option value="prompt">指定しない</option>
+          </select></label>
+          <label>持ち物<select id="mtp-props">
+            <option value="keep">そのまま</option>
+            <option value="remove">持たせない</option>
+          </select></label>
+        </div>
+        <input type="text" id="mtp-extra" placeholder="追加の指示（任意・英語）">
+        <button id="btn-mtp-build" class="btn">この内容でプロンプトを作る</button>
+      </div>
     </div>
 
     <div class="row">

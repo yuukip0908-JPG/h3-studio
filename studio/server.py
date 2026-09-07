@@ -402,6 +402,14 @@ class Handler(BaseHTTPRequestHandler):
                                                   "reference_strength", "ref_image_size"],
                         graph.MODE_PROMPT_CINEMA: ["prompt"],
                     },
+                    "motion_prompt_options": {
+                        "person": ["picture", "video"],
+                        "clothing": ["picture", "video", "prompt"],
+                        "background": ["video", "picture", "prompt"],
+                        "props": ["keep", "remove"],
+                        "identity_tag": graph.IDENTITY_TAG,
+                        "motion_tag": graph.MOTION_TAG,
+                    },
                     "motion_trace": {
                         "ref_image_size_choices": ["match", "max"],
                         "identity_tag": graph.IDENTITY_TAG,
@@ -455,6 +463,17 @@ class Handler(BaseHTTPRequestHandler):
                                          wait_seconds=float(data.get("wait_seconds") or 0)))
         if path == "/api/gpu/stop":
             return self._json(_stop_gpu(force=bool(data.get("force"))))
+        if path == "/api/motion_prompt":
+            # One source of truth for the wording: the UI picks roles, the
+            # server composes the tagged prompt.
+            return self._json({
+                "prompt": graph.build_motion_prompt(
+                    person=data.get("person", "picture"),
+                    clothing=data.get("clothing", "picture"),
+                    background=data.get("background", "video"),
+                    props=data.get("props", "keep"),
+                    extra=data.get("extra", "") or ""),
+            })
         if path == "/api/gpu/auto_stop":
             if "minutes" in data:
                 GUARD.set_idle_minutes(data.get("minutes", 0))
@@ -512,6 +531,23 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("variations must be 1, 4 or 8")
         quality = data.get("quality", "draft")
         ref = data.get("reference_strength")
+
+        # A Motion Trace prompt with no reference tags does not fail. It
+        # quietly re-renders the source video and ignores the identity image,
+        # and the only way to notice is to watch the finished clip -- which for
+        # an 18 second run is 46 minutes later. Refuse it here instead, and hand
+        # back a prompt that works. allow_untagged exists for the operator who
+        # means it.
+        if mode == graph.MODE_MOTION_TRACE and not data.get("allow_untagged"):
+            issues = graph.motion_prompt_issues(data.get("prompt"))
+            if issues:
+                return self._json({
+                    "error": " ".join(issues),
+                    "issues": issues,
+                    "suggested_prompt": graph.build_motion_prompt(),
+                    "kind": "motion_prompt_untagged",
+                }, 400)
+
         batch = MANAGER.submit_batch(
             mode=mode,
             prompt_text=data.get("prompt", ""),
