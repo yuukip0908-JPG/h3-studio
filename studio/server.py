@@ -324,7 +324,8 @@ def _build_starter():
         start_comfy=runpod_ctl.start_comfyui,
         object_info=_comfy_object_info,
         on_event=lambda level, text: MANAGER.notice(level, text),
-        watchdog=runpod_ctl.spawn_watchdog)
+        watchdog=runpod_ctl.spawn_watchdog,
+        stop_in_progress=MANAGER.is_stopping)
 
 
 def _start_gpu(confirm_gpu=None, wait_seconds=0):
@@ -340,6 +341,14 @@ def _start_gpu(confirm_gpu=None, wait_seconds=0):
         STARTER = _build_starter()
     _invalidate_pod_cache()
     status = STARTER.begin(confirm_gpu=confirm_gpu)
+    if status.get("blocked"):
+        # A refusal, not an attempt: nothing was started and nothing was
+        # cancelled, so the answer carries the reason and the state the
+        # previous attempt already had.
+        _invalidate_pod_cache()
+        return {"ok": False, "accepted": False, "start": STARTER.status(),
+                "steps": [], "retryable": True, "needs_confirmation": False,
+                "offers": [], "error": status["blocked"]}
     if wait_seconds:
         deadline = time.time() + wait_seconds
         while time.time() < deadline and STARTER.status()["busy"]:

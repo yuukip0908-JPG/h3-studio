@@ -826,6 +826,16 @@ class JobManager:
         with self.lock:
             self._stopping = False
 
+    def is_stopping(self):
+        """Whether a STOP is between begin_stop() and end_stop().
+
+        Same flag the submit path already refuses on; a start reads it too, so
+        there is one answer to "is the GPU going away" rather than two that can
+        disagree.
+        """
+        with self.lock:
+            return self._stopping
+
     def _refuse_if_stopping(self):
         with self.lock:
             stopping = self._stopping

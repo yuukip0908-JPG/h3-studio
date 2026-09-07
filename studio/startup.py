@@ -31,6 +31,8 @@ NO_CAPACITY = "no_capacity"
 FAILED = "failed"
 CANCELLED = "cancelled"
 
+STOP_IN_PROGRESS = "GPU停止処理中です。停止完了後に再度開始してください。"
+
 STAGES = (
     ("guard", "二重起動の確認"),
     ("preflight", "事前チェック（GPU不要）"),
@@ -67,13 +69,16 @@ class GpuStarter:
     """One start attempt at a time, observable while it runs."""
 
     def __init__(self, ctl, comfy_ready, start_comfy, object_info=None,
-                 on_event=None, watchdog=None):
+                 on_event=None, watchdog=None, stop_in_progress=None):
         self.ctl = ctl
         self.comfy_ready = comfy_ready          # () -> bool
         self.start_comfy = start_comfy          # () -> (rc, out, err)
         self.object_info = object_info          # () -> dict | None
         self.on_event = on_event or (lambda level, text: None)
         self.watchdog = watchdog                # (pod_id) -> None, may be None
+        # () -> bool. Asked under the same lock that admits a start, so a STOP
+        # that begins while a START is being admitted cannot end up with both.
+        self.stop_in_progress = stop_in_progress or (lambda: False)
         self._lock = threading.Lock()
         # Set by cancel(). Every wait in the sequence checks it, so a STOP does
         # not leave a start polling a Pod that is going away -- on 2026-09-07 a
@@ -235,6 +240,13 @@ class GpuStarter:
         with self._lock:
             if self.state in RUNNING_STATES:
                 return self.status()
+            if self.stop_in_progress():
+                # Refuse, and do nothing else: no attempt is created, no Pod is
+                # touched, the running STOP is not cancelled, and the previous
+                # attempt's state is left exactly as it was. Starting a Pod
+                # while one is being stopped would leave the two disagreeing
+                # about which Pod the Studio is pointing at.
+                return dict(self.status(), blocked=STOP_IN_PROGRESS)
             self.reset()
             self.approved_gpu = confirm_gpu
             self.state = "guard"
@@ -379,7 +391,10 @@ class GpuStarter:
             if real and real.get("name"):
                 # Correct the record before anything else reads it.
                 try:
-                    self.ctl.record_actual_gpu(real["name"], self.pod_id)
+                    # Scoped to the lifetime it was measured on, so it cannot
+                    # later be read as a statement about a different Pod.
+                    self.ctl.record_actual_gpu(real["name"], self.pod_id,
+                                               info.get("lastStartedAt"))
                 except Exception:  # noqa: BLE001
                     pass
                 self.price_card = gpu_plan.price_card(real["name"], live_price)

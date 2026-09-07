@@ -317,6 +317,8 @@ def activate_pod(info):
     # Switching Pods replaces the endpoint; it never inherits one. Written
     # unconditionally -- including as None -- so an unresolved address is
     # recorded as unresolved rather than as the previous Pod's.
+    _reconcile_verification(state, info.get("podId"), info.get("lastStartedAt"),
+                            info.get("desiredStatus") == "RUNNING")
     complete = bool(info.get("publicIp") and info.get("sshPort"))
     state["publicIp"] = info.get("publicIp") or None
     state["sshPort"] = info.get("sshPort") or None
@@ -390,7 +392,7 @@ def spawn_watchdog(pod_id, max_minutes=None, stale_minutes=None):
     return proc.pid
 
 
-def record_actual_gpu(name, pod_id=None):
+def record_actual_gpu(name, pod_id=None, lifetime=None):
     """Write down the card the Pod really has.
 
     describe() falls back to the GPU recorded at creation because a RUNNING
@@ -401,11 +403,19 @@ def record_actual_gpu(name, pod_id=None):
         return
     try:
         state = config.load_runpod_state()
-        if state.get("plannedGpuTypeId") == name and state.get("gpuVerified"):
+        pid = pod_id or state.get("podId")
+        # "Already verified" only counts for this Pod and this lifetime. Keyed
+        # on the name alone, a Pod change skipped the write entirely and the
+        # previous Pod's card stayed in the file as the new Pod's.
+        if (state.get("plannedGpuTypeId") == name
+                and state.get("gpuVerified")
+                and state.get("gpuVerifiedFor") == pid
+                and state.get("gpuVerifiedLifetime") == lifetime):
             return
         state["plannedGpuTypeId"] = name
         state["gpuVerified"] = True
-        state["gpuVerifiedFor"] = pod_id or state.get("podId")
+        state["gpuVerifiedFor"] = pid
+        state["gpuVerifiedLifetime"] = lifetime
         state["lastUpdated"] = time.strftime("%Y-%m-%d")
         tmp = config.RUNPOD_STATE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -507,20 +517,26 @@ def _persist_endpoint(info):
             # this the file could durably name one Pod beside another's address
             # -- which usable_endpoint() would refuse but pod_ssh.sh would dial.
             return
+        # The verification is scoped to the same lifetime as the endpoint, so it
+        # is reconciled on the same evidence -- including on the paths that
+        # leave the address alone.
+        stale = _reconcile_verification(state, pid, started, running)
         if running and ip and port:
             new = (ip, port, pid, started)          # complete, from ONE payload
         elif (running and state.get("endpoint_pod_id") == pid
                 and state.get("endpoint_started_at") == started
                 and state.get("publicIp") and state.get("sshPort")):
-            return                                  # same lifetime, not republished yet
+            new = (state.get("publicIp"), state.get("sshPort"),
+                   pid, started)                    # same lifetime, not republished yet
         else:
             # Stopped, or nothing published yet. Either way there is no address.
             # Halves are never mixed across payloads and never survive a stop:
             # a host port belongs to one lifetime of one container, and after
             # EXITED it may be another tenant's.
             new = (None, None, None, None)
-        if (state.get("publicIp"), state.get("sshPort"),
-                state.get("endpoint_pod_id"), state.get("endpoint_started_at")) == new:
+        if not stale and (state.get("publicIp"), state.get("sshPort"),
+                          state.get("endpoint_pod_id"),
+                          state.get("endpoint_started_at")) == new:
             return
         (state["publicIp"], state["sshPort"],
          state["endpoint_pod_id"], state["endpoint_started_at"]) = new
@@ -531,6 +547,47 @@ def _persist_endpoint(info):
         os.replace(tmp, config.RUNPOD_STATE)
     except OSError:
         pass
+
+
+def _reconcile_verification(state, pod_id, lifetime, running):
+    """Drop a GPU verification that no longer describes the Pod in front of us.
+
+    nvidia-smi answered about one container of one Pod. The answer does not
+    survive a Pod change, a restart, or a stop -- the state file was found
+    saying gpuVerified=true / gpuVerifiedFor=nkiurl6132qe5t while the active
+    Pod was ffw0tip8217ep0, and record_actual_gpu()'s "already verified" early
+    return then kept the new Pod's real card from ever being written down.
+
+    Same key as the endpoint, deliberately: one notion of a Pod lifetime, not
+    two that can disagree. Returns True if anything changed.
+    """
+    ok = bool(running and pod_id
+              and state.get("gpuVerifiedFor") == pod_id
+              and state.get("gpuVerifiedLifetime") == lifetime)
+    if ok or not (state.get("gpuVerified") or state.get("gpuVerifiedFor")
+                  or state.get("gpuVerifiedLifetime")):
+        return False
+    state["gpuVerified"] = False
+    state["gpuVerifiedFor"] = None
+    state["gpuVerifiedLifetime"] = None
+    return True
+
+
+def gpu_verified(pod_id=None, lifetime=None):
+    """Whether nvidia-smi has answered for THIS Pod lifetime.
+
+    Never read state["gpuVerified"] directly: on its own it is a boolean about
+    some Pod, at some time. Callers want to know about the one they are holding.
+    """
+    state = config.load_runpod_state()
+    want = pod_id or state.get("podId")
+    if not (state.get("gpuVerified") and want):
+        return False
+    if state.get("gpuVerifiedFor") != want:
+        return False
+    if lifetime is not None and state.get("gpuVerifiedLifetime") != lifetime:
+        return False
+    return True
 
 
 def usable_endpoint(pod_id=None):

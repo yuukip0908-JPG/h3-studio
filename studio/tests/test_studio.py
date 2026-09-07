@@ -2193,8 +2193,15 @@ class CostGuardTests(unittest.TestCase):
         time.sleep(0.3)
         self.assertEqual(stopped, [], "the guard must not stop the Pod during a job")
         busy[0] = False
-        guard.last_activity = time.time() - 10 * 3600
-        self.assertTrue(wait_until(lambda: stopped, 3.0))
+        # Re-armed on every poll, not once: the guard may still be inside its
+        # busy branch when the line above runs, and that branch calls touch(),
+        # which puts last_activity back to now. Setting it a single time makes
+        # this test lose that race under load rather than test anything.
+        def idle_and_check():
+            guard.last_activity = time.time() - 10 * 3600
+            return bool(stopped)
+
+        self.assertTrue(wait_until(idle_and_check, 3.0))
         guard.stop_thread()
 
     def test_guard_treats_unknown_state_as_busy(self):
@@ -5143,6 +5150,252 @@ class EndpointLifetimeTests(unittest.TestCase):
 
         os.unlink(state)      # `set -e` used to kill the script before the guard
         self.assertEqual(run().returncode, runpod_ctl.SSH_NO_ENDPOINT)
+
+
+
+class StartStopSerializationTests(unittest.TestCase):
+    """A start and a stop must not overlap.
+
+    They disagree about which Pod the Studio is pointing at: the stop is
+    stopping config.pod_id() while the start is about to change it. The flag
+    that already closes the door on submits closes it on starts too -- one
+    answer to "is the GPU going away", not two.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="h3-serialize-")
+        self._saved = config.RUNPOD_STATE
+        config.RUNPOD_STATE = os.path.join(self.tmp, "runpod_state.json")
+        with open(config.RUNPOD_STATE, "w", encoding="utf-8") as f:
+            json.dump({"networkVolumeId": "olmj77x4pc"}, f)
+        self.manager = jobs.JobManager(comfy=comfy_client.ComfyClient("http://127.0.0.1:1"))
+
+    def tearDown(self):
+        config.RUNPOD_STATE = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _starter(self, ctl):
+        return startup.GpuStarter(
+            ctl=ctl,
+            comfy_ready=lambda: True,
+            start_comfy=lambda: (0, "", ""),
+            object_info=lambda: _healthy_object_info(),
+            watchdog=ctl.spawn_watchdog,
+            stop_in_progress=self.manager.is_stopping)
+
+    def _settle(self, st, timeout=15):
+        deadline = time.time() + timeout
+        while time.time() < deadline and st.status()["busy"]:
+            time.sleep(0.05)
+        return st
+
+    # ---- case 1: a start asked for during a stop ----
+    def test_a_start_is_refused_while_a_stop_is_in_progress(self):
+        ctl = FakeCtl(pods=[_pod("A")], start=lambda pid: _ready_info(pid))
+        st = self._starter(ctl)
+        self.manager.begin_stop()
+        answer = st.begin()
+        self.assertEqual(answer["blocked"], startup.STOP_IN_PROGRESS)
+        self.assertIn("停止処理中", answer["blocked"])
+        self.assertEqual(st.state, startup.IDLE, "a refusal created an attempt")
+        self.assertIsNone(st.started_at)
+        self.assertEqual(ctl.start_calls, [], "a refused start touched a Pod")
+        self.assertEqual(ctl.create_calls, [], "a refused start created a Pod")
+        self.assertFalse(st.status()["busy"])
+
+    def test_a_refusal_does_not_cancel_the_stop_or_revive_the_last_attempt(self):
+        """The refusal is inert: it reports, and changes nothing."""
+        ctl = FakeCtl(pods=[_pod("A")], start=lambda pid: _ready_info(pid))
+        st = self._starter(ctl)
+        st.begin()
+        self._settle(st)
+        before = st.status()
+        self.manager.begin_stop()
+        st.begin()
+        after = st.status()
+        self.assertTrue(self.manager.is_stopping(), "the refusal cancelled the stop")
+        self.assertEqual((after["state"], after["started_at"], after["finished_at"]),
+                         (before["state"], before["started_at"], before["finished_at"]))
+
+    # ---- case 2: after the stop finishes ----
+    def test_a_start_is_admitted_once_the_stop_has_finished(self):
+        ctl = FakeCtl(pods=[_pod("A")], start=lambda pid: _ready_info(pid))
+        st = self._starter(ctl)
+        self.manager.begin_stop()
+        self.assertIn("blocked", st.begin())
+        self.manager.end_stop()
+        answer = st.begin()
+        self.assertNotIn("blocked", answer)
+        self._settle(st)
+        self.assertEqual(st.state, startup.READY)
+        self.assertEqual(ctl.start_calls, ["A"])
+
+    # ---- case 4: the two asked for at almost the same moment ----
+    def test_a_stop_that_lands_during_a_start_leaves_exactly_one_sequence(self):
+        """Whichever order they arrive in, there is never a second attempt."""
+        ctl = FakeCtl(pods=[_pod("A")], start=lambda pid: _ready_info(pid))
+        st = self._starter(ctl)
+        st.begin()
+        self.manager.begin_stop()
+        st.cancel("STOP GPU が押されました")      # what _stop_gpu does
+        again = st.begin()                         # a second click, mid-stop
+        self.assertTrue("blocked" in again or again["busy"],
+                        "a second start sequence was admitted")
+        self._settle(st)
+        self.assertLessEqual(len(ctl.start_calls), 1, "the Pod was started twice")
+        self.assertEqual(ctl.create_calls, [])
+        self.manager.end_stop()
+
+    def test_the_stop_flag_is_the_one_the_submit_path_already_uses(self):
+        """No second lock: begin_stop/end_stop is the single source of truth."""
+        self.assertFalse(self.manager.is_stopping())
+        self.manager.begin_stop()
+        self.assertTrue(self.manager.is_stopping())
+        with self.assertRaises(comfy_client.ComfyUnavailable):
+            self.manager._refuse_if_stopping()
+        self.manager.end_stop()
+        self.assertFalse(self.manager.is_stopping())
+
+
+class ForceStopStartGateTests(ApiServerTests):
+    """The gate must also hold for a forced stop, through the real handler.
+
+    _stop_gpu_inner is replaced so nothing reaches RunPod: what is under test is
+    that the door is shut for the whole of the stop, force or not.
+    """
+
+    for _name in [n for n in dir(ApiServerTests) if n.startswith("test_")]:
+        locals()[_name] = None
+    del _name
+
+    def _during_stop(self, force):
+        seen = {}
+        orig = self.srv._stop_gpu_inner
+
+        def inner(force=False, _stop_reason=""):
+            seen["stopping"] = self.srv.MANAGER.is_stopping()
+            seen["start"] = self.srv._start_gpu()
+            return {"ok": True, "verified": True, "steps": [], "pod_state": "EXITED",
+                    "network_volume_preserved": True, "network_volume": "vol1",
+                    "error": None}
+
+        self.srv._stop_gpu_inner = inner
+        try:
+            self.srv._stop_gpu(force=force)
+        finally:
+            self.srv._stop_gpu_inner = orig
+        return seen
+
+    def test_a_forced_stop_also_refuses_a_start(self):
+        seen = self._during_stop(force=True)
+        self.assertTrue(seen["stopping"])
+        self.assertFalse(seen["start"]["ok"])
+        self.assertFalse(seen["start"]["accepted"], "a start attempt was created")
+        self.assertIn("停止処理中", seen["start"]["error"])
+
+    def test_an_ordinary_stop_refuses_a_start_for_its_whole_duration(self):
+        seen = self._during_stop(force=False)
+        self.assertFalse(seen["start"]["accepted"])
+        self.assertIn("停止処理中", seen["start"]["error"])
+        self.assertFalse(self.srv.MANAGER.is_stopping(), "the door was left shut")
+
+
+class GpuVerificationLifetimeTests(unittest.TestCase):
+    """nvidia-smi answered about one container of one Pod.
+
+    The state file was found saying gpuVerified=true / gpuVerifiedFor=
+    nkiurl6132qe5t while the active Pod was ffw0tip8217ep0 -- and
+    record_actual_gpu()'s "already verified" early return then kept the new
+    Pod's real card from ever being written down.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="h3-verify-")
+        self._saved = config.RUNPOD_STATE
+        config.RUNPOD_STATE = os.path.join(self.tmp, "runpod_state.json")
+
+    def tearDown(self):
+        config.RUNPOD_STATE = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _put(self, **kw):
+        with open(config.RUNPOD_STATE, "w", encoding="utf-8") as f:
+            json.dump(kw, f)
+
+    def _state(self):
+        with open(config.RUNPOD_STATE, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _running(self, pid, lifetime):
+        return {"podId": pid, "desiredStatus": "RUNNING", "publicIp": "5.5.5.5",
+                "sshPort": 2222, "lastStartedAt": lifetime}
+
+    # ---- case 5 ----
+    def test_a_verification_holds_for_the_pod_and_lifetime_it_was_made_on(self):
+        self._put(podId="A")
+        runpod_ctl.record_actual_gpu("NVIDIA RTX 6000 Ada Generation", "A", "X")
+        self.assertTrue(runpod_ctl.gpu_verified("A", "X"))
+        self.assertEqual(self._state()["gpuVerifiedFor"], "A")
+        self.assertEqual(self._state()["gpuVerifiedLifetime"], "X")
+
+    # ---- case 6 ----
+    def test_switching_to_another_pod_invalidates_it(self):
+        self._put(podId="A", gpuVerified=True, gpuVerifiedFor="A", gpuVerifiedLifetime="X")
+        runpod_ctl.activate_pod({"podId": "B", "comfyUrl": "u", "desiredStatus": "RUNNING",
+                                 "publicIp": "2.2.2.2", "sshPort": 2222, "lastStartedAt": "Z"})
+        st = self._state()
+        self.assertFalse(st["gpuVerified"])
+        self.assertIsNone(st["gpuVerifiedFor"])
+        self.assertIsNone(st["gpuVerifiedLifetime"])
+        self.assertFalse(runpod_ctl.gpu_verified())
+
+    # ---- case 7 ----
+    def test_restarting_the_same_pod_invalidates_it(self):
+        """Same id, different container: the card can be a different one."""
+        self._put(podId="A", gpuVerified=True, gpuVerifiedFor="A", gpuVerifiedLifetime="X",
+                  publicIp="1.1.1.1", sshPort=1111,
+                  endpoint_pod_id="A", endpoint_started_at="X")
+        runpod_ctl._persist_endpoint(self._running("A", "Y"))
+        self.assertFalse(self._state()["gpuVerified"])
+        self.assertFalse(runpod_ctl.gpu_verified("A", "Y"))
+
+    # ---- case 8 ----
+    def test_a_stopped_pod_clears_it(self):
+        self._put(podId="A", gpuVerified=True, gpuVerifiedFor="A", gpuVerifiedLifetime="X",
+                  publicIp="1.1.1.1", sshPort=1111,
+                  endpoint_pod_id="A", endpoint_started_at="X")
+        runpod_ctl._persist_endpoint({"podId": "A", "desiredStatus": "EXITED",
+                                      "publicIp": "", "sshPort": None, "lastStartedAt": "X"})
+        st = self._state()
+        self.assertFalse(st["gpuVerified"])
+        self.assertIsNone(st["gpuVerifiedFor"])
+        self.assertIsNone(st["gpuVerifiedLifetime"])
+
+    # ---- case 9 ----
+    def test_a_verification_left_over_from_an_older_pod_is_not_read_as_one(self):
+        """The shape the live state file was actually found in."""
+        self._put(podId="ffw0tip8217ep0", gpuVerified=True, gpuVerifiedFor="nkiurl6132qe5t",
+                  plannedGpuTypeId="NVIDIA RTX 6000 Ada Generation")
+        self.assertFalse(runpod_ctl.gpu_verified())
+        self.assertFalse(runpod_ctl.gpu_verified("ffw0tip8217ep0"))
+
+    def test_a_stale_verification_no_longer_skips_recording_the_real_card(self):
+        """The early return is what made the contradiction durable."""
+        self._put(podId="B", gpuVerified=True, gpuVerifiedFor="A", gpuVerifiedLifetime="X",
+                  plannedGpuTypeId="NVIDIA RTX 6000 Ada Generation")
+        runpod_ctl.record_actual_gpu("NVIDIA RTX 6000 Ada Generation", "B", "Y")
+        st = self._state()
+        self.assertEqual((st["gpuVerifiedFor"], st["gpuVerifiedLifetime"]), ("B", "Y"))
+        self.assertTrue(runpod_ctl.gpu_verified("B", "Y"))
+
+    def test_a_verification_survives_a_refresh_within_its_own_lifetime(self):
+        """It is invalidated by change, not by being looked at."""
+        self._put(podId="A", gpuVerified=True, gpuVerifiedFor="A", gpuVerifiedLifetime="X",
+                  publicIp="5.5.5.5", sshPort=2222,
+                  endpoint_pod_id="A", endpoint_started_at="X")
+        runpod_ctl._persist_endpoint(self._running("A", "X"))
+        self.assertTrue(self._state()["gpuVerified"])
+        self.assertTrue(runpod_ctl.gpu_verified("A", "X"))
 
 
 if __name__ == "__main__":
