@@ -24,6 +24,7 @@ UI 右上の **START GPU** で Pod 起動 → ComfyUI 起動 → READY まで自
 | [docs/V2_AB_TESTS.md](docs/V2_AB_TESTS.md) | A/B の手順と結果表 |
 | [docs/V2_KNOWN_LIMITATIONS.md](docs/V2_KNOWN_LIMITATIONS.md) | 制約・未検証範囲 |
 | [docs/V2_RECOVERY.md](docs/V2_RECOVERY.md) | 復旧・ロールバック |
+| [docs/V2_STABLE_CHECKPOINT.md](docs/V2_STABLE_CHECKPOINT.md) | **正式安定版 `h3-studio-v2-stable`**（環境 manifest・戻し方・Long Draft との境界） |
 | [docs/V2_IMPLEMENTATION_REPORT.md](docs/V2_IMPLEMENTATION_REPORT.md) | v2 実装レポート |
 | [docs/V2_NEXT_SESSION_PLAN.md](docs/V2_NEXT_SESSION_PLAN.md) | **次セッション計画**（解像度 / Turbo LoRA の確定） |
 | [docs/V2_QUALITY_DEFAULTS.md](docs/V2_QUALITY_DEFAULTS.md) | **既定値とその根拠**・外部情報の照合手順・ETAの仕組み |

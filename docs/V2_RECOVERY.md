@@ -6,12 +6,54 @@
 
 | 種類 | 場所 | 内容 |
 |---|---|---|
+| **git タグ** | **`h3-studio-v2-stable`** | **H3 Studio V2 の正式安定版。Long Draft / 速度実験に入る前の最後の状態。まずここへ戻す** |
+| **tar スナップショット** | `~/Downloads/H3_CLOUD_REPRO_BACKUPS/H3_STUDIO_V2_STABLE_*.tar.gz` | git を失っても戻せる物理コピー（`scripts/stable_snapshot.sh` が作る） |
 | git タグ | `v1-baseline` (`47fcabb`) | 検証済み baseline の全ファイル |
 | tar スナップショット | `~/Downloads/H3_CLOUD_REPRO_BACKUPS/H3_CLOUD_REPRO_v1_baseline_*.tar.gz` | git 外の完全コピー（`results/environment_snapshot/` 含む） |
 | Pod venv スナップショット | `results/venv_snapshots/<label>/` | `scripts/venv_snapshot.sh` が作る pip freeze + torch + custom_nodes |
 | Pod 側 baseline 証跡 | `results/BASELINE_READY` | 何が PASS したかの記録 |
 | Network Volume | RunPod `olmj77x4pc` | モデル・キャッシュ・出力。**削除しない** |
 | v2 追加モデル | `config/MODEL_MANIFEST_V2.json` | Ref2VA の sha256。`scripts/download_models_v2.sh --verify` で照合 |
+
+## 0.1 「H3 Studio V2 Stable に戻して」と言われたら
+
+この一文だけで始められる。**GPU は起動しない。** Pod・Network Volume `olmj77x4pc`・
+モデル・CLIPCached cache には一切触れない。
+
+```bash
+bash scripts/rollback_stable.sh --dry-run   # 1-6 を検証するだけ。何も変更しない
+bash scripts/rollback_stable.sh             # 実行（'rollback' と入力して確定）
+```
+
+手でやる場合も順番は同じ:
+
+| # | やること | コマンド | 期待 |
+|---|---|---|---|
+| 1 | stable tag 確認 | `git tag -l 'h3-studio-v2-stable'` | 1行返る |
+| 2 | 現在の変更を退避 | `git stash push -u -m "pre-stable $(date -u +%FT%TZ)"` | 失うものが無い |
+| 3 | stable commit へ復帰 | `git checkout h3-studio-v2-stable -- .` | working tree が stable と一致 |
+| 4 | workflow 確認 | `git diff h3-studio-v2-stable -- workflows` | 差分なし・API 6本が揃う |
+| 5 | config 確認 | `git diff h3-studio-v2-stable -- config studio/config.py` | 差分なし |
+| 6 | Network Volume 確認 | `bash -c 'source scripts/runpod_env.sh; rp GET /networkvolumes'` | `olmj77x4pc` 200GB US-WA-1 が存在 |
+| 7 | tests | `/opt/homebrew/bin/python3.12 -m unittest discover -s studio/tests -t . -q` | **Ran 150 / OK** |
+| 8 | Studio 起動 | `bash scripts/start_studio.sh` | `http://127.0.0.1:8010/` が開く |
+| 9 | GPU | **何もしない** | 課金は人が START GPU を押すまで始まらない |
+
+git ごと失った場合:
+
+```bash
+cd ~/Downloads && tar -xzf H3_CLOUD_REPRO_BACKUPS/H3_STUDIO_V2_STABLE_*.tar.gz
+cat H3_CLOUD_REPRO/STABLE_CHECKPOINT.json    # 解決済みの commit hash
+```
+
+チェックポイントに何が入っていて何が入っていないか（Long Draft は**入っていない**）は
+[docs/V2_STABLE_CHECKPOINT.md](V2_STABLE_CHECKPOINT.md)。
+
+## 0.2 stable と v1-baseline の使い分け
+
+- **Studio の実験（Long Draft / EasyCache / sparse attention など）で壊した** → `h3-studio-v2-stable`
+- **baseline そのものが疑わしい**（stock H3 が通らない / cache が効かない） → `v1-baseline`
+  （`scripts/rollback_v1.sh`）。v2 は捨てられる、baseline は捨てられない。
 
 ## 1. 症状別の切り分け
 

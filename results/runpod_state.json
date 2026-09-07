@@ -59,10 +59,14 @@
   "gpuVerified": true,
   "gpuVerifiedFor": "nkiurl6132qe5t",
   "podRoles": {
-    "active": "nkiurl6132qe5t",
+    "active": "qco0zgaskjuu4s",
     "backup": "ufhtfdg9ulv3fj",
+    "idle": [
+      "nkiurl6132qe5t",
+      "pf6hrwqcpjjhss"
+    ],
     "temporary": [],
-    "note": "nkiurl6132qe5t: RTX 6000 Ada 48GB at $0.84/hr, created 2026-09-07 by the new START GPU path and confirmed by nvidia-smi. ufhtfdg9ulv3fj: the original Pod, kept as backup. The A100 y9ts66clj5wml6 ($1.59/hr) was deleted 2026-09-07 on the operator's instruction once the cheap card was available again.",
+    "note": "2026-09-07 stable checkpoint: read back from GET /pods rather than assumed. Four Pods exist, all EXITED, all mounting olmj77x4pc at $0.84/hr: qco0zgaskjuu4s (newest, and the podId this repo points at -- the Studio's actual target), ufhtfdg9ulv3fj (the original baseline Pod, kept as backup), and nkiurl6132qe5t / pf6hrwqcpjjhss (superseded by qco0zgaskjuu4s, stopped, not deleted). The previous podRoles block still named nkiurl6132qe5t as active, which two later Pod creations had made untrue. Nothing was started, stopped or deleted to correct it.",
     "policy": "A Pod is disposable; the network volume is the environment. Delete only when EXITED, not active, mounting olmj77x4pc and carrying no volume of its own (studio.runpod_ctl.delete_pod enforces all four). The volume is never deleted."
   }
 }

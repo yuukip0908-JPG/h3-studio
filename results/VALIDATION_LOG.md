@@ -1035,3 +1035,77 @@ GET  / , /app.js                     -> 200   （UIは無傷）
 （フルスイートで実際に1回再現していた。3回連続で再現しないことを確認）
 
 テスト **150件 PASS**（144 → +6）。
+
+---
+
+## 2026-09-07 — 正式安定版チェックポイント `h3-studio-v2-stable`（GPU未使用・生成ゼロ）
+
+Long Draft / 速度実験に入る前に、**戻れる場所**を作った。新機能はひとつも足していない。
+
+### 観測（開始時点）
+
+| 項目 | 実測 |
+|---|---|
+| branch / HEAD | `main` / `3521375` |
+| git status | **clean**（staged 0 / unstaged 0 / untracked 0） |
+| 既存タグ | `v1-baseline` (`0b9faee` → commit `47fcabb`) のみ |
+| `results/V2_READY` | 存在。ただし **`59d5d0c` の証跡**（PASS=29 FAIL=0, 2026-09-06） |
+| `results/BASELINE_READY` | 存在・無変更 |
+| Studio | Mac 上で起動中（pid 80392, 127.0.0.1:8010） |
+
+### テスト — 3回連続で同一
+
+`/opt/homebrew/bin/python3.12 -m unittest discover -s studio/tests -t . -v`
+
+| 回 | 結果 | 時間 |
+|---|---|---|
+| 1 | **Ran 150 / OK** | 175.516s |
+| 2 | **Ran 150 / OK** | 175.361s |
+| 3 | **Ran 150 / OK** | 175.502s |
+
+FAIL=0 / ERROR=0 / skip=0。3回とも**同一の150個のtest id**が走った（差分なし）＝ flaky なし。
+テスト実行後も `git status` は clean（テストが作業ツリーを汚さない）。
+
+### GPU-OFF preflight（実機の代わりに、起動せずに測れるものを全部）
+
+`GET /api/preflight` → **PASS=11 FAIL=0 unknown=0 blocking=[]**
+（APIキー / Volume 記録 / **Volume 実在** / 二重起動なし / 作成レシピ / 作成リクエストの型 /
+ワークフロー6本 / 3モードのテンプレート / v2 manifest / 出力先 / watchdog）
+
+### RunPod 実測（read-only GET のみ。start / stop / create / delete は一切していない）
+
+| 項目 | 実測 |
+|---|---|
+| Pod 総数 | **4基。すべて `desiredStatus=EXITED`** |
+| RUNNING な Pod | **0** |
+| GPU 課金中 | **0**（RUNNING が無いため） |
+| Network Volume | **`olmj77x4pc` 200GB US-WA-1 — 存在** |
+| 今日の Pod 課金 | $1.0154（すべて停止済みの Pod の当日分。実データ `/billing/pods`） |
+| 今日の Volume 課金 | $0.1167（実データ `/billing/networkvolumes`） |
+
+**記録と現実の食い違いを1件修正した。** `runpod_state.json` の `podRoles.active` は
+`nkiurl6132qe5t` のままだったが、その後 `pf6hrwqcpjjhss` → `qco0zgaskjuu4s` と2回 Pod が
+作られており、`podId`（Studio が実際に向く先）は `qco0zgaskjuu4s` だった。
+`GET /pods` の実データに合わせて `active` / `backup` / `idle` を書き直した。
+`podRoles` はドキュメント用のメタデータで、コードは誰も読んでいない（`config.pod_id()` は
+`podId` を見る）。**Pod は1基も起動・停止・削除していない。**
+
+### 作ったもの
+
+| ファイル | 役割 |
+|---|---|
+| `docs/V2_STABLE_CHECKPOINT.md` | 含まれる機能一覧・environment manifest・model manifest の検証状況・**Long Draft との境界**・復旧手順 |
+| `scripts/stable_snapshot.sh` | `git archive <tag>` から tar を作る。秘密らしきファイル名 / `rpa_...` / 秘密鍵ヘッダを走査し、1件でもあれば**書き出さずに終了** |
+| `scripts/rollback_stable.sh` | 「Stable に戻して」の実行系。`--dry-run` で tag解決・commit存在・tree読み取り・**必要ファイル43本**・recovery doc整合・archive可読性・archive内の必要ファイル・秘密なし を検証（作業ツリーには触れない） |
+| `docs/V2_RECOVERY.md` §0.1 / §0.2 | 復旧ポイント表の先頭に stable を追加。9手順と、stable と v1-baseline の使い分け |
+| `CLAUDE.md` | 安定版チェックポイントの節。実験は `feature/long-draft` で行い main / タグを直接触らない |
+
+### 正直に書く — このチェックポイントが**証明していないこと**
+
+- `scripts/v2_validate.sh`（実機3モード）は **`59d5d0c` で走ったのが最後**。それ以降
+  studio / workflows / config に触れた **17コミット**は、オフライン150テストでしか
+  検証されていない。`results/V2_READY` は HEAD の証跡ではない
+- モデルの sha256 実照合はできていない（モデルは Network Volume 上にしか無く、
+  照合には GPU 起動が要る）。manifest 側に 6ファイル分の filename / path / size / sha256 が
+  揃っていることだけを確認した
+- → **次に GPU を起動したときの最初の仕事は `bash scripts/v2_validate.sh`**

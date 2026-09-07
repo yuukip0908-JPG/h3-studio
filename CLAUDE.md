@@ -99,6 +99,18 @@ GPU ON後に環境修理をしない / 状態をユーザーへ見せる / 終�
 **外部記事の設定をそのまま入れない。** `identity_weight` / `CFG 3.5-5.0` のように
 実在しないパラメータを推奨している記事がある（照合で0件と判明）。
 
+## 安定版チェックポイント（2026-09-07 確立）
+タグ **`h3-studio-v2-stable`** = Long Draft / 速度実験に入る前の最後の安定版。
+`docs/V2_STABLE_CHECKPOINT.md` に含まれる機能・環境 manifest・戻し方がある。
+
+- 「H3 Studio V2 Stable に戻して」→ `bash scripts/rollback_stable.sh`（`--dry-run` で無害確認）
+- 物理コピー → `bash scripts/stable_snapshot.sh`（`~/Downloads/H3_CLOUD_REPRO_BACKUPS/`）
+- **Long Draft / EasyCache / H3-Optimizations / sparse attention / SageAttention /
+  DualRes / Face Refine / RTX VSR は、すべてこのタグより後の実験**。`feature/long-draft`
+  で行い、`main` と `h3-studio-v2-stable` を直接触らない
+- `results/V2_READY` は `59d5d0c` の実機証跡。以後の Studio 変更はオフライン150テストのみ。
+  次に GPU を起動したら最初に `bash scripts/v2_validate.sh` で証跡を更新する
+
 ## 次にやること
 `docs/V2_NEXT_SESSION_PLAN.md` — GPU1回で解像度(0.4→1.0MP)とTurbo LoRA(Draft 8step)を確定する。
 Turbo は**スイッチだけでは効かない**（baselineがLoRAノードを除去済み。`LoraLoaderModelOnly`の
