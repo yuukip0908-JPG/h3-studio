@@ -26,6 +26,17 @@ class ComfyError(RuntimeError):
     pass
 
 
+class WebSocketQuiet(Exception):
+    """No frame arrived before the read timeout. NOT a disconnect.
+
+    ComfyUI sends nothing at all during the Qwen3-VL encode -- 75-90 s on a
+    cache MISS, and every Long Draft segment is a MISS. Treating that silence as
+    a dead socket dropped the connection on every MISS, and the reconnect
+    backoff (up to 30 s) then swallowed the progress events that followed, which
+    is why a phase label sat on "参照を解析中" for nine minutes.
+    """
+
+
 class ComfyUnavailable(ComfyError):
     """ComfyUI is not there: the Pod is stopped, or ComfyUI is not running.
 
@@ -76,9 +87,14 @@ def _request(url, data=None, headers=None, method=None, timeout=30):
         status, body = e.code, e.read()
         head = {k: v for k, v in (e.headers or {}).items()}
         if _is_proxy_pod_down(status, body, head):
-            raise ComfyUnavailable(
+            down = ComfyUnavailable(
                 "the RunPod proxy returned 404 for %s, which means the Pod is not running"
-                % url) from e
+                % url)
+            # A positive answer from the proxy that the Pod is not there, as
+            # opposed to a transport failure that says nothing at all. Liveness
+            # needs to tell those apart: one is "dead", the other is "unknown".
+            down.pod_down = True
+            raise down from e
         return status, body, head
     except (urllib.error.URLError, socket.timeout, ssl.SSLError, ConnectionError, OSError) as e:
         raise ComfyUnavailable(str(e)) from e
@@ -111,12 +127,49 @@ class ComfyClient:
     def system_stats(self):
         return self._json("/system_stats", timeout=10)
 
-    def is_alive(self):
+    LIVE, DEAD, UNKNOWN = "live", "dead", "unknown"
+
+    def liveness(self):
+        """live | dead | unknown -- and never "dead" for a merely busy ComfyUI.
+
+        /queue is the primary probe. Measured on the Pod 2026-09-07: while a
+        generation was executing, /system_stats answered 502 through the RunPod
+        proxy on every attempt while /queue answered 200 in ~180 ms, so probing
+        system_stats alone reported a working ComfyUI as down. When ComfyUI was
+        genuinely dead, /queue returned 502 too -- the two states do separate.
+
+        /system_stats stays as a second opinion, not as the verdict: if /queue
+        errors but system_stats answers, ComfyUI is serving and the queue read
+        was the anomaly.
+
+        "unknown" is a real answer. A transport failure means the question could
+        not be asked, and this project's rule is that unknown is reported as
+        unknown -- never as absence.
+        """
+        try:
+            self.queue_snapshot()
+            return self.LIVE
+        except ComfyUnavailable as e:
+            # The proxy positively says the Pod is not running; nothing else to
+            # ask. Anything else at this layer is a network failure.
+            return self.DEAD if getattr(e, "pod_down", False) else self.UNKNOWN
+        except ComfyError:
+            pass
         try:
             self.system_stats()
-            return True
+            return self.LIVE
+        except ComfyUnavailable as e:
+            return self.DEAD if getattr(e, "pod_down", False) else self.UNKNOWN
         except ComfyError:
-            return False
+            # Something answered on both routes and neither served: ComfyUI is
+            # not up, whatever is in front of it is.
+            return self.DEAD
+
+    def is_alive(self):
+        """Kept as the boolean the call sites already use. Only "live" is True;
+        "unknown" is not alive, because acting on a maybe is how a stopped Pod
+        gets a prompt queued at it."""
+        return self.liveness() == self.LIVE
 
     def free_models(self, unload_models=True, free_memory=True):
         """Ask ComfyUI to unload models and collect, via its own /free route.
@@ -338,12 +391,24 @@ class WebSocketClient:
 
     def _recv_exact(self, n):
         while len(self._buf) < n:
-            chunk = self.sock.recv(65536)
+            try:
+                chunk = self.sock.recv(65536)
+            except socket.timeout as e:
+                # Partial bytes stay in self._buf, so the next read continues
+                # the same frame. Silence is reported as silence.
+                raise WebSocketQuiet("no frame within %ss" % self.timeout) from e
             if not chunk:
                 raise ComfyError("websocket closed")
             self._buf += chunk
         out, self._buf = self._buf[:n], self._buf[n:]
         return out
+
+    def ping(self, payload=b""):
+        """Prove the transport is still there without waiting for the server.
+
+        A send failure is a real disconnect; silence on the read side is not.
+        """
+        self._send_frame(_OP_PING, payload)
 
     def _send_frame(self, opcode, payload=b""):
         header = bytearray([0x80 | opcode])
@@ -427,8 +492,12 @@ class ProgressListener(threading.Thread):
     reconnects with backoff. `on_event(dict)` gets the decoded messages.
     """
 
-    def __init__(self, base_url, client_id, on_event, on_state=None):
+    def __init__(self, base_url, client_id, on_event, on_state=None, ws_timeout=None):
         super().__init__(daemon=True, name="comfy-ws")
+        # The read timeout is how long silence is tolerated before the transport
+        # is pinged. It is a parameter so the quiet path can be exercised in a
+        # test in seconds rather than in the 70 the Pod deserves.
+        self.ws_timeout = ws_timeout
         self.base_url = base_url
         self.client_id = client_id
         self.on_event = on_event
@@ -439,28 +508,42 @@ class ProgressListener(threading.Thread):
     def stop(self):
         self._stop.set()
 
+    # Reconnect quickly. The old ceiling was 30 s, which meant that after a few
+    # drops the socket could be down for half a minute at a time and the
+    # progress that arrived in that window was simply lost.
+    MAX_BACKOFF_SECONDS = 5.0
+
     def run(self):
         backoff = 1.0
         while not self._stop.is_set():
-            ws = WebSocketClient(ws_url_for(self.base_url, self.client_id))
+            ws = WebSocketClient(ws_url_for(self.base_url, self.client_id),
+                                 **({"timeout": self.ws_timeout} if self.ws_timeout else {}))
             try:
                 ws.connect()
                 self.connected = True
                 self.on_state(True, "connected")
                 backoff = 1.0
                 while not self._stop.is_set():
-                    msg = ws.recv_message()
+                    try:
+                        msg = ws.recv_message()
+                    except WebSocketQuiet:
+                        # Nothing arrived, which is normal for the length of an
+                        # encode. Prove the transport rather than assuming the
+                        # worst: a ping that cannot be sent IS a disconnect and
+                        # falls through to the reconnect below.
+                        ws.ping()
+                        continue
                     if msg is None:
                         continue
                     try:
                         self.on_event(json.loads(msg))
                     except ValueError:
                         pass
-            except Exception as e:  # noqa: BLE001 - any failure means "fall back to polling"
+            except Exception as e:  # noqa: BLE001 - a real failure falls back to polling
                 self.connected = False
                 self.on_state(False, str(e))
             finally:
                 ws.close()
             if self._stop.wait(backoff):
                 break
-            backoff = min(backoff * 2, 30.0)
+            backoff = min(backoff * 2, self.MAX_BACKOFF_SECONDS)

@@ -64,6 +64,10 @@ class Generation:
         # miss is a blip; a streak is a forgotten prompt.
         self.misses = 0
         self.first_miss_at = None
+        # True when this object was rebuilt from history rather than submitted
+        # by this process: no WebSocket events will arrive for it, and nothing
+        # about its timing was measured here.
+        self.recovered = False
 
     def _sampler_dict(self):
         """Live sampling rate, so the ETA comes from this run rather than a guess.
@@ -103,6 +107,10 @@ class Generation:
             "expected_source": self.expected_source,
             "phase": self.phase,
             "phase_label": PHASE_LABELS.get(self.phase),
+            # No WebSocket events will arrive for a generation this process did
+            # not submit, so the UI must say it is watching rather than draw a
+            # progress bar it has no data for.
+            "recovered": self.recovered,
             "phase_seconds": dict(self.phase_seconds),
             "sampler": self._sampler_dict(),
         }
@@ -300,6 +308,30 @@ class LongDraftRun:
             return
         if self._cancelled.is_set():
             return
+
+        # Has this segment already been handed to ComfyUI? A resume after a
+        # crash builds a fresh batch with a fresh filename prefix, so nothing in
+        # the prompt links attempt two to attempt one; the link is the segment
+        # itself. Asked of ComfyUI, not of our own rows.
+        try:
+            adopted = self.manager.adopt_existing_segment(self.id, seg.index)
+        except comfy_client.ComfyError as e:
+            seg.status = "error"
+            seg.error = ("ComfyUI の状態を確認できないため、二重投入を避けて停止しました（%s）。"
+                         % str(e)[:200])
+            history.update_long_draft_segment(self.id, seg.index,
+                                              status="error", error=seg.error)
+            return
+        if adopted is not None:
+            seg.batch_id = adopted.batch_id
+            seg.generation_id = adopted.id
+            seg.status = adopted.status if adopted.status in ACTIVE_STATES else "queued"
+            history.update_long_draft_segment(self.id, seg.index, status=seg.status,
+                                              batch_id=seg.batch_id,
+                                              generation_id=seg.generation_id)
+            self._watch(seg, adopted)
+            return
+
         try:
             batch = self.manager.submit_batch(
                 mode=graph.MODE_MOTION_TRACE,
@@ -336,10 +368,18 @@ class LongDraftRun:
                                           batch_id=batch.id, generation_id=gen.id)
         self._persist_manifest()
 
-        # Wait for this segment before submitting the next one. A cancel is
-        # applied by cancel_all(), which removes the queued prompts and
-        # interrupts the running one; this loop just waits for the generation
-        # to become terminal and then stops the run.
+        self._watch(seg, gen)
+
+    def _watch(self, seg, gen):
+        """Wait for one segment's generation, then record what it did.
+
+        Used for a segment this run submitted and for one it adopted, so an
+        adopted attempt is finished, copied and recorded exactly like any other
+        rather than by a second code path.
+        """
+        # A cancel is applied by cancel_all(), which removes the queued prompts
+        # and interrupts the running one; this loop just waits for the
+        # generation to become terminal and then stops the run.
         while gen.status not in SEGMENT_TERMINAL:
             if self.manager._stop.is_set():
                 return
@@ -349,8 +389,12 @@ class LongDraftRun:
         seg.status = gen.status
         seg.cache_result = gen.cache_result
         seg.error = gen.error
-        seg.generation_seconds = (round(gen.finished_at - gen.started_at, 2)
-                                  if gen.started_at and gen.finished_at else None)
+        # Same rule as the generation row: an adopted or recovered attempt was
+        # not timed by this process, so the segment records no duration either.
+        seg.generation_seconds = (
+            None if getattr(gen, "recovered", False)
+            else (round(gen.finished_at - gen.started_at, 2)
+                  if gen.started_at and gen.finished_at else None))
         if gen.status == "done" and gen.output_path:
             seg.output_path = self._keep_a_copy(seg, gen.output_path)
         history.update_long_draft_segment(
@@ -518,6 +562,13 @@ class JobManager:
         self.by_prompt_id = {}     # comfy prompt_id -> gen_id
         self.batches = []          # newest last
         self.long_draft_runs = []  # newest last
+        # True while a stop is being carried out. Nothing new is submitted in
+        # that window: "the Pod stopped and a job went in right afterwards" is a
+        # race that costs a whole session's worth of confusion for no benefit.
+        self._stopping = False
+        # (signature -> batch_id) for the last few submissions, so a double
+        # press of Generate answers with the batch it already made.
+        self._recent_submits = {}
         self.events = []           # recent notices for the UI
         self.ws_connected = False
         self.ws_error = None
@@ -534,13 +585,80 @@ class JobManager:
         self.inputs = {}
 
     # ---------- lifecycle ----------
-    def start(self):
+    def start(self, recover=True):
         config.ensure_dirs()
         self._listener = comfy_client.ProgressListener(
             self.client.base, self.client_id, self._on_ws_event, self._on_ws_state)
         self._listener.start()
         self._poller = threading.Thread(target=self._poll_loop, daemon=True, name="job-poller")
         self._poller.start()
+        if recover:
+            try:
+                self.recover_from_history()
+            except Exception as e:  # noqa: BLE001 - a bad row must not stop the Studio
+                self.notice("warn", "前回の未完了ジョブの読み直しに失敗しました: %s" % str(e)[:200])
+
+    def recover_from_history(self, limit=50):
+        """Pick up work this Studio was watching when it stopped.
+
+        Free, and only free: rows are read, objects are rebuilt, and the poller
+        settles them through reconcile_generation() -- the same path a running
+        Studio uses, so there is no second opinion about what a prompt's state
+        means. Nothing is submitted here. Collecting costs nothing; spending is
+        an operator decision, and a process that spent money by starting would
+        be a worse bug than the one this fixes.
+
+        On 2026-09-07 a segment that had run 524 s was finished on the Pod while
+        the restarted Studio knew nothing about it, and it was recovered by hand.
+        """
+        rows = history.unfinished_generations(limit=limit)
+        by_batch = {}
+        for row in rows:
+            if self.generation(row["id"]):
+                continue
+            by_batch.setdefault(row["batch_id"], []).append(self._adopt_generation_row(row))
+
+        for batch_id, gens in by_batch.items():
+            if self.batch(batch_id) is not None:
+                continue
+            brow = history.get_batch(batch_id) or {}
+            meta = {"prompt": brow.get("prompt"), "mode": brow.get("mode"),
+                    "quality": brow.get("quality"), "duration": brow.get("duration"),
+                    "aspect_ratio": brow.get("aspect_ratio"), "image": brow.get("image"),
+                    "source_video": brow.get("source_video"),
+                    "reference_strength": brow.get("reference_strength"),
+                    "variations": brow.get("variations"),
+                    "long_draft_id": brow.get("long_draft_id"),
+                    "segment_index": brow.get("segment_index"),
+                    "recovered": True,
+                    # No snapshot survives a restart, so every recovered
+                    # generation's cache verdict is UNKNOWN. That is the honest
+                    # answer and _classify_cache already gives it when this is
+                    # missing; it is spelled out here so nothing fills it in.
+                    "cache_before": None}
+            batch = Batch(batch_id, brow.get("kind") or "draft",
+                          brow.get("mode") or "", sorted(gens, key=lambda g: g.idx), meta)
+            batch.created_at = brow.get("created_at") or batch.created_at
+            with self.lock:
+                self.batches.append(batch)
+        self.batches.sort(key=lambda b: b.created_at)
+
+        # The parent/segment structure, so "segment 1 done, 2 running, 3 pending"
+        # survives the restart as that structure and a finished segment is never
+        # generated again.
+        for ld_id in history.long_drafts_with_unfinished_segments():
+            try:
+                self._restore_long_draft(ld_id)
+            except Exception:  # noqa: BLE001 - one bad run must not block the rest
+                continue
+
+        if rows:
+            self.notice("info", "前回の未完了ジョブ %d 件を読み直しました。"
+                                "ComfyUI に残っていれば結果を回収します（新たな生成はしません）。"
+                                % len(rows))
+        return len(rows)
+
+
 
     def shutdown(self):
         self._stop.set()
@@ -693,6 +811,124 @@ class JobManager:
                     self.inputs[uploaded] = entry
             self.notice("info", "%s を ComfyUI に転送しました。" % name)
 
+    # A second identical Generate inside this window is treated as the same
+    # request, not a new one. Long enough to cover a double click or a retried
+    # POST, short enough that deliberately asking again still works.
+    DUPLICATE_SUBMIT_SECONDS = 10.0
+
+    def begin_stop(self):
+        """Close the door before stopping. Returns the previous state."""
+        with self.lock:
+            was, self._stopping = self._stopping, True
+        return was
+
+    def end_stop(self):
+        with self.lock:
+            self._stopping = False
+
+    def _refuse_if_stopping(self):
+        with self.lock:
+            stopping = self._stopping
+        if stopping:
+            raise comfy_client.ComfyUnavailable(
+                "GPU を停止しているところです。停止が終わってから投入してください。")
+
+    @staticmethod
+    def _submit_signature(**kw):
+        """What makes two Generate requests the same request."""
+        return json.dumps(kw, sort_keys=True, default=str)
+
+    def _duplicate_batch(self, signature):
+        """The batch an identical request just produced, if it is still running.
+
+        Only while it is still active: once it has finished, asking again is
+        plainly deliberate and gets its own batch.
+        """
+        now = time.time()
+        with self.lock:
+            for sig, (batch_id, at) in list(self._recent_submits.items()):
+                if now - at > self.DUPLICATE_SUBMIT_SECONDS:
+                    del self._recent_submits[sig]
+            hit = self._recent_submits.get(signature)
+        if not hit:
+            return None
+        batch = self.batch(hit[0])
+        if batch is None:
+            return None
+        if any(g.status in ACTIVE_STATES for g in batch.generations):
+            return batch
+        return None
+
+    def _remember_submit(self, signature, batch_id):
+        with self.lock:
+            self._recent_submits[signature] = (batch_id, time.time())
+
+    def adopt_existing_segment(self, long_draft_id, segment_index):
+        """A generation already submitted for this segment, if ComfyUI still has it.
+
+        A resumed segment gets a fresh batch and a fresh filename prefix, so
+        nothing in the prompt ties attempt two to attempt one -- which is how
+        segment 3 was submitted twice on 2026-09-07 while the first attempt was
+        still running. The link is (long_draft_id, segment_index), and the
+        question is asked of ComfyUI, not of our own database: a row that says
+        "running" proves nothing after a restart.
+
+        Returns an in-memory Generation to watch, or None to submit normally.
+        """
+        for row in history.generations_for_segment(long_draft_id, segment_index):
+            if row.get("status") in ("done", "error", "cancelled"):
+                # A finished attempt is not a reason to skip: the operator asked
+                # for this segment again. Only work still in flight is adopted.
+                if row.get("status") == "done":
+                    return None
+                continue
+            pid = row.get("prompt_id")
+            if not pid:
+                continue
+            try:
+                hist = self.client.history(pid)
+                snapshot = self.client.queue_snapshot()
+            except comfy_client.ComfyError:
+                # Cannot ask, so cannot claim it is gone. Refusing to submit is
+                # the safe side: a duplicate 9-minute segment is worse than a
+                # retry the operator can repeat.
+                raise
+            running, pending = comfy_client.ComfyClient.queue_ids(snapshot)
+            if hist or pid in running or pid in pending:
+                gen = self.generation(row["id"]) or self._adopt_generation_row(row)
+                self.notice("info", "この segment はすでに ComfyUI に投入済みでした。"
+                                    "重複投入せず、そちらを追跡します（%s）。" % row["id"])
+                return gen
+        return None
+
+    def _adopt_generation_row(self, row):
+        """Rebuild an in-memory Generation from a history row and register it.
+
+        Shared by duplicate adoption and startup recovery so there is one way to
+        bring a row back into this process, not two that can drift apart.
+        """
+        try:
+            params = json.loads(row.get("params") or "{}")
+        except (ValueError, TypeError):
+            params = {}
+        gen = Generation(row["id"], row["batch_id"], row.get("idx") or 0,
+                         row.get("seed") or 0, params, {}, row.get("cache_expected"))
+        gen.prompt_id = row.get("prompt_id")
+        gen.status = row.get("status") or "running"
+        gen.queued_at = row.get("created_at") or time.time()
+        gen.started_at = row.get("started_at")
+        # Recovered work carries no measured duration and no cache verdict: the
+        # Studio was not watching, and the time between then and now is not
+        # generation time. Recording a number here would put downtime into the
+        # ETA's history.
+        gen.recovered = True
+        gen.progress_text = "再接続して監視中"
+        with self.lock:
+            self.generations[gen.id] = gen
+            if gen.prompt_id:
+                self.by_prompt_id[gen.prompt_id] = gen.id
+        return gen
+
     def submit_batch(self, *, mode, prompt_text, quality, variations, duration,
                      aspect_ratio, image=None, image_source=None, reference_strength=None,
                      seeds=None, parent_generation=None, kind=None,
@@ -700,6 +936,23 @@ class JobManager:
                      turbo=False, quality_overrides=None, strict_turbo=False,
                      long_draft_id=None, segment_index=None):
         kind = kind or ("final" if quality != "draft" else "draft")
+        self._refuse_if_stopping()
+        # A second identical request inside a few seconds is the same request:
+        # a double click, or a POST the browser retried. Answer with the batch
+        # that already exists rather than paying for it twice.
+        signature = self._submit_signature(
+            mode=mode, prompt=prompt_text, quality=quality, variations=variations,
+            duration=duration, aspect_ratio=aspect_ratio, image=image,
+            source_video=source_video, reference_strength=reference_strength,
+            ref_image_size=ref_image_size, turbo=turbo, kind=kind,
+            parent_generation=parent_generation, seeds=list(seeds) if seeds else None,
+            long_draft_id=long_draft_id, segment_index=segment_index,
+            quality_overrides=quality_overrides)
+        duplicate = self._duplicate_batch(signature)
+        if duplicate is not None:
+            self.notice("warn", "同じ内容の生成が直前に投入されています。"
+                                "重複投入を避け、実行中のものを表示します。")
+            return duplicate
         # Fail fast and once. Without this every variation is submitted, fails
         # on its own, and the operator gets four identical error cards instead
         # of one sentence telling them to start the GPU.
@@ -768,6 +1021,7 @@ class JobManager:
                              source_video=source_video, source_video_meta=source_video_meta,
                              ref_image_size=meta["ref_image_size"],
                              long_draft_id=long_draft_id, segment_index=segment_index)
+        self._remember_submit(signature, batch_id)
         with self.lock:
             self.batches.append(batch)
             for g in gens:
@@ -975,9 +1229,16 @@ class JobManager:
         and fast, and it means the manifest describes real files with real byte
         sizes and real probe results before a single GPU second is spent.
         """
+        self._refuse_if_stopping()
         gate = self.long_draft_available()
         if not gate["available"]:
             raise longdraft.LongDraftError(gate["reason"])
+        # One at a time. Two parents submitting segments into the same ComfyUI
+        # is the "two processes on one cache directory" shape the baseline
+        # forbids, and nothing in this phase needs parallel runs.
+        if self.has_active_long_draft():
+            raise longdraft.LongDraftError(
+                "すでに実行中の長尺Draftがあります。終了か中止を待ってください。")
         if not image:
             raise longdraft.LongDraftError("long draft requires an identity image")
         if not source_video_local or not os.path.exists(source_video_local):
@@ -1079,8 +1340,18 @@ class JobManager:
             raise longdraft.LongDraftError("long draft %s is already running" % ld_id)
         if all(s.status == "done" for s in run.segments):
             raise longdraft.LongDraftError("long draft %s has no unfinished segment" % ld_id)
-        if not self.client.is_alive():
-            raise comfy_client.ComfyUnavailable("ComfyUI is not running")
+        self._refuse_if_stopping()
+        if self.has_active_long_draft():
+            raise longdraft.LongDraftError(
+                "すでに実行中の長尺Draftがあります。終了か中止を待ってください。")
+        # Every check that can refuse happens before the first write. A resume
+        # that fails half way must leave the run exactly as it found it --
+        # otherwise a refused resume costs the finished segments their state.
+        state = self.client.liveness()
+        if state != comfy_client.ComfyClient.LIVE:
+            raise comfy_client.ComfyUnavailable(
+                "ComfyUI が %s のため再開できません。" %
+                ("応答していません" if state == comfy_client.ComfyClient.DEAD else "状態不明"))
         run._cancelled = threading.Event()
         run.error = None
         run.finished_at = None
@@ -1499,9 +1770,13 @@ class JobManager:
         # completion signal, so everything it implies -- including the history
         # row a caller may immediately read back -- must already be true.
         p = gen.params
+        # A generation this process did not watch has no measured duration: the
+        # gap between the Studio stopping and noticing is not generation time,
+        # and writing it down would feed downtime into the ETA's history.
+        measured = None if gen.recovered else round(gen.finished_at - gen.started_at, 2)
         history.update_generation(
             gen.id, status="done", finished_at=gen.finished_at,
-            generation_seconds=round(gen.finished_at - gen.started_at, 2),
+            generation_seconds=measured,
             output_path=dest, output_filename=f["filename"], cache_result=gen.cache_result,
             # Everything the ETA learns from, recorded at completion.
             turbo_enabled=1 if p.get("turbo") else 0,

@@ -82,7 +82,12 @@ def _gpu_status():
             MANAGER.rebind(url)
             BOUND_POD_ID = current_pod
     out["comfy_url"] = MANAGER.client.base if MANAGER else config.comfy_url()
-    out["comfy_ready"] = MANAGER.client.is_alive() if MANAGER else False
+    # Three states, because two cannot express "the question could not be
+    # asked". comfy_ready stays a boolean for everything that already reads it,
+    # and is true only for a positively live ComfyUI.
+    liveness = MANAGER.client.liveness() if MANAGER else comfy_client.ComfyClient.UNKNOWN
+    out["comfy_liveness"] = liveness
+    out["comfy_ready"] = liveness == comfy_client.ComfyClient.LIVE
     if out.get("pod_state") == "RUNNING":
         secs = _running_seconds(out.get("last_started_at"))
         out["session_seconds"] = secs
@@ -307,6 +312,16 @@ def _stop_gpu(force=False):
     GPU. Terminate is not reachable from the Studio at all. "Requested" is not
     "stopped", so the result carries what RunPod says the Pod is afterwards.
     """
+    # Close the door first: a submit that lands between the cancel below and
+    # RunPod reporting EXITED is a job queued at a Pod that is going away.
+    MANAGER.begin_stop()
+    try:
+        return _stop_gpu_inner(force)
+    finally:
+        MANAGER.end_stop()
+
+
+def _stop_gpu_inner(force=False):
     if MANAGER.is_busy() and not force:
         # `needs_force` is the whole point of this refusal: until it existed the
         # UI sent force:false and nothing else, so the branch below -- cancel,

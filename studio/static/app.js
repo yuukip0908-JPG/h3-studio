@@ -432,9 +432,17 @@ async function pollStatus() {
 function renderGpu(g) {
   const chip = $("gpu-chip");
   const st = g.pod_state || "UNKNOWN";
+  /* "unknown" is not "down": while a generation runs, /system_stats answers 502
+     through the RunPod proxy and only /queue is reliable, and a transport
+     failure says nothing about ComfyUI at all. Saying "停止" for either is how
+     a working GPU gets reported as broken. */
+  const JP_LIVENESS = { live: " · ComfyUI 準備OK", dead: " · ComfyUI 停止中",
+                        unknown: " · ComfyUI 状態不明" };
   chip.textContent = g.studio_down
     ? "H3 Studio に接続できません"
-    : "GPU: " + (JP_STATE[st] || st) + (g.comfy_ready ? " · ComfyUI 準備OK" : "");
+    : "GPU: " + (JP_STATE[st] || st)
+      + (g.comfy_liveness ? (JP_LIVENESS[g.comfy_liveness] || "")
+                          : (g.comfy_ready ? " · ComfyUI 準備OK" : ""));
   chip.className = "chip " + (g.studio_down ? "chip-unknown"
     : st === "RUNNING" ? "chip-running"
     : st === "EXITED" || st === "STOPPED" ? "chip-exited" : "chip-unknown");
@@ -663,15 +671,33 @@ function fmtDuration(sec) {
    time against the measured estimate always moves; when real sampler numbers
    arrive we take whichever is further along. Capped below 1 so it never looks
    finished before it is. */
+/* Is there a real step count to draw, or only the knowledge that it is working?
+
+   ComfyUI emits no progress at all during the Qwen3-VL encode -- 75-90 s on a
+   cache MISS, and every Long Draft segment is a MISS -- and a recovered
+   generation gets no events at all. Both used to render as a bar pinned near
+   zero, which reads as "stuck" rather than "working". */
+function genIndeterminate(g) {
+  if (g.status !== "running" && g.status !== "queued" && g.status !== "submitting") return false;
+  return !(g.sampler && g.sampler.max > 1);
+}
+
+function genStateText(g) {
+  if (g.recovered) return "再接続して監視中…";
+  if (g.status === "queued") return g.progress_text || "順番待ち";
+  if (g.status === "submitting") return "投入中…";
+  if (g.phase === "encode") return "エンコード中…";
+  if (g.phase_label) return g.phase_label + "…";
+  return "実行中…";
+}
+
 function genProgress(g, now) {
   if (g.status === "done") return 1;
   if (g.status === "error" || g.status === "cancelled") return 0;
-  let byTime = 0;
-  if (g.started_at && g.expected_seconds) {
-    byTime = (now / 1000 - g.started_at) / g.expected_seconds;
-  }
-  const bySampler = g.sampler && g.sampler.max ? g.sampler.value / g.sampler.max : 0;
-  return Math.max(0, Math.min(0.97, Math.max(byTime, bySampler)));
+  /* Only a measured step count draws a percentage. A time-against-estimate bar
+     is a guess wearing a progress bar's clothes. */
+  if (genIndeterminate(g)) return 0;
+  return Math.max(0, Math.min(0.97, g.sampler.value / g.sampler.max));
 }
 
 /* Remaining seconds, preferring the rate this run is actually achieving. */
@@ -719,6 +745,8 @@ function tickResults() {
   state.batch.generations.forEach((g) => {
     const card = document.querySelector(`.card[data-gen="${g.id}"]`);
     if (!card) return;
+    const wrap = card.querySelector(".bar-progress");
+    if (wrap) wrap.classList.toggle("indeterminate", genIndeterminate(g));
     const bar = card.querySelector(".bar-progress > i");
     if (bar) bar.style.width = Math.round(genProgress(g, now) * 100) + "%";
     const timing = card.querySelector(".timing");
@@ -771,13 +799,14 @@ function renderResults(batch) {
       : (g.status === "error" ? `<span class="tag err">エラー</span>` : "");
     return `<div class="card ${g.selected ? "sel" : ""}" data-gen="${g.id}">
       ${body}
-      <div class="bar-progress"><i style="width:${Math.round(genProgress(g, Date.now()) * 100)}%"></i></div>
+      <div class="bar-progress${genIndeterminate(g) ? " indeterminate" : ""}"><i style="width:${Math.round(genProgress(g, Date.now()) * 100)}%"></i></div>
       <div class="meta">
         <span>#${i + 1} · seed ${g.seed}</span>
         <span>${tag}</span>
       </div>
       <div class="meta">
-        <span class="stage">${esc(g.phase_label ? g.phase_label + " · " : "")}${esc(g.progress_text || g.status)}</span>
+        <span class="stage">${genIndeterminate(g) ? esc(genStateText(g))
+          : esc((g.phase_label ? g.phase_label + " · " : "") + (g.progress_text || g.status))}</span>
         <span class="timing">${genTiming(g, Date.now())}</span>
       </div>
       <div class="acts">

@@ -2921,6 +2921,107 @@ class LongDraftRunTests(StudioTestCase):
         self.assertEqual(after["done_count"], 3)
         self.assertGreater(first, 0)
 
+    # ---- duplicate submission and recovery (Phase 2/3) ----
+
+    def test_a_segment_already_on_comfyui_is_adopted_not_resubmitted(self):
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m))
+        self.assertEqual(run.status, "done")
+        seg = run.segments[2]
+        first_gen = seg.generation_id
+        submitted_before = len(mock_comfy.STATE.submitted)
+
+        # Stage the outage: the segment is back to unfinished here, while
+        # ComfyUI still holds the finished prompt.
+        history.update_long_draft_segment(run.id, 2, status="running")
+        history.update_generation(first_gen, status="running")
+        adopted = m.adopt_existing_segment(run.id, 2)
+        self.assertIsNotNone(adopted, "the in-flight attempt was not found")
+        self.assertEqual(adopted.id, first_gen)
+        self.assertEqual(len(mock_comfy.STATE.submitted), submitted_before,
+                         "adoption must not queue anything")
+
+    def test_a_finished_segment_is_never_adopted_as_in_flight(self):
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m))
+        self.assertIsNone(m.adopt_existing_segment(run.id, 0),
+                          "a completed segment must not block a deliberate rerun")
+
+    def test_two_long_drafts_cannot_run_at_once(self):
+        m = self.make_manager()
+        run = self.start_run(m)
+        try:
+            with self.assertRaises(longdraft.LongDraftError) as cm:
+                self.start_run(m)
+            self.assertIn("実行中", str(cm.exception))
+        finally:
+            m.cancel_all()
+            self.wait_run(run)
+
+    def test_resume_is_refused_while_the_run_is_already_going(self):
+        m = self.make_manager()
+        run = self.start_run(m)
+        try:
+            with self.assertRaises(longdraft.LongDraftError):
+                m.resume_long_draft(run.id)
+        finally:
+            m.cancel_all()
+            self.wait_run(run)
+
+    def test_a_refused_resume_leaves_every_segment_exactly_as_it_was(self):
+        """Check the outside world first, write afterwards: a resume that cannot
+        proceed must not cost the finished segments their state."""
+        m = self.make_manager()
+        run = self.start_run(m)
+        self.assertTrue(wait_until(lambda: run.segments[0].status == "done", 60))
+        m.cancel_all()
+        self.wait_run(run)
+        before = [(s.index, s.status, s.generation_id) for s in run.segments]
+        mock_comfy.STATE.pod_stopped = True
+        try:
+            with self.assertRaises(comfy_client.ComfyUnavailable):
+                m.resume_long_draft(run.id)
+        finally:
+            mock_comfy.STATE.pod_stopped = False
+        self.assertEqual([(s.index, s.status, s.generation_id) for s in run.segments], before)
+        row = history.get_long_draft(run.id)
+        self.assertEqual(row["segments"][0]["status"], "done")
+
+    def test_the_parent_and_its_segments_come_back_after_a_restart(self):
+        m = self.make_manager()
+        run = self.start_run(m)
+        self.assertTrue(wait_until(lambda: run.segments[0].status == "done", 60))
+        m.cancel_all()
+        self.wait_run(run)
+        ld_id = run.id
+        done_gen = run.segments[0].generation_id
+        m.shutdown()
+
+        fresh = jobs.JobManager(comfy=comfy_client.ComfyClient(self.url))
+        self.manager = fresh
+        fresh.start()
+        restored = fresh.long_draft(ld_id)
+        self.assertIsNotNone(restored, "the parent was not restored")
+        d = restored.as_dict()
+        self.assertEqual(d["segment_count"], 3)
+        self.assertEqual(d["segments"][0]["status"], "done")
+        self.assertEqual(d["segments"][0]["generation_id"], done_gen)
+        self.assertTrue(d["resumable"])
+
+    def test_a_finished_segment_is_not_generated_again_on_resume(self):
+        m = self.make_manager()
+        run = self.start_run(m)
+        self.assertTrue(wait_until(lambda: run.segments[0].status == "done", 60))
+        m.cancel_all()
+        self.wait_run(run)
+        keep = run.segments[0].generation_id
+        submitted = len(mock_comfy.STATE.submitted)
+        resumed = m.resume_long_draft(run.id)
+        self.wait_run(resumed)
+        self.assertEqual(resumed.segments[0].generation_id, keep,
+                         "a finished segment was generated again")
+        self.assertLessEqual(len(mock_comfy.STATE.submitted) - submitted, 2)
+
     # ---- the line Long Draft must not cross ----
     def test_final_is_never_split(self):
         """A Final built from a segment is one ordinary generation.
@@ -4026,6 +4127,309 @@ class _FastSleep:
     @staticmethod
     def sleep(_seconds):
         return None
+
+
+# --------------------------------------------------------------------------
+# Reliability Phase 2: nothing is submitted twice.
+class DuplicateSubmissionTests(StudioTestCase):
+    def _generate(self, m, **kw):
+        opts = dict(mode=graph.MODE_PROMPT_CINEMA, prompt_text="same request",
+                    quality="draft", variations=1, duration=2.0,
+                    aspect_ratio=graph.ASPECT_RATIOS[0])
+        opts.update(kw)
+        return m.submit_batch(**opts)
+
+    def test_pressing_generate_twice_makes_one_job(self):
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 6.0
+        first = self._generate(m)
+        second = self._generate(m)
+        self.assertIs(second, first, "the second press created a second batch")
+        self.assertEqual(len(mock_comfy.STATE.submitted), 1)
+
+    def test_asking_again_after_it_finished_is_a_new_job(self):
+        """Deduplication is for a double press, not for refusing a rerun."""
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 0.2
+        first = self.wait_batch(self._generate(m))
+        second = self._generate(m)
+        self.assertIsNot(second, first)
+        self.assertEqual(len(mock_comfy.STATE.submitted), 2)
+
+    def test_a_different_request_is_never_deduplicated(self):
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 6.0
+        a = self._generate(m)
+        b = self._generate(m, prompt_text="a different prompt")
+        self.assertIsNot(a, b)
+        self.assertEqual(len(mock_comfy.STATE.submitted), 2)
+
+    def test_nothing_is_submitted_while_a_stop_is_being_carried_out(self):
+        """"The Pod stopped and a job went in right afterwards" is a race worth
+        closing, not diagnosing later."""
+        m = self.make_manager()
+        m.begin_stop()
+        try:
+            with self.assertRaises(comfy_client.ComfyUnavailable):
+                self._generate(m)
+        finally:
+            m.end_stop()
+        self.assertEqual(mock_comfy.STATE.submitted, [])
+        self._generate(m)          # ...and it works again once the stop is done
+        self.assertEqual(len(mock_comfy.STATE.submitted), 1)
+
+
+# --------------------------------------------------------------------------
+# Reliability Phase 3: a restarted Studio picks its work back up, for free.
+class StartupRecoveryTests(StudioTestCase):
+    def _fresh_manager(self):
+        """A new process's view: same database, empty memory."""
+        m = jobs.JobManager(comfy=comfy_client.ComfyClient(self.url))
+        self.manager = m
+        m.start()
+        return m
+
+    def _submit_and_forget(self, seconds=6.0, variations=1):
+        first = jobs.JobManager(comfy=comfy_client.ComfyClient(self.url))
+        first.start(recover=False)
+        mock_comfy.STATE.job_seconds = seconds
+        batch = first.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="recover me",
+                                   quality="draft", variations=variations, duration=2.0,
+                                   aspect_ratio=graph.ASPECT_RATIOS[0])
+        gens = list(batch.generations)
+        wait_until(lambda: all(g.prompt_id for g in gens), 10)
+        first.shutdown()          # the Studio goes away mid-flight
+        return batch, gens
+
+    def test_a_running_job_is_picked_back_up_after_a_restart(self):
+        _batch, gens = self._submit_and_forget(seconds=6.0)
+        gen = gens[0]
+        history.update_generation(gen.id, status="running")
+        m = self._fresh_manager()
+        self.assertIsNotNone(m.generation(gen.id), "the job was not recovered")
+        self.assertTrue(m.generation(gen.id).recovered)
+        self.assertIsNotNone(m.batch(gen.batch_id), "its batch must render too")
+        self.assertEqual(len(mock_comfy.STATE.submitted), 1,
+                         "recovery must not submit anything")
+
+    def test_a_job_comfyui_already_finished_is_collected_after_a_restart(self):
+        """The 524 s segment that was recovered by hand on 2026-09-07."""
+        _batch, gens = self._submit_and_forget(seconds=0.3)
+        gen = gens[0]
+        self.assertTrue(wait_until(
+            lambda: mock_comfy.STATE.history.get(gen.prompt_id), 20))
+        history.update_generation(gen.id, status="running", output_path=None)
+        m = self._fresh_manager()
+        recovered = m.generation(gen.id)
+        self.assertIsNotNone(recovered)
+        self.assertTrue(wait_until(lambda: recovered.status == "done", 20),
+                        "a finished job was not collected")
+        row = history.get_generation(gen.id)
+        self.assertEqual(row["status"], "done")
+        self.assertTrue(row["output_path"] and os.path.exists(row["output_path"]))
+
+    def test_recovered_work_records_no_duration_and_no_cache_verdict(self):
+        """The Studio was not watching. The gap between then and now is not
+        generation time, and no cache snapshot survived the restart."""
+        _batch, gens = self._submit_and_forget(seconds=0.3)
+        gen = gens[0]
+        self.assertTrue(wait_until(lambda: mock_comfy.STATE.history.get(gen.prompt_id), 20))
+        history.update_generation(gen.id, status="running", output_path=None,
+                                  generation_seconds=None, cache_result=None)
+        m = self._fresh_manager()
+        recovered = m.generation(gen.id)
+        self.assertTrue(wait_until(lambda: recovered.status == "done", 20))
+        row = history.get_generation(gen.id)
+        self.assertIsNone(row["generation_seconds"],
+                          "a duration spanning the Studio's downtime was invented")
+        self.assertEqual(row["cache_result"], "UNKNOWN")
+
+    def test_a_submitting_row_is_matched_by_its_filename_prefix(self):
+        """The crash window: ComfyUI has the prompt, the Studio never kept the id."""
+        _batch, gens = self._submit_and_forget(seconds=6.0)
+        gen = gens[0]
+        real_pid = gen.prompt_id
+        history.update_generation(gen.id, status="submitting", prompt_id=None)
+        m = self._fresh_manager()
+        recovered = m.generation(gen.id)
+        self.assertIsNotNone(recovered, "the submitting row was not recovered")
+        self.assertTrue(wait_until(lambda: recovered.prompt_id == real_pid, 15),
+                        "the prompt was never matched back by its filename prefix")
+        self.assertEqual(history.get_generation(gen.id)["prompt_id"], real_pid)
+
+    def test_a_job_comfyui_never_heard_of_is_not_failed_on_sight(self):
+        _batch, gens = self._submit_and_forget(seconds=6.0)
+        gen = gens[0]
+        history.update_generation(gen.id, status="running")
+        with mock_comfy.STATE.lock:
+            mock_comfy.STATE.history.pop(gen.prompt_id, None)
+            mock_comfy.STATE.jobs.pop(gen.prompt_id, None)
+            if gen.prompt_id in mock_comfy.STATE.pending:
+                mock_comfy.STATE.pending.remove(gen.prompt_id)
+            if mock_comfy.STATE.running == gen.prompt_id:
+                mock_comfy.STATE.running = None
+        m = self._fresh_manager()
+        recovered = m.generation(gen.id)
+        self.assertEqual(m.reconcile_generation(recovered), "live")
+        self.assertNotEqual(recovered.status, "error")
+        recovered.first_miss_at -= m.RECONCILE_CONFIRM_SECONDS + 1
+        self.assertEqual(m.reconcile_generation(recovered), "error")
+
+    def test_recovery_never_submits_anything(self):
+        _batch, gens = self._submit_and_forget(seconds=6.0)
+        history.update_generation(gens[0].id, status="running")
+        before = len(mock_comfy.STATE.submitted)
+        self._fresh_manager()
+        time.sleep(1.0)
+        self.assertEqual(len(mock_comfy.STATE.submitted), before,
+                         "starting the Studio spent GPU time")
+
+
+# --------------------------------------------------------------------------
+# Reliability Phase 4: what "ComfyUI is up" actually means, and a socket that is
+# quiet rather than dead.
+class LivenessTests(StudioTestCase):
+    def test_a_busy_comfyui_is_live_even_when_system_stats_502s(self):
+        """Measured on the Pod: during a generation /system_stats answered 502
+        on every attempt while /queue answered 200 in ~180 ms."""
+        m = self.make_manager()
+        mock_comfy.STATE.fail_paths = {"/system_stats"}
+        try:
+            self.assertEqual(m.client.liveness(), comfy_client.ComfyClient.LIVE)
+            self.assertTrue(m.client.is_alive())
+        finally:
+            mock_comfy.STATE.fail_paths = set()
+
+    def test_queue_failing_but_system_stats_answering_is_still_live(self):
+        m = self.make_manager()
+        mock_comfy.STATE.fail_paths = {"/queue"}
+        try:
+            self.assertEqual(m.client.liveness(), comfy_client.ComfyClient.LIVE)
+        finally:
+            mock_comfy.STATE.fail_paths = set()
+
+    def test_both_routes_erroring_is_dead(self):
+        m = self.make_manager()
+        mock_comfy.STATE.fail_paths = {"/queue", "/system_stats"}
+        try:
+            self.assertEqual(m.client.liveness(), comfy_client.ComfyClient.DEAD)
+            self.assertFalse(m.client.is_alive())
+        finally:
+            mock_comfy.STATE.fail_paths = set()
+
+    def test_a_stopped_pod_is_dead_not_unknown(self):
+        """The proxy positively answers that the Pod is not there."""
+        m = self.make_manager()
+        mock_comfy.STATE.pod_stopped = True
+        try:
+            self.assertEqual(m.client.liveness(), comfy_client.ComfyClient.DEAD)
+        finally:
+            mock_comfy.STATE.pod_stopped = False
+
+    def test_a_network_failure_is_unknown_not_dead(self):
+        """Nothing answered at all, so nothing is known -- and unknown must never
+        be rendered as "ComfyUI is down"."""
+        client = comfy_client.ComfyClient("http://127.0.0.1:1", timeout=2)
+        self.assertEqual(client.liveness(), comfy_client.ComfyClient.UNKNOWN)
+        self.assertFalse(client.is_alive())
+
+    def test_the_status_payload_carries_all_three_states(self):
+        m = self.make_manager()
+        self.assertIn(m.client.liveness(),
+                      (comfy_client.ComfyClient.LIVE, comfy_client.ComfyClient.DEAD,
+                       comfy_client.ComfyClient.UNKNOWN))
+
+
+class WebSocketQuietTests(StudioTestCase):
+    def test_silence_past_the_read_timeout_is_not_a_disconnect(self):
+        """ComfyUI sends nothing during the Qwen3-VL encode -- 75-90 s on a cache
+        MISS, and every Long Draft segment is a MISS."""
+        url = comfy_client.ws_url_for(self.url, "quiet-client")
+        ws = comfy_client.WebSocketClient(url, timeout=1).connect()
+        try:
+            ws.recv_message()                       # the mock's opening status frame
+            with self.assertRaises(comfy_client.WebSocketQuiet):
+                ws.recv_message()
+            # The socket is still usable: silence proved nothing about it.
+            ws.ping()
+            mock_comfy.STATE.broadcast({"type": "progress", "data": {"value": 4, "max": 12}})
+            msg = None
+            for _ in range(5):
+                try:
+                    msg = ws.recv_message()
+                except comfy_client.WebSocketQuiet:
+                    continue
+                if msg:
+                    break
+            self.assertIsNotNone(msg, "the connection did not survive the silence")
+            self.assertEqual(json.loads(msg)["data"]["max"], 12)
+        finally:
+            ws.close()
+
+    def test_a_listener_keeps_its_connection_through_a_quiet_stretch(self):
+        states = []
+        listener = comfy_client.ProgressListener(
+            self.url, "quiet-listener", lambda m: None,
+            lambda ok, detail: states.append(ok), ws_timeout=1)
+        listener.start()
+        try:
+            self.assertTrue(wait_until(lambda: states and states[0] is True, 10))
+            time.sleep(2.5)                          # well past the read timeout
+            self.assertEqual(states.count(False), 0,
+                             "a quiet socket was reported as disconnected")
+            self.assertTrue(listener.connected)
+        finally:
+            listener.stop()
+
+    def test_a_real_failure_reconnects_quickly(self):
+        """A dead endpoint must be retried within seconds, not after half a
+        minute: the old ceiling swallowed the progress that followed a drop."""
+        self.assertEqual(comfy_client.ProgressListener.MAX_BACKOFF_SECONDS, 5.0)
+        states = []
+        listener = comfy_client.ProgressListener(
+            "http://127.0.0.1:1", "dead-listener", lambda m: None,
+            lambda ok, detail: states.append(ok))
+        listener.start()
+        try:
+            self.assertTrue(wait_until(lambda: states.count(False) >= 2, 12),
+                            "the listener did not retry")
+            self.assertFalse(listener.connected)
+        finally:
+            listener.stop()
+
+
+class ProgressHonestyTests(StudioTestCase):
+    def test_a_generation_with_no_step_count_offers_none(self):
+        gen = jobs.Generation("g_p", "b_p", 0, 1, {}, {}, "MISS")
+        gen.status = "running"
+        gen.phase = "encode"
+        self.assertIsNone(gen.as_dict()["sampler"],
+                          "no measured steps must mean no sampler payload")
+        self.assertFalse(gen.as_dict()["recovered"])
+
+    def test_a_recovered_generation_says_so_in_its_payload(self):
+        m = self.make_manager()
+        history.create_batch("b_r", kind="draft", mode="prompt_cinema", prompt="p")
+        history.create_generation("g_r", "b_r", 0, 1, {"filename_prefix": "video/x"})
+        history.update_generation("g_r", status="running")
+        row = history.get_generation("g_r")
+        gen = m._adopt_generation_row(row)
+        self.assertTrue(gen.as_dict()["recovered"])
+        self.assertEqual(gen.progress_text, "再接続して監視中")
+
+    def test_the_ui_never_draws_a_percentage_it_did_not_measure(self):
+        """A source check: the bug lives in the front end and nothing in the
+        Python suite can see it."""
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "studio", "static", "app.js")
+        with open(path, "r", encoding="utf-8") as f:
+            src = f.read()
+        body = src.split("function genProgress(")[1].split("\n}")[0]
+        self.assertIn("genIndeterminate(g)", body,
+                      "genProgress still draws a bar without a step count")
+        self.assertNotIn("expected_seconds", body,
+                         "elapsed-against-estimate is a guess wearing a progress bar")
+        self.assertIn("indeterminate", src.split("function renderResults(")[1][:2000])
 
 
 if __name__ == "__main__":

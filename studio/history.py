@@ -426,6 +426,52 @@ def long_draft_for_batch(batch_id):
     return row["long_draft_id"], row["segment_index"]
 
 
+def generations_for_segment(long_draft_id, segment_index):
+    """Every generation ever submitted for one Long Draft segment, newest first.
+
+    A resumed segment gets a fresh batch and a fresh filename prefix, so the
+    only thing tying a second attempt to the first is this pair. On 2026-09-07
+    that link did not exist and segment 3 was submitted twice.
+    """
+    rows = connect().execute(
+        "SELECT g.* FROM generations g JOIN batches b ON b.id = g.batch_id"
+        " WHERE b.long_draft_id = ? AND b.segment_index = ?"
+        " ORDER BY g.created_at DESC", (long_draft_id, segment_index)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def unfinished_generations(limit=100):
+    """Generations this Studio never saw finish, newest first.
+
+    "cancelled" is excluded on purpose even though cancel_all can leave
+    finished_at NULL: it is a terminal status and re-adopting it would undo an
+    operator's decision. Only the three states that mean "work may still be on
+    the Pod" are returned.
+    """
+    rows = connect().execute(
+        "SELECT g.*, b.mode, b.long_draft_id, b.segment_index"
+        " FROM generations g JOIN batches b ON b.id = g.batch_id"
+        " WHERE g.status IN ('submitting','queued','running')"
+        " ORDER BY g.created_at DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def long_drafts_with_unfinished_segments(limit=10):
+    """Parents that still have a segment which is not done, newest first.
+
+    "not done" rather than "pending/queued/running": a run that was cancelled
+    or failed has its unfinished segments swept to 'cancelled', and that is
+    exactly the run an operator comes back to resume. Restricting this to the
+    active three left a cancelled Long Draft unrestorable after a restart.
+    """
+    rows = connect().execute(
+        "SELECT d.id FROM long_drafts d"
+        " WHERE EXISTS (SELECT 1 FROM long_draft_segments s"
+        "               WHERE s.long_draft_id = d.id AND s.status != 'done')"
+        " ORDER BY d.created_at DESC LIMIT ?", (limit,)).fetchall()
+    return [r["id"] for r in rows]
+
+
 def export_batch_metadata(batch_id, dest_dir):
     """Write the full provenance of one batch next to its exported videos."""
     batch = get_batch(batch_id)

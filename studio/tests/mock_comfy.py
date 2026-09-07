@@ -80,6 +80,11 @@ class MockState:
         self.loras = []
         self.submitted = []        # every api prompt we received, for assertions
         self.freed = []            # every POST /free, for assertions
+        # Paths that answer 502 while everything else works. Measured on the Pod
+        # 2026-09-07: during a generation /system_stats returned 502 through the
+        # RunPod proxy on every attempt while /queue answered 200, so a liveness
+        # probe that only asked system_stats called a working ComfyUI dead.
+        self.fail_paths = set()
         # Real ComfyUI drains its prompt queue with a SINGLE worker: job N+1
         # does not start until job N has finished. That serialisation is what
         # makes variation 1 a MISS and variations 2-4 real cache HITs, so the
@@ -353,10 +358,24 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     # ---- GET ----
+    def _fail_path_gate(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path not in STATE.fail_paths:
+            return False
+        body = b"<html><body>502 Bad Gateway</body></html>"
+        self.send_response(502)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
     def do_GET(self):
         if not self._cloudflare_gate():
             return
         if not self._pod_stopped_gate():
+            return
+        if self._fail_path_gate():
             return
         u = urllib.parse.urlparse(self.path)
         path, q = u.path, urllib.parse.parse_qs(u.query)
