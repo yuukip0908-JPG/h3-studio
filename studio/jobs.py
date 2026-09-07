@@ -249,7 +249,31 @@ class LongDraftRun:
             self.status = "error"
             self.manager.notice("error", "長尺Draft %s: %s" % (self.id, self.error[:200]))
 
+    # ComfyUI's worker is woken by set_flag() and acts on the unload before it
+    # takes the next queue item -- but only if the item is not already there.
+    # Submitting immediately would race it into the wrong order, so give the
+    # unload a moment to land. It is seconds against an eight-minute segment.
+    FREE_SETTLE_SECONDS = 2.0
+
     def _run_segment(self, seg):
+        # Before, not after: the point is that this segment starts from a clean
+        # process rather than on top of the previous segment's staged weights.
+        #
+        # Every early return here leaves the segment "pending"; _finish() sweeps
+        # it to "cancelled". STOP has to win in this window too -- waiting on
+        # the cancel event rather than sleeping is what makes a cancel pressed
+        # between two segments stop the run instead of being swallowed and the
+        # next segment queued anyway.
+        if self._cancelled.is_set():
+            return
+        if self.manager.release_models():
+            if self._cancelled.wait(self.FREE_SETTLE_SECONDS):
+                return
+        else:
+            self.manager.notice("warn", "ComfyUI のモデル解放（/free）に失敗しました。"
+                                        "segment を続けますが、メモリ不足で落ちる可能性があります。")
+        if self._cancelled.is_set():
+            return
         try:
             batch = self.manager.submit_batch(
                 mode=graph.MODE_MOTION_TRACE,
@@ -816,6 +840,24 @@ class JobManager:
                               "ffmpeg を使います（brew install ffmpeg）。"}
         self._ffmpeg_ok = True
         return {"available": True, "reason": None}
+
+    def release_models(self):
+        """Unload ComfyUI's staged models. Best effort -- never fails a run.
+
+        Long Draft is the reason this exists. Every segment is a different
+        reference clip, so every segment is a cache MISS, so every segment
+        re-stages the 25.9 GB Qwen3-VL encoder on top of the 20 GB diffusion
+        model. Measured on the Pod 2026-09-07: three consecutive MISSes in one
+        ComfyUI process exceeded the container's 57.7 GiB memory limit and the
+        cgroup OOM killer took ComfyUI out between segments 2 and 3
+        (memory.events oom_kill 1). The baseline never hit this because its
+        pattern is one MISS followed by HITs.
+        """
+        try:
+            self.client.free_models()
+            return True
+        except comfy_client.ComfyError:
+            return False
 
     def long_draft(self, ld_id):
         with self.lock:

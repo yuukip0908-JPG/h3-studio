@@ -2540,11 +2540,14 @@ class LongDraftRunTests(StudioTestCase):
         super().setUp()
         self.src = _make_source_video(os.path.join(self.tmp, "src18.mp4"), seconds=18)
 
-    def start_run(self, m, **kw):
+    def _identity(self, m):
         img = os.path.join(self.tmp, "identity.png")
         with open(img, "wb") as f:
             f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 128)
-        identity, _ = m.upload_source_image(img)
+        return m.upload_source_image(img)[0]
+
+    def start_run(self, m, **kw):
+        identity = self._identity(m)
         video, _, meta = m.upload_source_video(self.src)
         opts = dict(prompt_text=self.PROMPT, image=identity, source_video=video,
                     source_video_local=self.src, source_video_meta=meta,
@@ -2694,6 +2697,57 @@ class LongDraftRunTests(StudioTestCase):
         self.assertIn("preview.mp4", names)
         self.assertIn("segment_001.mp4", names)
         self.assertIn("%s_source_001.mp4" % run.id, names)
+
+    # ---- memory between segments ----
+    def test_models_are_unloaded_before_every_segment(self):
+        """Measured on the Pod: three consecutive MISSes OOM-killed ComfyUI.
+
+        Every segment feeds a different reference clip, so every segment is a
+        cache MISS and re-stages the 25.9 GB encoder on top of the 20 GB model.
+        The container's limit is 57.7 GiB, and the cgroup OOM killer took
+        ComfyUI out between segments 2 and 3. Freeing first is what stops that,
+        so it has to happen before each segment, not after.
+        """
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m))
+        self.assertEqual(run.status, "done")
+        self.assertGreaterEqual(len(mock_comfy.STATE.freed), 3,
+                                "one /free per segment at least")
+        for call in mock_comfy.STATE.freed:
+            self.assertTrue(call["body"].get("unload_models"))
+            self.assertTrue(call["body"].get("free_memory"))
+        # ...and each one lands BEFORE that segment is queued, not after it.
+        for seg in run.segments:
+            row = history.get_generation(seg.generation_id)
+            self.assertTrue(any(f["at"] < row["created_at"] for f in mock_comfy.STATE.freed),
+                            "segment %d was queued with nothing freed first" % seg.index)
+
+    def test_a_failed_free_warns_but_does_not_stop_the_run(self):
+        """An unload that cannot be asked for is a warning, not a lost run."""
+        m = self.make_manager()
+        real = m.client.free_models
+        m.client.free_models = lambda *a, **k: (_ for _ in ()).throw(
+            comfy_client.ComfyError("free unavailable"))
+        try:
+            run = self.wait_run(self.start_run(m))
+        finally:
+            m.client.free_models = real
+        self.assertEqual(run.status, "done")
+        self.assertTrue(any("free" in e["text"] or "解放" in e["text"] for e in m.events),
+                        "the operator is told the memory was not released")
+
+    def test_an_ordinary_generation_never_frees(self):
+        """Only Long Draft pays the reload cost; the normal flow is untouched."""
+        m = self.make_manager()
+        identity = self._identity(m)
+        video, _sub, meta = m.upload_source_video(self.src)
+        batch = m.submit_batch(mode=graph.MODE_MOTION_TRACE, prompt_text=self.PROMPT,
+                               quality="draft", variations=2, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0], image=identity,
+                               source_video=video, source_video_meta=meta)
+        self.wait_batch(batch)
+        self.assertEqual(mock_comfy.STATE.freed, [],
+                         "a normal batch must not unload models between variations")
 
     # ---- failure, cancel, resume ----
     def test_a_failing_segment_stops_the_run_instead_of_burning_the_rest(self):

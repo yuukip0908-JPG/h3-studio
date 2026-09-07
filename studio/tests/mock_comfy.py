@@ -79,6 +79,7 @@ class MockState:
         # that COMBO and rejects the whole prompt when the file is absent.
         self.loras = []
         self.submitted = []        # every api prompt we received, for assertions
+        self.freed = []            # every POST /free, for assertions
         # Real ComfyUI drains its prompt queue with a SINGLE worker: job N+1
         # does not start until job N has finished. That serialisation is what
         # makes variation 1 a MISS and variations 2-4 real cache HITs, so the
@@ -450,6 +451,17 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.uploads[name] = len(raw)
             return self._json({"name": name, "subfolder": "", "type": "input"})
 
+        if path == "/free":
+            # Real ComfyUI (169fcf35) sets queue flags here and answers 200 with
+            # an empty body; the worker acts on them. Record the call so a test
+            # can assert Long Draft frees between segments.
+            try:
+                body = json.loads(raw) if raw else {}
+            except ValueError:
+                body = {}
+            with STATE.lock:
+                STATE.freed.append({"at": time.time(), "body": body})
+            return self._bytes(b"", "text/plain")
         if path == "/interrupt":
             return self._json({})
 

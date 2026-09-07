@@ -118,6 +118,21 @@ class ComfyClient:
         except ComfyError:
             return False
 
+    def free_models(self, unload_models=True, free_memory=True):
+        """Ask ComfyUI to unload models and collect, via its own /free route.
+
+        Verified against the pinned ComfyUI 169fcf35: /free sets flags on the
+        prompt queue and set_flag() calls not_empty.notify(), which wakes the
+        idle worker out of q.get() so the flags are acted on straight away --
+        unload_all_models() plus e.reset() plus a forced gc. It touches only
+        in-memory models; CLIPCached's on-disk cache is untouched, so cache
+        HITs are unaffected.
+        """
+        self._json("/free", payload={"unload_models": bool(unload_models),
+                                     "free_memory": bool(free_memory)},
+                   method="POST", timeout=20)
+        return True
+
     def object_info(self, node=None):
         return self._json("/object_info" + ("/" + node if node else ""))
 
