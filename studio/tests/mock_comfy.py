@@ -95,7 +95,10 @@ class MockState:
             if item[0] in self.cancelled:
                 continue
             try:
-                run_job(*item)
+                # Pass our own state, not the module global: a worker left over
+                # from a finished test would otherwise write its cache entries
+                # and history into the NEXT test's state.
+                run_job(item[0], item[1], state=self)
             except Exception:  # noqa: BLE001 - a mock job must not kill the worker
                 pass
 
@@ -190,8 +193,9 @@ def fingerprint_of(prompt):
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
-def run_job(prompt_id, prompt):
+def run_job(prompt_id, prompt, state=None):
     """Simulate execution and emit the same WebSocket events ComfyUI does."""
+    STATE = state if state is not None else globals()["STATE"]
     time.sleep(0.05)
     STATE.broadcast({"type": "execution_start", "data": {"prompt_id": prompt_id}})
 

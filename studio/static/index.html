@@ -66,6 +66,22 @@
       <p class="hint">「高精度」は人物をより正確に再現しますが、VRAM を約1.8倍使います（実測 53 GiB）。48GB の GPU では遅くなることがあります。ふだんは「標準」で十分です。</p>
     </div>
 
+    <!-- Long Draft. Motion Trace only: it works by cutting the reference
+         video, and the other two modes have no reference video. It is a Draft
+         tool -- Final is never split. -->
+    <div class="field" id="field-longdraft" hidden>
+      <label>長尺Draft <span class="dim">長い動画を短く分けて速く確認する</span></label>
+      <div class="seg" id="longdraft-seg">
+        <button data-longdraft="off" class="on">OFF<span class="sub">これまでどおり1本で生成</span></button>
+        <button data-longdraft="on">ON<span class="sub">分割して速く確認</span></button>
+      </div>
+      <p class="hint" id="longdraft-unavailable" hidden></p>
+      <div id="longdraft-plan" hidden>
+        <div class="ld-plan" id="ld-plan-body"></div>
+        <p class="hint warn" id="ld-warning"></p>
+      </div>
+    </div>
+
     <div class="field">
       <label>プロンプト（どんな動画にしたいか）</label>
       <textarea id="prompt" rows="4" placeholder="どんな動きにしたいかを書いてください"></textarea>
@@ -106,7 +122,7 @@
         <label>縦横比</label>
         <select id="aspect"></select>
       </div>
-      <div class="field">
+      <div class="field" id="field-duration">
         <label>長さ（秒）</label>
         <input type="number" id="duration" value="2" min="0.5" max="20" step="0.5">
       </div>
@@ -136,7 +152,7 @@
       <p class="hint" id="draftq-hint"></p>
     </div>
 
-    <div class="field">
+    <div class="field" id="field-variations">
       <label>生成本数</label>
       <div class="seg" id="var-seg">
         <button data-var="1">1</button>
@@ -154,6 +170,11 @@
     <h2>3 · 結果</h2>
     <p class="hint" id="batch-progress" hidden></p>
     <div id="results" class="grid"></div>
+
+    <!-- One Long Draft, its segments, and the joined preview. Separate from
+         the variation grid on purpose: these are consecutive slices of one
+         clip, not four candidates for the same clip. -->
+    <div id="longdraft-run" class="ld-run" hidden></div>
 
     <div id="finish" hidden>
       <h2>4 · 選んだ1本を仕上げる</h2>

@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 
-from . import comfy_client, config, graph, history, mediaprobe
+from . import comfy_client, config, graph, history, longdraft, mediaprobe
 
 ACTIVE_STATES = ("queued", "running")
 
@@ -130,6 +130,335 @@ class Batch:
                 "remaining_seconds": round(remaining) if remaining else 0}
 
 
+SEGMENT_TERMINAL = ("done", "error", "cancelled")
+
+
+class LongDraftSegment:
+    """One slice of the source video and the generation made from it."""
+
+    def __init__(self, plan, seed):
+        self.index = plan["index"]
+        self.start = plan["start"]
+        self.end = plan["end"]
+        self.duration = plan["duration"]
+        self.frames = plan.get("frames")
+        self.seed = seed
+        self.status = "pending"          # pending|queued|running|done|cancelled|error
+        self.segment_file = None         # the cut source clip on this Mac
+        self.segment_bytes = None
+        self.segment_probe = None
+        self.comfy_video = None          # ComfyUI input filename for that clip
+        self.batch_id = None
+        self.generation_id = None
+        self.output_path = None          # copy kept beside the manifest
+        self.generation_seconds = None
+        self.cache_result = None
+        self.expected_seconds = None
+        self.error = None
+
+    def as_dict(self, gen=None):
+        d = {"index": self.index, "start": self.start, "end": self.end,
+             "duration": self.duration, "frames": self.frames, "seed": self.seed,
+             "status": self.status, "segment_file": self.segment_file,
+             "segment_bytes": self.segment_bytes, "segment_probe": self.segment_probe,
+             "comfy_video": self.comfy_video, "batch_id": self.batch_id,
+             "generation_id": self.generation_id, "output_path": self.output_path,
+             "generation_seconds": self.generation_seconds,
+             "cache_result": self.cache_result, "error": self.error,
+             "expected_seconds": self.expected_seconds,
+             "output_url": "/api/video/%s" % self.generation_id if self.generation_id else None,
+             "progress": 1.0 if self.status == "done" else 0.0,
+             "progress_text": None, "sampler": None}
+        if gen is not None:
+            live = gen.as_dict()
+            d["progress"] = live["progress"]
+            d["progress_text"] = live["progress_text"]
+            d["sampler"] = live["sampler"]
+            d["output_url"] = live["output_url"] or d["output_url"]
+        return d
+
+
+class LongDraftRun:
+    """A parent Motion Trace split into segments, generated one after another.
+
+    Sequential on purpose. The segments share one ComfyUI, one Pod and one
+    network volume, and two H3 prompts at once is exactly the "two processes on
+    one cache directory" the baseline forbids -- so the next segment is only
+    submitted after the previous one is terminal.
+    """
+
+    def __init__(self, manager, ld_id, segments, inherit, meta):
+        self.manager = manager
+        self.id = ld_id
+        self.segments = segments
+        self.inherit = inherit
+        self.meta = meta
+        self.created_at = time.time()
+        self.finished_at = None
+        self.status = "planned"          # planned|running|done|cancelled|error
+        self.error = None
+        self.preview_path = None
+        self.preview_mode = None
+        self._cancelled = threading.Event()
+        self._thread = None
+
+    # ---- lifecycle ----
+    def start(self):
+        self.status = "running"
+        history.update_long_draft(self.id, status="running")
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="long-draft-%s" % self.id)
+        self._thread.start()
+        return self
+
+    def cancel(self):
+        """Stop the run. Finished segments are never touched."""
+        self._cancelled.set()
+
+    @property
+    def cancelled(self):
+        return self._cancelled.is_set()
+
+    def is_active(self):
+        return self.status in ("planned", "running")
+
+    def segment(self, index):
+        for seg in self.segments:
+            if seg.index == index:
+                return seg
+        return None
+
+    # ---- the sequential loop ----
+    def _run(self):
+        try:
+            for seg in self.segments:
+                if seg.status == "done":
+                    continue            # resume: never regenerate a finished segment
+                if self._cancelled.is_set():
+                    break
+                self._run_segment(seg)
+                if seg.status == "error":
+                    self.error = seg.error
+                    break
+                if seg.status == "cancelled" or self._cancelled.is_set():
+                    break
+            self._finish()
+        except Exception as e:            # noqa: BLE001 - a run must never kill the thread
+            self.error = str(e)[:2000]
+            self._persist_parent("error")
+            self.status = "error"
+            self.manager.notice("error", "長尺Draft %s: %s" % (self.id, self.error[:200]))
+
+    def _run_segment(self, seg):
+        try:
+            batch = self.manager.submit_batch(
+                mode=graph.MODE_MOTION_TRACE,
+                prompt_text=self.inherit["prompt"],
+                quality=self.inherit["quality"],
+                variations=1,
+                duration=seg.duration,
+                aspect_ratio=self.inherit["aspect_ratio"],
+                image=self.inherit["image"],
+                image_source=self.inherit.get("image_source"),
+                reference_strength=self.inherit.get("reference_strength"),
+                source_video=seg.comfy_video,
+                source_video_meta=seg.segment_probe,
+                ref_image_size=self.inherit.get("ref_image_size") or "match",
+                # Motion Trace has no Turbo LoRA in this project (the Ref2VA
+                # turbo is the 4-step version), so this is not a choice to make.
+                turbo=False,
+                quality_overrides=self.inherit.get("quality_overrides"),
+                seeds=[seg.seed],
+                kind="draft",
+                long_draft_id=self.id, segment_index=seg.index)
+        except Exception as e:            # noqa: BLE001 - report, do not crash the run
+            seg.status = "error"
+            seg.error = str(e)[:2000]
+            history.update_long_draft_segment(self.id, seg.index,
+                                              status="error", error=seg.error)
+            return
+        gen = batch.generations[0]
+        seg.batch_id = batch.id
+        seg.generation_id = gen.id
+        seg.status = "queued"
+        seg.expected_seconds = gen.expected_seconds
+        history.update_long_draft_segment(self.id, seg.index, status="queued",
+                                          batch_id=batch.id, generation_id=gen.id)
+        self._persist_manifest()
+
+        # Wait for this segment before submitting the next one. A cancel is
+        # applied by cancel_all(), which removes the queued prompts and
+        # interrupts the running one; this loop just waits for the generation
+        # to become terminal and then stops the run.
+        while gen.status not in SEGMENT_TERMINAL:
+            if self.manager._stop.is_set():
+                return
+            seg.status = gen.status
+            time.sleep(0.2)
+
+        seg.status = gen.status
+        seg.cache_result = gen.cache_result
+        seg.error = gen.error
+        seg.generation_seconds = (round(gen.finished_at - gen.started_at, 2)
+                                  if gen.started_at and gen.finished_at else None)
+        if gen.status == "done" and gen.output_path:
+            seg.output_path = self._keep_a_copy(seg, gen.output_path)
+        history.update_long_draft_segment(
+            self.id, seg.index, status=seg.status, cache_result=seg.cache_result,
+            generation_seconds=seg.generation_seconds, output_path=seg.output_path,
+            error=seg.error)
+        self._persist_manifest()
+
+    def _keep_a_copy(self, seg, src):
+        """Copy the finished segment next to the manifest.
+
+        The canonical file stays where every other generation lives, so
+        /api/video and the history restore keep working untouched; this copy is
+        what makes the long_draft directory self-contained.
+        """
+        dest = longdraft.output_segment_path(self.id, seg.index)
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copy2(src, dest)
+            return dest
+        except OSError:
+            return None
+
+    def _finish(self):
+        """Close the run: nothing after this point may still be pending.
+
+        Ordering matters and follows the same rule as JobManager._complete():
+        `status` is the completion signal, so the preview, the history row and
+        the manifest are all written BEFORE it flips. Reversing that let a
+        caller see a finished run whose preview did not exist yet.
+        """
+        # A segment that never ran, and now never will, is cancelled -- not
+        # left as "pending" forever. That is true after a failure as well as
+        # after a cancel.
+        for seg in self.segments:
+            if seg.status in ("pending", "queued", "running"):
+                seg.status = "cancelled"
+                history.update_long_draft_segment(self.id, seg.index, status="cancelled")
+
+        done = [s for s in self.segments if s.status == "done"]
+        if self.status == "error" or any(s.status == "error" for s in self.segments):
+            final = "error"
+        elif len(done) == len(self.segments):
+            final = "done"
+        else:
+            final = "cancelled"
+
+        if len(done) >= 2:
+            # A preview of what did finish is still useful after a cancel.
+            try:
+                info = longdraft.concat_preview([s.output_path for s in done],
+                                                longdraft.preview_path(self.id))
+                self.preview_path = info["path"]
+                self.preview_mode = info["mode"]
+            except longdraft.LongDraftError as e:
+                self.manager.notice("warn", "長尺Draft のプレビュー結合に失敗しました: %s" % e)
+        self.finished_at = time.time()
+        self._persist_parent(final)
+        self._persist_manifest(final)
+        self.status = final              # flipped last: is_active() reads it
+
+    # ---- persistence ----
+    def _persist_parent(self, status=None):
+        history.update_long_draft(
+            self.id, status=status or self.status, preview_path=self.preview_path,
+            preview_mode=self.preview_mode, error=self.error,
+            finished_at=self.finished_at)
+
+    def _persist_manifest(self, status=None):
+        try:
+            longdraft.write_manifest(self.manifest(status))
+        except OSError:
+            pass
+
+    def manifest(self, status=None):
+        return {
+            "long_draft_id": self.id,
+            "studio_version": "2.0.0",
+            "phase": "long_draft_phase_0",
+            "created_at": self.created_at,
+            "finished_at": self.finished_at,
+            "status": status or self.status,
+            "error": self.error,
+            "mode": graph.MODE_MOTION_TRACE,
+            "prompt": self.inherit["prompt"],
+            "identity_image": self.inherit["image"],
+            "identity_image_source": self.inherit.get("image_source"),
+            "source_video": self.meta.get("source_video"),
+            "source_video_local": self.meta.get("source_video_local"),
+            "source_duration": self.meta.get("source_duration"),
+            "source_video_meta": self.meta.get("source_video_meta"),
+            "segment_length_seconds": self.meta.get("segment_seconds"),
+            "segment_count": len(self.segments),
+            "parent_seed": self.meta.get("parent_seed"),
+            "seed_policy": self.meta.get("seed_policy"),
+            "inherited_params": {k: v for k, v in self.inherit.items() if k != "image_source"},
+            "preview_path": self.preview_path,
+            "preview_mode": self.preview_mode,
+            "segments": [{
+                "index": s.index, "start": s.start, "end": s.end, "duration": s.duration,
+                "frames": s.frames, "seed": s.seed, "status": s.status,
+                "segment_file": s.segment_file, "segment_bytes": s.segment_bytes,
+                "segment_probe": s.segment_probe, "comfy_video": s.comfy_video,
+                "batch_id": s.batch_id, "generation_id": s.generation_id,
+                "output_path": s.output_path,
+                "generation_seconds": s.generation_seconds,
+                "cache_result": s.cache_result, "error": s.error,
+            } for s in self.segments],
+        }
+
+    # ---- view ----
+    def as_dict(self):
+        segs = []
+        remaining = 0.0
+        current = None
+        for s in self.segments:
+            gen = self.manager.generation(s.generation_id) if s.generation_id else None
+            d = s.as_dict(gen)
+            if s.status not in SEGMENT_TERMINAL:
+                expected = s.expected_seconds or 0
+                if gen is not None and gen.status == "running" and gen.started_at:
+                    remaining += max(0.0, expected - (time.time() - gen.started_at))
+                else:
+                    remaining += expected
+                if current is None and s.status in ("queued", "running"):
+                    current = s.index
+            segs.append(d)
+        done = sum(1 for s in self.segments if s.status == "done")
+        if current is None and self.is_active():
+            pending = [s.index for s in self.segments if s.status == "pending"]
+            current = pending[0] if pending else None
+        return {
+            "id": self.id, "status": self.status, "error": self.error,
+            "created_at": self.created_at, "finished_at": self.finished_at,
+            "mode": graph.MODE_MOTION_TRACE,
+            "prompt": self.inherit["prompt"],
+            "source_duration": self.meta.get("source_duration"),
+            "segment_seconds": self.meta.get("segment_seconds"),
+            "parent_seed": self.meta.get("parent_seed"),
+            "seed_policy": self.meta.get("seed_policy"),
+            "segment_count": len(self.segments), "done_count": done,
+            "current_index": current,
+            "remaining_seconds": round(remaining) if remaining else 0,
+            "segments": segs,
+            "preview_url": ("/api/long_draft/%s/preview" % self.id)
+                           if self.preview_path else None,
+            "preview_mode": self.preview_mode,
+            "manifest_path": longdraft.manifest_path(self.id),
+            "warning": longdraft.BOUNDARY_WARNING,
+            "resumable": self.is_resumable(),
+        }
+
+    def is_resumable(self):
+        return (not self.is_active()
+                and any(s.status != "done" for s in self.segments)
+                and any(s.status == "done" for s in self.segments))
+
+
 class JobManager:
     def __init__(self, comfy=None):
         self.client = comfy or comfy_client.ComfyClient(config.comfy_url())
@@ -138,6 +467,7 @@ class JobManager:
         self.generations = {}      # gen_id -> Generation
         self.by_prompt_id = {}     # comfy prompt_id -> gen_id
         self.batches = []          # newest last
+        self.long_draft_runs = []  # newest last
         self.events = []           # recent notices for the UI
         self.ws_connected = False
         self.ws_error = None
@@ -146,6 +476,7 @@ class JobManager:
         self._stop = threading.Event()
         self._ref_node_available = None
         self._turbo_available = None
+        self._ffmpeg_ok = None
         # ComfyUI filename -> {"local": path, "kind": image|video, "sent": bool}
         # Files are accepted whenever the operator picks them and forwarded to
         # ComfyUI lazily, so choosing an image while the GPU is still booting
@@ -316,7 +647,8 @@ class JobManager:
                      aspect_ratio, image=None, image_source=None, reference_strength=None,
                      seeds=None, parent_generation=None, kind=None,
                      source_video=None, source_video_meta=None, ref_image_size="match",
-                     turbo=False, quality_overrides=None, strict_turbo=False):
+                     turbo=False, quality_overrides=None, strict_turbo=False,
+                     long_draft_id=None, segment_index=None):
         kind = kind or ("final" if quality != "draft" else "draft")
         # Fail fast and once. Without this every variation is submitted, fails
         # on its own, and the operator gets four identical error cards instead
@@ -374,6 +706,7 @@ class JobManager:
                 "reference_strength": reference_strength, "variations": variations,
                 "parent_generation": parent_generation, "source_video": source_video,
                 "source_video_meta": source_video_meta,
+                "long_draft_id": long_draft_id, "segment_index": segment_index,
                 "ref_image_size": ref_image_size if mode == graph.MODE_MOTION_TRACE else None}
         batch = Batch(batch_id, kind, mode, gens, meta)
 
@@ -383,7 +716,8 @@ class JobManager:
                              reference_strength=reference_strength,
                              parent_generation=parent_generation, pod_id=config.pod_id(),
                              source_video=source_video, source_video_meta=source_video_meta,
-                             ref_image_size=meta["ref_image_size"])
+                             ref_image_size=meta["ref_image_size"],
+                             long_draft_id=long_draft_id, segment_index=segment_index)
         with self.lock:
             self.batches.append(batch)
             for g in gens:
@@ -465,6 +799,277 @@ class JobManager:
                     return b.generations[0].params
         return None
 
+    # ---------- Long Draft (Motion Trace only) ----------
+    def long_draft_available(self):
+        """Whether a Long Draft can be started at all, and why not.
+
+        Only the positive answer is cached -- the same rule as
+        turbo_available(): a negative one goes stale the moment ffmpeg is
+        installed, and this is asked on every /api/config poll, so re-scanning
+        PATH forever is not free either.
+        """
+        if self._ffmpeg_ok:
+            return {"available": True, "reason": None}
+        if not longdraft.available():
+            return {"available": False,
+                    "reason": "ffmpeg が見つかりません。長尺Draftは元動画を segment に切り出すため "
+                              "ffmpeg を使います（brew install ffmpeg）。"}
+        self._ffmpeg_ok = True
+        return {"available": True, "reason": None}
+
+    def long_draft(self, ld_id):
+        with self.lock:
+            for run in self.long_draft_runs:
+                if run.id == ld_id:
+                    return run
+        return None
+
+    def find_long_draft(self, ld_id):
+        """This process's run, or one rebuilt from history after a restart."""
+        return self.long_draft(ld_id) or self._restore_long_draft(ld_id)
+
+    def recent_long_drafts(self, limit=8):
+        with self.lock:
+            return [r.as_dict() for r in self.long_draft_runs[-limit:][::-1]]
+
+    def plan_long_draft(self, source_duration, segment_seconds=None, params=None):
+        """The split, its notes and both estimates -- with no GPU and no files.
+
+        This is what the UI shows before anything is committed to, so the
+        operator sees "3 segments, about N minutes" against "one 18 s clip,
+        about M minutes" and can decide.
+        """
+        segment_seconds = float(segment_seconds or longdraft.SEGMENT_SECONDS_DEFAULT)
+        segments = longdraft.plan_segments(source_duration, segment_seconds)
+        params = dict(params or {})
+        per_segment = []
+        total = 0
+        for seg in segments:
+            p = dict(params, duration=seg["duration"])
+            # Every segment is a different reference clip, so every segment
+            # pays its own Qwen3-VL encode. Estimating them as cache HITs would
+            # under-report the cost of the split by roughly a minute each.
+            secs, source = self._estimate_seconds(
+                graph.MODE_MOTION_TRACE, "draft", "MISS", p)
+            per_segment.append(dict(seg, expected_seconds=secs, expected_source=source))
+            total += secs
+        whole, whole_source = self._estimate_seconds(
+            graph.MODE_MOTION_TRACE, "draft", "MISS",
+            dict(params, duration=float(source_duration)))
+        return {
+            "segments": per_segment,
+            "segment_count": len(per_segment),
+            "segment_seconds": segment_seconds,
+            "source_duration": round(float(source_duration), 3),
+            "notes": longdraft.plan_notes(segments, source_duration, segment_seconds),
+            "estimated_seconds": total,
+            "estimated_source": per_segment[0]["expected_source"] if per_segment else None,
+            "single_estimated_seconds": whole,
+            "single_estimated_source": whole_source,
+            "estimated": True,
+            "warning": longdraft.BOUNDARY_WARNING,
+            "seed_policy_default": longdraft.SEED_POLICY_DEFAULT,
+        }
+
+    def submit_long_draft(self, *, prompt_text, image, source_video_local,
+                          aspect_ratio, source_duration=None, segment_seconds=None,
+                          image_source=None, source_video=None, source_video_meta=None,
+                          reference_strength=None, ref_image_size="match",
+                          quality="draft", parent_seed=None,
+                          seed_policy=longdraft.SEED_POLICY_DEFAULT,
+                          quality_overrides=None):
+        """Plan, cut and start one Long Draft. Motion Trace only.
+
+        The cutting happens here, before anything is queued: it is local, free
+        and fast, and it means the manifest describes real files with real byte
+        sizes and real probe results before a single GPU second is spent.
+        """
+        gate = self.long_draft_available()
+        if not gate["available"]:
+            raise longdraft.LongDraftError(gate["reason"])
+        if not image:
+            raise longdraft.LongDraftError("long draft requires an identity image")
+        if not source_video_local or not os.path.exists(source_video_local):
+            raise longdraft.LongDraftError(
+                "長尺Draftは元動画のローカルファイルが必要です（分割するため）。")
+        issues = graph.motion_prompt_issues(prompt_text)
+        if issues:
+            raise longdraft.LongDraftError(" ".join(issues))
+        # Fail before cutting anything if the GPU is not there to use it.
+        if not self.client.is_alive():
+            raise comfy_client.ComfyUnavailable("ComfyUI is not running")
+
+        meta = dict(source_video_meta or {})
+        if source_duration is None:
+            source_duration = meta.get("duration")
+        if source_duration is None:
+            probed = mediaprobe.describe_for_motion_trace(source_video_local)
+            meta = meta or probed
+            source_duration = probed.get("duration")
+        if not source_duration:
+            raise longdraft.LongDraftError(
+                "元動画の長さを読み取れませんでした。長尺Draftには長さが必要です。")
+
+        segment_seconds = float(segment_seconds or longdraft.SEGMENT_SECONDS_DEFAULT)
+        plan = longdraft.plan_segments(source_duration, segment_seconds)
+        parent_seed = int(parent_seed) if parent_seed is not None else longdraft.new_parent_seed()
+        ld_id = longdraft.new_id()
+        longdraft.ensure_run_dir(ld_id)
+
+        inherit = {
+            "mode": graph.MODE_MOTION_TRACE,
+            "prompt": prompt_text,
+            "image": image,
+            "image_source": image_source,
+            "aspect_ratio": aspect_ratio,
+            "quality": quality,
+            "reference_strength": reference_strength,
+            "ref_image_size": ref_image_size or "match",
+            "turbo": False,
+            "quality_overrides": quality_overrides,
+        }
+        run_meta = {
+            "source_video": source_video,
+            "source_video_local": source_video_local,
+            "source_duration": round(float(source_duration), 3),
+            "source_video_meta": meta or None,
+            "segment_seconds": segment_seconds,
+            "parent_seed": parent_seed,
+            "seed_policy": seed_policy,
+        }
+
+        history.create_long_draft(
+            ld_id, mode=graph.MODE_MOTION_TRACE, prompt=prompt_text, image=image,
+            image_source=image_source, source_video=source_video,
+            source_video_local=source_video_local, source_duration=run_meta["source_duration"],
+            source_video_meta=meta or None, segment_seconds=segment_seconds,
+            segment_count=len(plan), parent_seed=parent_seed, seed_policy=seed_policy,
+            params=inherit, manifest_path=longdraft.manifest_path(ld_id))
+
+        segments = []
+        for item in plan:
+            seg = LongDraftSegment(item, longdraft.segment_seed(parent_seed, item["index"],
+                                                                seed_policy))
+            dest = longdraft.source_segment_path(ld_id, seg.index)
+            cut = longdraft.cut_segment(source_video_local, dest, seg.start, seg.duration)
+            seg.segment_file = cut["path"]
+            seg.segment_bytes = cut["bytes"]
+            seg.segment_probe = cut["probe"]
+            seg.comfy_video, _sub, _sent = self.accept_input(cut["path"], "video")
+            seg.expected_seconds, _src = self._estimate_seconds(
+                graph.MODE_MOTION_TRACE, quality, "MISS",
+                {"duration": seg.duration, "megapixels": None, "steps": None})
+            history.create_long_draft_segment(
+                ld_id, seg.index, source_start=seg.start, source_end=seg.end,
+                duration=seg.duration, frames=seg.frames, seed=seg.seed,
+                segment_file=seg.segment_file, segment_bytes=seg.segment_bytes,
+                segment_probe=seg.segment_probe, comfy_video=seg.comfy_video)
+            segments.append(seg)
+
+        run = LongDraftRun(self, ld_id, segments, inherit, run_meta)
+        with self.lock:
+            self.long_draft_runs.append(run)
+        run._persist_manifest()
+        self.notice("info", "長尺Draft %s: %.1f 秒を %d segment に分割しました。"
+                    % (ld_id, run_meta["source_duration"], len(segments)))
+        return run.start()
+
+    def resume_long_draft(self, ld_id):
+        """Re-run only the segments that never finished.
+
+        Everything needed is durable: the cut clips are on disk, their ComfyUI
+        input names are in history, and so is every seed. A Studio restart or a
+        cancel therefore does not cost the segments that already succeeded.
+        """
+        run = self.find_long_draft(ld_id)
+        if run is None:
+            raise longdraft.LongDraftError("unknown long draft %s" % ld_id)
+        if run.is_active():
+            raise longdraft.LongDraftError("long draft %s is already running" % ld_id)
+        if all(s.status == "done" for s in run.segments):
+            raise longdraft.LongDraftError("long draft %s has no unfinished segment" % ld_id)
+        if not self.client.is_alive():
+            raise comfy_client.ComfyUnavailable("ComfyUI is not running")
+        run._cancelled = threading.Event()
+        run.error = None
+        run.finished_at = None
+        for seg in run.segments:
+            if seg.status != "done":
+                seg.status = "pending"
+                seg.error = None
+                history.update_long_draft_segment(ld_id, seg.index, status="pending", error=None)
+            # ComfyUI may have been restarted since; re-register the clip so
+            # _ensure_inputs_uploaded() forwards it again if it has to.
+            if seg.segment_file and os.path.exists(seg.segment_file):
+                seg.comfy_video, _sub, _sent = self.accept_input(seg.segment_file, "video")
+                history.update_long_draft_segment(ld_id, seg.index,
+                                                  comfy_video=seg.comfy_video)
+        return run.start()
+
+    def _restore_long_draft(self, ld_id):
+        """Rebuild an in-memory run from history, after a Studio restart."""
+        row = history.get_long_draft(ld_id)
+        if not row:
+            return None
+        try:
+            inherit = json.loads(row.get("params") or "{}")
+        except (ValueError, TypeError):
+            inherit = {}
+        inherit.setdefault("mode", graph.MODE_MOTION_TRACE)
+        inherit.setdefault("prompt", row.get("prompt") or "")
+        inherit.setdefault("image", row.get("image"))
+        inherit.setdefault("aspect_ratio", graph.ASPECT_RATIOS[0])
+        inherit.setdefault("quality", "draft")
+        try:
+            source_meta = json.loads(row.get("source_video_meta") or "null")
+        except (ValueError, TypeError):
+            source_meta = None
+        meta = {"source_video": row.get("source_video"),
+                "source_video_local": row.get("source_video_local"),
+                "source_duration": row.get("source_duration"),
+                "source_video_meta": source_meta,
+                "segment_seconds": row.get("segment_seconds"),
+                "parent_seed": row.get("parent_seed"),
+                "seed_policy": row.get("seed_policy")}
+        segments = []
+        for r in row.get("segments") or []:
+            try:
+                probe = json.loads(r.get("segment_probe") or "null")
+            except (ValueError, TypeError):
+                probe = None
+            seg = LongDraftSegment({"index": r["idx"], "start": r["source_start"],
+                                    "end": r["source_end"], "duration": r["duration"],
+                                    "frames": r.get("frames")}, r["seed"])
+            seg.status = r["status"]
+            seg.segment_file = r.get("segment_file")
+            seg.segment_bytes = r.get("segment_bytes")
+            seg.segment_probe = probe
+            seg.comfy_video = r.get("comfy_video")
+            seg.batch_id = r.get("batch_id")
+            seg.generation_id = r.get("generation_id")
+            seg.output_path = r.get("output_path")
+            seg.generation_seconds = r.get("generation_seconds")
+            seg.cache_result = r.get("cache_result")
+            seg.error = r.get("error")
+            segments.append(seg)
+        run = LongDraftRun(self, ld_id, segments, inherit, meta)
+        run.status = row.get("status") or "cancelled"
+        run.error = row.get("error")
+        run.finished_at = row.get("finished_at")
+        run.preview_path = row.get("preview_path")
+        run.preview_mode = row.get("preview_mode")
+        if run.status in ("planned", "running"):
+            # The process that was running it is gone; it is not running now.
+            run.status = "cancelled"
+        with self.lock:
+            # Restoring the same run twice (two page loads, say) must not stack
+            # up duplicates that then diverge from each other.
+            for existing in self.long_draft_runs:
+                if existing.id == ld_id:
+                    return existing
+            self.long_draft_runs.append(run)
+        return run
+
     def submit_final(self, gen_id, *, finish_options=None, quality="final"):
         """Build a Final from exactly one selected generation."""
         src = self.generation(gen_id)
@@ -499,6 +1104,11 @@ class JobManager:
         with self.lock:
             active = [g for g in self.generations.values() if g.status in ACTIVE_STATES]
             queued_ids = [g.prompt_id for g in active if g.prompt_id]
+            runs = [r for r in self.long_draft_runs if r.is_active()]
+        # Told first, so the run cannot slip the next segment into the queue
+        # between the removal below and the interrupt.
+        for run in runs:
+            run.cancel()
         self.client.cancel_queued(queued_ids)
         ok = self.client.interrupt()
         with self.lock:

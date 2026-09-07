@@ -1109,3 +1109,103 @@ FAIL=0 / ERROR=0 / skip=0。3回とも**同一の150個のtest id**が走った�
   照合には GPU 起動が要る）。manifest 側に 6ファイル分の filename / path / size / sha256 が
   揃っていることだけを確認した
 - → **次に GPU を起動したときの最初の仕事は `bash scripts/v2_validate.sh`**
+
+---
+
+## 2026-09-07 — 長尺Draft Phase 0（`feature/long-draft`・GPU未使用・生成ゼロ）
+
+安定版 `h3-studio-v2-stable` (`bcf2405`) の**後**の最初の実験。**GPUは1秒も使っていない。**
+Pod は4基とも EXITED のまま、Network Volume `olmj77x4pc` も無変更。
+
+### 何を作ったか
+
+18秒の Motion Trace を 6秒×3 に分けて順番に生成し、結合プレビューで方向性を確認する。
+**Motion Trace 専用・Draft 専用**。Final は1行も変えていない。
+
+| 部品 | 場所 |
+|---|---|
+| 分割・切り出し・seed・結合・manifest | `studio/longdraft.py`（新規・純粋関数中心） |
+| parent/child ジョブと順次実行 | `studio/jobs.py` `LongDraftRun` / `submit_long_draft` / `resume_long_draft` |
+| 永続化 | `long_drafts` / `long_draft_segments` テーブル + `batches.long_draft_id` / `segment_index` |
+| API | `POST /api/long_draft{,/plan,/<id>/resume}` / `GET /api/long_draft{,/<id>,/<id>/preview}` |
+| UI | Motion Trace の「長尺Draft OFF/ON」・分割計画・全体進捗・結合プレビュー・履歴 |
+| 文書 | `docs/V2_LONG_DRAFT.md` |
+
+### 実装前に**観測した**こと（推測していない）
+
+| 疑問 | どこで確かめたか | 答え |
+|---|---|---|
+| segment の最短は何秒か | `studio/mediaprobe.MIN_SECONDS` / `MIN_FRAMES`（stock ノード由来） | **2.0秒 / 5フレーム**。だから 13.5秒は 6+6+**1.5** ではなく 6+**7.5** |
+| 生成フレーム数の式 | `studio/templates/motion_trace_base.json` の ComfyMathExpression | `max(5,round(a*24)) + (5-(max(5,round(a*24))%17))%17`。Python に写し、**テンプレート側が変わればテストが落ちる** |
+| 参照動画は途中から読めるか | `MiniMaxH3ReferenceToVideo`（`frames[:frame_count]`） | **読めない。常に先頭から。** だから物理的に切り出すしかない |
+| 音声を落としてよいか | テンプレートの `ref_video_0` = `GetVideoComponents` 出力0（画像のみ） | よい。音声はノードに届いていない |
+
+### 分割規則（実測ではなく仕様から決まる）
+
+18.0→6+6+6 / 14.0→6+6+**2**（下限ちょうど）/ 13.5→6+**7.5**（端数を前へ統合）/ 5.0→1本。
+
+### 切り出し
+
+ffmpeg の入力シーク（`-ss` を `-i` の前）+ 再エンコード。stream copy は
+キーフレームに丸められて開始位置が最大数秒ずれるため使わない。音声は落とす。
+**ffmpeg が無ければ「使えません」と表示して何もしない**（黙って先頭6秒を3回作らない）。
+
+### 実装中に見つけて直した3件
+
+1. **`_finish` の順序が逆だった** — `status` を先に立ててから preview を作っていたので、
+   「完了」を観測した直後に preview がまだ存在しない窓があった。`_complete()` が既に
+   守っている規則（**終了シグナルは、それが含意するものが全部真になってから立てる**）に
+   合わせ、preview → history → manifest → **最後に status** に直した。
+2. **失敗後に segment が `pending` のまま残っていた** — 二度と走らないのだから
+   `cancelled` に掃く。
+3. **切り出しクリップ名が衝突しうる** — ComfyUI の input ディレクトリはフラットなので、
+   ただの `source_001.mp4` は2回目の長尺Draftに上書きされ、1回目を resume すると
+   **他人のクリップで生成してしまう**。ファイル名に long_draft_id を入れた。
+
+おまけ: mock ComfyUI のワーカーがモジュールグローバルの `STATE` に書いていたため、
+終了したテストの残りジョブが**次のテストの cache に書き込んでいた**（実際に1回、
+segment 1 が偽の HIT になった）。ワーカーが自分の state に書くよう直した。
+
+### テスト — GPUなし・3回連続
+
+`/opt/homebrew/bin/python3.12 -m unittest discover -s studio/tests -t . -q`
+
+| 回 | 結果 | 時間 |
+|---|---|---|
+| 1 | **Ran 212 / OK** | 331.9s |
+| 2 | **Ran 212 / OK** | 334.8s |
+| 3 | **Ran 212 / OK** | 334.7s |
+
+FAIL=0 / ERROR=0 / flaky なし。
+
+150 → **212**（+62。うち21件は `LongDraftApiTests` が `ApiServerTests` を継承して
+再実行するもので、既存の `LocalOnlyGuardTests` と同じ形）。**既存150件は1件も壊していない。**
+
+新規の内訳: 分割（18/14/13.5/12/5・端数・境界・メタデータ・フレーム式のドリフト検出）/
+seed（再現性・same・32bit・不正policy）/ 実 ffmpeg での切り出し（長さ・fps・フレーム数・
+**後段の segment が本当に後ろから始まる**ことを先頭フレームのハッシュで検証・結合順・
+個々の segment の保持）/ parent-child・順次実行（`segment N+1 の created_at >= N の finished_at`）・
+継承・seed・完了・失敗・中止・再開 / History と再起動復元 / preview（順序・欠けた segment・
+元 segment 保持）/ ETA（履歴なし→baseline、履歴あり→history、合計、完了で減る）/
+**Final を分割しないこと** / 新ルートにも Host・Origin・Content-Type 防御が効くこと。
+
+### UI の実測（GPUなし）
+
+`/api/long_draft/plan` に 18秒を渡すと、この Mac の**実履歴**から:
+
+```
+通常生成（1本）      : 推定 約46分18秒
+長尺Draft（3分割合計）: 推定 約26分15秒   推定 1.8倍速
+```
+
+46分は 2026-09-07 の実測とほぼ一致する（履歴から引いているので当然）。**どちらも「推定」と表示する。**
+モード切替・トグルの4遷移（Motion+ON / Prompt Cinema / 戻る / OFF）をブラウザで実行し、
+ボタン表記・長さ・生成本数の出し分けが正しいことを確認した。
+
+### やっていないこと
+
+実機検証（GPU未起動）/ EasyCache 等の速度技術 / segment overlap / cross-segment continuity /
+Final の長尺チェーン / Pod・Volume への一切の変更。
+
+`main` と `h3-studio-v2-stable` は `bcf2405` のまま。`scripts/rollback_stable.sh --dry-run` は
+この作業中も **9/9 PASS**。

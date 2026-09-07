@@ -15,12 +15,18 @@ Everything here runs with no GPU, no Pod and no billing. What it proves:
   * the whole INPUT -> DRAFT x4 -> SELECT -> FINAL -> EXPORT flow works,
     including history and the "only the selected one is finished" rule.
 
+  * Long Draft (Phase 0) splits a long Motion Trace into short segments,
+    generates them strictly one after another, keeps every segment video, and
+    never touches Final.
+
 Run:  python3 -m unittest discover -s studio/tests -t . -v
 """
 
+import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -28,7 +34,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from studio import comfy_client, config, graph, history, jobs  # noqa: E402
+from studio import (comfy_client, config, graph, history, jobs,  # noqa: E402
+                    longdraft, mediaprobe)
 from studio.tests import mock_comfy  # noqa: E402
 
 
@@ -2312,6 +2319,640 @@ class MotionPromptTests(unittest.TestCase):
     def test_extra_text_is_appended(self):
         from studio import graph
         self.assertIn("neon lighting", graph.build_motion_prompt(extra="neon lighting"))
+
+
+# --------------------------------------------------------------------------
+# Long Draft (Phase 0): split a long Motion Trace into short segments.
+#
+# Everything here runs offline against the mock ComfyUI. Nothing starts a Pod,
+# nothing bills, and no real H3 model is touched.
+def _make_source_video(path, seconds=18, rate=24, size="320x180"):
+    """A deterministic test clip with a visible frame counter (ffmpeg testsrc).
+
+    The counter matters: it is what makes "segment 2 really starts at 12 s"
+    provable by comparing decoded first frames.
+    """
+    subprocess.run([longdraft.ffmpeg_path(), "-nostdin", "-y", "-loglevel", "error",
+                    "-f", "lavfi", "-i",
+                    "testsrc=size=%s:rate=%d:duration=%d" % (size, rate, seconds),
+                    "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", path],
+                   check=True, timeout=120)
+    return path
+
+
+def _first_frame_png(video_path, png_path):
+    subprocess.run([longdraft.ffmpeg_path(), "-nostdin", "-y", "-loglevel", "error",
+                    "-i", video_path, "-frames:v", "1", png_path], check=True, timeout=60)
+    with open(png_path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+needs_ffmpeg = unittest.skipUnless(longdraft.available(), "ffmpeg is required for Long Draft")
+
+
+class LongDraftPlanTests(unittest.TestCase):
+    """The split itself. Pure arithmetic -- no ffmpeg, no ComfyUI, no GPU."""
+
+    def bounds(self, duration, seg=6.0):
+        return [(s["start"], s["end"]) for s in longdraft.plan_segments(duration, seg)]
+
+    def test_eighteen_seconds_becomes_three_sixes(self):
+        self.assertEqual(self.bounds(18.0), [(0.0, 6.0), (6.0, 12.0), (12.0, 18.0)])
+
+    def test_fourteen_seconds_keeps_a_two_second_tail(self):
+        """2.0 s is exactly H3's reference floor, so the tail stands alone."""
+        self.assertEqual(self.bounds(14.0), [(0.0, 6.0), (6.0, 12.0), (12.0, 14.0)])
+
+    def test_a_tail_below_the_floor_is_merged_not_emitted(self):
+        """13.5 s must not become 6+6+1.5: H3 rejects a 1.5 s reference clip."""
+        self.assertEqual(self.bounds(13.5), [(0.0, 6.0), (6.0, 13.5)])
+        for seg in longdraft.plan_segments(13.5):
+            self.assertGreaterEqual(seg["duration"], longdraft.MIN_SEGMENT_SECONDS)
+
+    def test_exact_boundary_produces_no_empty_tail(self):
+        self.assertEqual(self.bounds(12.0), [(0.0, 6.0), (6.0, 12.0)])
+        self.assertEqual(self.bounds(6.0), [(0.0, 6.0)])
+
+    def test_a_source_shorter_than_one_segment_is_one_segment(self):
+        self.assertEqual(self.bounds(5.0), [(0.0, 5.0)])
+
+    def test_segment_metadata_is_contiguous_and_adds_up(self):
+        segs = longdraft.plan_segments(14.0)
+        self.assertEqual([s["index"] for s in segs], [0, 1, 2])
+        self.assertAlmostEqual(sum(s["duration"] for s in segs), 14.0, places=3)
+        for a, b in zip(segs, segs[1:]):
+            self.assertEqual(a["end"], b["start"], "segments must not leave a gap")
+        self.assertEqual(segs[0]["start"], 0.0)
+        self.assertEqual(segs[-1]["end"], 14.0)
+        self.assertEqual([s["frames"] for s in segs], [158, 158, 56])
+
+    def test_frame_count_matches_the_baseline_template(self):
+        """Drift guard: the plan's frame count is the graph's, not a guess."""
+        with open(graph.MOTION_TEMPLATE, "r", encoding="utf-8") as f:
+            tpl = json.load(f)
+        expressions = [v["inputs"]["expression"] for v in tpl.values()
+                       if v["class_type"] == "ComfyMathExpression"]
+        self.assertIn(longdraft.TEMPLATE_FRAME_EXPRESSION, expressions)
+        self.assertEqual(longdraft.frame_count(2.0), 56)      # the validated baseline
+        self.assertEqual(longdraft.frame_count(6.0), 158)
+
+    def test_a_segment_below_h3s_floor_is_refused(self):
+        with self.assertRaises(longdraft.LongDraftError):
+            longdraft.plan_segments(18.0, 1.0)
+        with self.assertRaises(longdraft.LongDraftError):
+            longdraft.plan_segments(18.0, 60.0)
+        with self.assertRaises(longdraft.LongDraftError):
+            longdraft.plan_segments(0)
+
+    def test_an_absurd_number_of_segments_is_refused(self):
+        with self.assertRaises(longdraft.LongDraftError):
+            longdraft.plan_segments(600.0, 2.0)
+
+    def test_notes_explain_a_source_longer_than_h3s_range(self):
+        notes = longdraft.plan_notes(longdraft.plan_segments(18.0), 18.0, 6.0)
+        self.assertTrue(any("15" in n for n in notes))
+        single = longdraft.plan_notes(longdraft.plan_segments(5.0), 5.0, 6.0)
+        self.assertTrue(any("1 segment" in n for n in single))
+
+
+class LongDraftSeedTests(unittest.TestCase):
+    def test_derived_seeds_are_reproducible_and_distinct(self):
+        a = [longdraft.segment_seed(4242, i) for i in range(3)]
+        b = [longdraft.segment_seed(4242, i) for i in range(3)]
+        self.assertEqual(a, b, "a Long Draft must be reproducible from its parent seed")
+        self.assertEqual(len(set(a)), 3)
+
+    def test_same_policy_reuses_the_parent_seed(self):
+        self.assertEqual([longdraft.segment_seed(7, i, "same") for i in range(3)], [7, 7, 7])
+
+    def test_seeds_stay_inside_the_32_bit_range_comfyui_accepts(self):
+        top = 2 ** 32 - 1
+        self.assertEqual(longdraft.segment_seed(top, 1), 0)
+        self.assertLess(longdraft.segment_seed(top, 5), 2 ** 32)
+
+    def test_an_unknown_policy_is_refused_rather_than_guessed(self):
+        with self.assertRaises(longdraft.LongDraftError):
+            longdraft.segment_seed(1, 0, "clever")
+
+
+@needs_ffmpeg
+class LongDraftCutTests(unittest.TestCase):
+    """The source really is cut, and each piece really is what it claims."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="h3ld-cut-")
+        cls.src = _make_source_video(os.path.join(cls.tmp, "src18.mp4"), seconds=18)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_each_segment_is_a_real_file_of_the_right_length(self):
+        for seg in longdraft.plan_segments(18.0):
+            dest = os.path.join(self.tmp, "cut_%d.mp4" % seg["index"])
+            info = longdraft.cut_segment(self.src, dest, seg["start"], seg["duration"])
+            self.assertTrue(os.path.exists(dest))
+            self.assertGreater(info["bytes"], 1000)
+            probe = info["probe"]
+            self.assertAlmostEqual(probe["duration"], seg["duration"], delta=0.2)
+            self.assertTrue(probe["ok"], probe["notes"])
+
+    def test_the_probe_reads_the_video_track_not_an_audio_one(self):
+        """Regression: an audio track's sample count was once read as frames.
+
+        The cut drops audio entirely, so the only sample count in the file is
+        the video one -- and it must match 24 fps x 6 s.
+        """
+        dest = os.path.join(self.tmp, "probe.mp4")
+        info = longdraft.cut_segment(self.src, dest, 6.0, 6.0)
+        self.assertAlmostEqual(info["probe"]["fps"], 24.0, delta=0.5)
+        self.assertAlmostEqual(info["probe"]["frames"], 144, delta=3)
+
+    def test_a_later_segment_starts_later_in_the_source(self):
+        """The cut is an offset, not three copies of the opening.
+
+        MiniMaxH3ReferenceToVideo always reads the reference from frame 0, so
+        if this were wrong every segment would silently redo the first 6 s.
+        """
+        hashes = []
+        for seg in longdraft.plan_segments(18.0):
+            dest = os.path.join(self.tmp, "off_%d.mp4" % seg["index"])
+            longdraft.cut_segment(self.src, dest, seg["start"], seg["duration"])
+            hashes.append(_first_frame_png(dest, dest + ".png"))
+        self.assertEqual(len(set(hashes)), 3,
+                         "each segment must begin at its own offset in the source")
+
+    def test_cutting_a_missing_file_is_an_error_not_an_empty_video(self):
+        with self.assertRaises(longdraft.LongDraftError):
+            longdraft.cut_segment(os.path.join(self.tmp, "nope.mp4"),
+                                  os.path.join(self.tmp, "x.mp4"), 0, 6)
+
+    def test_preview_joins_the_segments_in_order(self):
+        parts = []
+        for seg in longdraft.plan_segments(18.0):
+            dest = os.path.join(self.tmp, "cat_%d.mp4" % seg["index"])
+            longdraft.cut_segment(self.src, dest, seg["start"], seg["duration"])
+            parts.append(dest)
+        out = os.path.join(self.tmp, "preview.mp4")
+        info = longdraft.concat_preview(parts, out)
+        self.assertEqual(info["segments"], 3)
+        joined = mediaprobe.probe(out)
+        self.assertAlmostEqual(joined["duration"], 18.0, delta=0.6)
+        for p in parts:
+            self.assertTrue(os.path.exists(p), "the individual segments must be kept")
+        self.assertFalse(os.path.exists(out + ".concat.txt"), "the list file is temporary")
+
+    def test_a_preview_with_nothing_to_join_is_refused(self):
+        with self.assertRaises(longdraft.LongDraftError):
+            longdraft.concat_preview([], os.path.join(self.tmp, "empty.mp4"))
+        with self.assertRaises(longdraft.LongDraftError):
+            longdraft.concat_preview([os.path.join(self.tmp, "missing.mp4")],
+                                     os.path.join(self.tmp, "empty.mp4"))
+
+
+class LongDraftAvailabilityTests(StudioTestCase):
+    def test_without_ffmpeg_the_feature_reports_itself_off(self):
+        m = self.make_manager()
+        real = longdraft.ffmpeg_path
+        try:
+            longdraft.ffmpeg_path = lambda: None
+            m._ffmpeg_ok = None          # only a positive probe is cached
+            gate = m.long_draft_available()
+            self.assertFalse(gate["available"])
+            self.assertIn("ffmpeg", gate["reason"])
+            with self.assertRaises(longdraft.LongDraftError):
+                m.submit_long_draft(prompt_text="<Picture 1> <Video 1>", image="i.png",
+                                    source_video_local="/nope.mp4",
+                                    aspect_ratio=graph.ASPECT_RATIOS[0])
+        finally:
+            longdraft.ffmpeg_path = real
+
+
+@needs_ffmpeg
+class LongDraftRunTests(StudioTestCase):
+    """Parent/child jobs, sequencing, cancel, resume, preview, manifest."""
+
+    PROMPT = ("Replace the person in <Video 1> with the person in <Picture 1>. "
+              "Follow the motion of <Video 1>.")
+
+    def setUp(self):
+        super().setUp()
+        self.src = _make_source_video(os.path.join(self.tmp, "src18.mp4"), seconds=18)
+
+    def start_run(self, m, **kw):
+        img = os.path.join(self.tmp, "identity.png")
+        with open(img, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 128)
+        identity, _ = m.upload_source_image(img)
+        video, _, meta = m.upload_source_video(self.src)
+        opts = dict(prompt_text=self.PROMPT, image=identity, source_video=video,
+                    source_video_local=self.src, source_video_meta=meta,
+                    aspect_ratio=graph.ASPECT_RATIOS[0])
+        opts.update(kw)
+        return m.submit_long_draft(**opts)
+
+    def wait_run(self, run, timeout=90.0):
+        ok = wait_until(lambda: not run.is_active(), timeout)
+        self.assertTrue(ok, "long draft %s did not finish: %s"
+                        % (run.id, [(s.index, s.status) for s in run.segments]))
+        return run
+
+    # ---- structure ----
+    def test_a_long_draft_is_one_parent_with_ordered_children(self):
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m))
+        self.assertEqual(run.status, "done")
+        self.assertEqual([s.index for s in run.segments], [0, 1, 2])
+        self.assertEqual([s.status for s in run.segments], ["done"] * 3)
+        for seg in run.segments:
+            self.assertEqual(history.long_draft_for_batch(seg.batch_id),
+                             (run.id, seg.index))
+            batch = m.batch(seg.batch_id)
+            self.assertEqual(len(batch.generations), 1,
+                             "a segment is one video, not a variation grid")
+            self.assertEqual(batch.meta["long_draft_id"], run.id)
+
+    def test_segments_run_one_after_another_never_at_once(self):
+        """Sequential by construction: segment N+1 is only submitted after N ends.
+
+        One ComfyUI, one Pod, one cache directory -- the baseline forbids two
+        H3 processes on it, so parallel segments are not an optimisation to
+        reach for later.
+        """
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m))
+        rows = [history.get_generation(s.generation_id) for s in run.segments]
+        for prev, nxt in zip(rows, rows[1:]):
+            self.assertIsNotNone(prev["finished_at"])
+            self.assertGreaterEqual(
+                nxt["created_at"], prev["finished_at"],
+                "segment %s was queued before the previous one finished" % nxt["id"])
+        order = [p for p in mock_comfy.STATE.submitted]
+        self.assertEqual(len(order), 3)
+
+    def test_every_segment_inherits_the_same_settings(self):
+        """The operator fills the form once; the segments do not diverge."""
+        mock_comfy.STATE.extra_nodes.add(graph.REF_STRENGTH_NODE)
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m, reference_strength=0.95,
+                                           ref_image_size="max"))
+        params = [m.generation(s.generation_id).params for s in run.segments]
+        for p, seg in zip(params, run.segments):
+            self.assertEqual(p["prompt"], self.PROMPT)
+            self.assertEqual(p["image"], params[0]["image"])
+            self.assertEqual(p["aspect_ratio"], graph.ASPECT_RATIOS[0])
+            self.assertEqual(p["megapixels"], params[0]["megapixels"])
+            self.assertEqual(p["steps"], params[0]["steps"])
+            self.assertEqual(p["sampler"], params[0]["sampler"])
+            self.assertEqual(p["scheduler"], params[0]["scheduler"])
+            self.assertEqual(p["reference_strength"], 0.95)
+            self.assertEqual(p["ref_image_size"], "max")
+            self.assertFalse(p["turbo"], "Motion Trace has no Turbo LoRA here")
+            # What legitimately differs: the slice and its own length.
+            self.assertEqual(p["duration"], seg.duration)
+        videos = [p["source_video"] for p in params]
+        self.assertEqual(len(set(videos)), 3, "each segment feeds on its own clip")
+
+    def test_seeds_come_from_one_recorded_parent_seed(self):
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m, parent_seed=1000))
+        self.assertEqual([s.seed for s in run.segments], [1000, 1001, 1002])
+        row = history.get_long_draft(run.id)
+        self.assertEqual(row["parent_seed"], 1000)
+        self.assertEqual(row["seed_policy"], "derived")
+        self.assertEqual([r["seed"] for r in row["segments"]], [1000, 1001, 1002])
+        for seg in run.segments:
+            self.assertEqual(m.generation(seg.generation_id).seed, seg.seed)
+
+    def test_each_segment_is_its_own_encode(self):
+        """Different reference clips cannot share a cache entry, and the plan
+        must not pretend otherwise."""
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m))
+        self.assertEqual([s.cache_result for s in run.segments], ["MISS"] * 3)
+
+    # ---- files ----
+    def test_the_cut_clips_and_their_measurements_are_recorded(self):
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m))
+        for seg in run.segments:
+            self.assertTrue(os.path.exists(seg.segment_file))
+            self.assertGreater(seg.segment_bytes, 1000)
+            self.assertAlmostEqual(seg.segment_probe["duration"], seg.duration, delta=0.2)
+            self.assertTrue(longdraft.contains(seg.segment_file))
+            # ComfyUI's input directory is flat, so the name a second Long
+            # Draft would collide with must carry this run's id.
+            self.assertIn(run.id, os.path.basename(seg.segment_file))
+            self.assertIn(run.id, seg.comfy_video)
+        row = history.get_long_draft(run.id)
+        for r in row["segments"]:
+            self.assertIsNotNone(r["segment_file"])
+            self.assertGreater(r["segment_bytes"], 1000)
+            self.assertEqual(json.loads(r["segment_probe"])["ok"], True)
+
+    def test_preview_is_built_and_the_segments_survive_it(self):
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m))
+        self.assertTrue(os.path.exists(run.preview_path))
+        self.assertIn(run.preview_mode, ("copy", "reencode"))
+        for seg in run.segments:
+            self.assertTrue(os.path.exists(seg.output_path),
+                            "the per-segment video must be kept alongside the preview")
+            self.assertTrue(os.path.exists(m.generation(seg.generation_id).output_path),
+                            "the canonical output must stay where every other video lives")
+        self.assertNotEqual(os.path.realpath(run.preview_path),
+                            os.path.realpath(run.segments[0].output_path))
+
+    def test_the_manifest_records_everything_needed_to_reproduce_the_run(self):
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m, parent_seed=55))
+        man = longdraft.read_manifest(run.id)
+        for key in ("long_draft_id", "created_at", "source_video", "identity_image",
+                    "prompt", "source_duration", "segment_length_seconds",
+                    "segment_count", "parent_seed", "seed_policy", "preview_path",
+                    "status", "boundary_warning", "inherited_params"):
+            self.assertIn(key, man)
+        self.assertEqual(man["segment_count"], 3)
+        self.assertEqual(man["parent_seed"], 55)
+        self.assertEqual(man["status"], "done")
+        for seg in man["segments"]:
+            for key in ("index", "start", "end", "duration", "seed", "segment_file",
+                        "segment_bytes", "segment_probe", "batch_id", "generation_id",
+                        "output_path", "generation_seconds", "cache_result", "status"):
+                self.assertIn(key, seg)
+            self.assertIsNotNone(seg["generation_seconds"])
+            self.assertIsNotNone(seg["batch_id"])
+        self.assertTrue(os.path.exists(longdraft.manifest_path(run.id)))
+
+    def test_output_lives_under_one_directory_per_long_draft(self):
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m))
+        d = longdraft.run_dir(run.id)
+        names = sorted(os.listdir(d))
+        self.assertIn("manifest.json", names)
+        self.assertIn("preview.mp4", names)
+        self.assertIn("segment_001.mp4", names)
+        self.assertIn("%s_source_001.mp4" % run.id, names)
+
+    # ---- failure, cancel, resume ----
+    def test_a_failing_segment_stops_the_run_instead_of_burning_the_rest(self):
+        m = self.make_manager()
+        mock_comfy.STATE.fail_next = "boom"
+        run = self.wait_run(self.start_run(m))
+        self.assertEqual(run.status, "error")
+        self.assertEqual(run.segments[0].status, "error")
+        self.assertEqual([s.status for s in run.segments[1:]], ["cancelled", "cancelled"])
+        self.assertEqual(len(mock_comfy.STATE.submitted), 1,
+                         "no GPU time is spent on the segments after a failure")
+
+    def test_cancel_keeps_what_finished_and_stops_what_did_not(self):
+        m = self.make_manager()
+        run = self.start_run(m)
+        self.assertTrue(wait_until(lambda: run.segments[0].status == "done", 60))
+        m.cancel_all()
+        self.wait_run(run)
+        self.assertEqual(run.status, "cancelled")
+        self.assertEqual(run.segments[0].status, "done")
+        self.assertTrue(os.path.exists(run.segments[0].output_path))
+        self.assertTrue(any(s.status == "cancelled" for s in run.segments[1:]))
+        self.assertFalse(any(s.status == "done" for s in run.segments[2:]))
+        row = history.get_long_draft(run.id)
+        self.assertEqual(row["status"], "cancelled")
+        self.assertEqual(row["segments"][0]["status"], "done")
+
+    def test_resume_reruns_only_the_unfinished_segments(self):
+        m = self.make_manager()
+        run = self.start_run(m)
+        self.assertTrue(wait_until(lambda: run.segments[0].status == "done", 60))
+        m.cancel_all()
+        self.wait_run(run)
+        done_before = run.segments[0].generation_id
+        submitted_before = len(mock_comfy.STATE.submitted)
+        self.assertTrue(run.is_resumable())
+        resumed = m.resume_long_draft(run.id)
+        self.wait_run(resumed)
+        self.assertEqual(resumed.status, "done")
+        self.assertEqual(resumed.segments[0].generation_id, done_before,
+                         "a finished segment must never be generated twice")
+        self.assertLessEqual(len(mock_comfy.STATE.submitted) - submitted_before, 2)
+
+    def test_resume_refuses_a_run_with_nothing_left_to_do(self):
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m))
+        with self.assertRaises(longdraft.LongDraftError):
+            m.resume_long_draft(run.id)
+        with self.assertRaises(longdraft.LongDraftError):
+            m.resume_long_draft("ld_nope")
+
+    def test_a_preview_is_still_made_from_the_segments_that_did_finish(self):
+        m = self.make_manager()
+        run = self.start_run(m)
+        self.assertTrue(wait_until(lambda: run.segments[1].status == "done", 90))
+        m.cancel_all()
+        self.wait_run(run)
+        self.assertEqual(run.status, "cancelled")
+        self.assertTrue(os.path.exists(run.preview_path))
+        joined = mediaprobe.probe(run.preview_path)
+        self.assertIsNotNone(joined["duration"])
+
+    # ---- history / restart ----
+    def test_history_still_knows_the_three_were_one_long_draft(self):
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m))
+        row = history.get_long_draft(run.id)
+        self.assertEqual(row["status"], "done")
+        self.assertEqual(row["segment_count"], 3)
+        self.assertEqual(row["source_duration"], 18.0)
+        self.assertEqual(row["segment_seconds"], 6.0)
+        self.assertEqual(len(row["segments"]), 3)
+        self.assertEqual([r["idx"] for r in row["segments"]], [0, 1, 2])
+        for r in row["segments"]:
+            self.assertEqual(r["status"], "done")
+            self.assertIsNotNone(r["generation_id"])
+            self.assertIsNotNone(r["output_path"])
+        listed = history.list_long_drafts()
+        self.assertEqual(listed[0]["id"], run.id)
+
+    def test_a_restarted_studio_rebuilds_the_run_from_history(self):
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m))
+        ld_id = run.id
+        seg_ids = [s.generation_id for s in run.segments]
+        m.shutdown()
+
+        fresh = jobs.JobManager(comfy=comfy_client.ComfyClient(self.url))
+        self.manager = fresh
+        fresh.start()
+        self.assertIsNone(fresh.long_draft(ld_id), "a new process starts with no memory")
+        restored = fresh._restore_long_draft(ld_id)
+        self.assertIsNotNone(restored)
+        d = restored.as_dict()
+        self.assertEqual(d["segment_count"], 3)
+        self.assertEqual(d["done_count"], 3)
+        self.assertEqual([s["index"] for s in d["segments"]], [0, 1, 2])
+        self.assertEqual([s["generation_id"] for s in d["segments"]], seg_ids)
+        self.assertTrue(all(s["output_url"] for s in d["segments"]),
+                        "every segment video must still be reachable")
+        self.assertEqual(d["preview_url"], "/api/long_draft/%s/preview" % ld_id)
+
+    # ---- ETA ----
+    def test_the_plan_estimates_both_options_and_says_they_are_estimates(self):
+        m = self.make_manager()
+        plan = m.plan_long_draft(18.0, 6.0, {"megapixels": 0.4, "steps": 12})
+        self.assertTrue(plan["estimated"])
+        self.assertEqual(plan["segment_count"], 3)
+        self.assertEqual(plan["estimated_source"], "baseline",
+                         "with no comparable history the fallback must say so")
+        self.assertEqual(plan["estimated_seconds"],
+                         sum(s["expected_seconds"] for s in plan["segments"]))
+        self.assertLess(plan["estimated_seconds"], plan["single_estimated_seconds"],
+                        "splitting is only worth offering if it is estimated to be faster")
+
+    def test_the_estimate_switches_to_measured_history_after_a_run(self):
+        m = self.make_manager()
+        self.wait_run(self.start_run(m))
+        plan = m.plan_long_draft(18.0, 6.0, {
+            "megapixels": 0.4, "steps": 12, "aspect_ratio": graph.ASPECT_RATIOS[0]})
+        self.assertTrue(plan["estimated_source"].startswith("history:"),
+                        "measured segments must feed the next estimate, got %r"
+                        % plan["estimated_source"])
+
+    def test_the_remaining_estimate_shrinks_as_segments_finish(self):
+        m = self.make_manager()
+        run = self.start_run(m)
+        first = run.as_dict()["remaining_seconds"]
+        self.assertTrue(wait_until(lambda: run.segments[0].status == "done", 60))
+        self.wait_run(run)
+        after = run.as_dict()
+        self.assertEqual(after["remaining_seconds"], 0)
+        self.assertEqual(after["done_count"], 3)
+        self.assertGreater(first, 0)
+
+    # ---- the line Long Draft must not cross ----
+    def test_final_is_never_split(self):
+        """A Final built from a segment is one ordinary generation.
+
+        Long Draft is a Draft tool. Nothing here may teach submit_final() to
+        chain segments together.
+        """
+        m = self.make_manager()
+        run = self.wait_run(self.start_run(m))
+        seg = run.segments[1]
+        self.assertTrue(m.select(seg.generation_id))
+        final = m.submit_final(seg.generation_id)
+        self.wait_batch(final)
+        self.assertEqual(len(final.generations), 1)
+        self.assertEqual(final.kind, "final")
+        self.assertEqual(final.generations[0].params["duration"], seg.duration)
+        self.assertEqual(final.generations[0].params["steps"], 30)
+        self.assertIsNone(final.meta.get("long_draft_id"))
+        self.assertEqual(len(m.long_draft_runs), 1, "a Final starts no new long draft")
+
+
+@needs_ffmpeg
+class LongDraftApiTests(ApiServerTests):
+    """The HTTP surface, including the local-only defences."""
+
+    def setUp(self):
+        super().setUp()
+        self.src = _make_source_video(os.path.join(self.tmp, "api18.mp4"), seconds=18)
+
+    def _inputs(self):
+        img = os.path.join(self.tmp, "identity.png")
+        with open(img, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 128)
+        identity, _ = self.manager.upload_source_image(img)
+        video, _, meta = self.manager.upload_source_video(self.src)
+        return identity, video, meta
+
+    def test_config_offers_long_draft_for_motion_trace_only(self):
+        cfg = self.get("/api/config")["long_draft"]
+        self.assertEqual(cfg["modes"], ["motion_trace"])
+        self.assertEqual(cfg["segment_seconds_default"], 6.0)
+        self.assertTrue(cfg["warning"])
+        self.assertIn("available", cfg)
+
+    def test_plan_endpoint_costs_nothing_and_answers_with_both_estimates(self):
+        plan = self.post("/api/long_draft/plan", {"source_duration": 18.0})
+        self.assertEqual(plan["segment_count"], 3)
+        self.assertTrue(plan["estimated"])
+        self.assertIn("single_estimated_seconds", plan)
+        self.assertEqual(len(mock_comfy.STATE.submitted), 0)
+
+    def test_a_bad_plan_request_is_a_400_not_a_500(self):
+        import urllib.error
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post("/api/long_draft/plan", {"source_duration": 18.0,
+                                               "segment_seconds": 0.5})
+        self.assertEqual(cm.exception.code, 400)
+
+    def test_start_status_preview_and_history_over_http(self):
+        identity, video, meta = self._inputs()
+        run = self.post("/api/long_draft", {
+            "prompt": LongDraftRunTests.PROMPT, "image": identity,
+            "source_video": video, "source_video_local": self.src,
+            "source_video_meta": meta, "source_duration": meta["duration"],
+            "aspect_ratio": graph.ASPECT_RATIOS[0]})
+        self.assertEqual(run["segment_count"], 3)
+        obj = self.manager.long_draft(run["id"])
+        self.assertTrue(wait_until(lambda: not obj.is_active(), 90))
+
+        fresh = self.get("/api/long_draft/" + run["id"])
+        self.assertEqual(fresh["status"], "done")
+        self.assertEqual(fresh["done_count"], 3)
+        self.assertTrue(fresh["manifest"])
+        self.assertEqual(fresh["manifest"]["segment_count"], 3)
+
+        with self.urllib.urlopen(self.base + fresh["preview_url"], timeout=30) as r:
+            self.assertGreater(len(r.read()), 0)
+            self.assertEqual(r.headers["Content-Type"], "video/mp4")
+        for seg in fresh["segments"]:
+            with self.urllib.urlopen(self.base + seg["output_url"], timeout=30) as r:
+                self.assertGreater(len(r.read()), 0)
+
+        self.assertEqual(self.get("/api/status")["long_drafts"][0]["id"], run["id"])
+        hist = self.get("/api/history")
+        self.assertEqual(hist["long_drafts"][0]["id"], run["id"])
+        self.assertEqual(len(hist["long_drafts"][0]["segments"]), 3)
+
+    def test_an_untagged_motion_prompt_is_refused_before_anything_is_cut(self):
+        import urllib.error
+        identity, video, meta = self._inputs()
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post("/api/long_draft", {
+                "prompt": "make it nice", "image": identity, "source_video": video,
+                "source_video_local": self.src, "source_video_meta": meta,
+                "aspect_ratio": graph.ASPECT_RATIOS[0]})
+        self.assertEqual(cm.exception.code, 400)
+        self.assertEqual(len(mock_comfy.STATE.submitted), 0)
+        self.assertFalse(os.path.isdir(longdraft.root_dir())
+                         and os.listdir(longdraft.root_dir()))
+
+    def test_a_preview_that_does_not_exist_is_a_404(self):
+        import urllib.error
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.urllib.urlopen(self.base + "/api/long_draft/ld_nope/preview", timeout=10)
+        self.assertEqual(cm.exception.code, 404)
+
+    def test_long_draft_endpoints_have_the_same_local_only_defences(self):
+        """DNS rebinding / CSRF / Content-Type must cover the new routes too."""
+        import urllib.error
+        for headers, why in (
+                ({"Host": "evil.example", "Content-Type": "application/json"}, "Host"),
+                ({"Origin": "https://evil.example", "Content-Type": "application/json"}, "Origin"),
+                ({"Content-Type": "text/plain"}, "Content-Type")):
+            req = self.urllib.Request(self.base + "/api/long_draft/plan",
+                                      data=json.dumps({"source_duration": 18.0}).encode(),
+                                      headers=headers, method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.urllib.urlopen(req, timeout=10)
+            self.assertEqual(cm.exception.code, 403, "%s was not refused" % why)
+        req = self.urllib.Request(self.base + "/api/long_draft",
+                                  headers={"Host": "evil.example"})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.urllib.urlopen(req, timeout=10)
+        self.assertEqual(cm.exception.code, 403)
 
 
 if __name__ == "__main__":

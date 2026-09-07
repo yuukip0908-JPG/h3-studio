@@ -22,6 +22,7 @@ UI 右上の **START GPU** で Pod 起動 → ComfyUI 起動 → READY まで自
 | [docs/V2_OPERATION.md](docs/V2_OPERATION.md) | 毎日の操作手順 |
 | [docs/V2_ARCHITECTURE.md](docs/V2_ARCHITECTURE.md) | 構成とキャッシュ設計の根拠 |
 | [docs/V2_AB_TESTS.md](docs/V2_AB_TESTS.md) | A/B の手順と結果表 |
+| [docs/V2_LONG_DRAFT.md](docs/V2_LONG_DRAFT.md) | **長尺Draft**（Motion Trace の分割Draft・Phase 0） |
 | [docs/V2_KNOWN_LIMITATIONS.md](docs/V2_KNOWN_LIMITATIONS.md) | 制約・未検証範囲 |
 | [docs/V2_RECOVERY.md](docs/V2_RECOVERY.md) | 復旧・ロールバック |
 | [docs/V2_STABLE_CHECKPOINT.md](docs/V2_STABLE_CHECKPOINT.md) | **正式安定版 `h3-studio-v2-stable`**（環境 manifest・戻し方・Long Draft との境界） |

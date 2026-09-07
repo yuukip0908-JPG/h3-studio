@@ -17,6 +17,11 @@ const state = {
   localPath: null,
   sourceVideo: null,
   sourceVideoMeta: null,
+  sourceVideoLocal: null,   // the file on this Mac; Long Draft cuts from it
+  longDraft: false,         // Motion Trace only
+  longDraftPlan: null,
+  longDraftRun: null,       // the run currently shown
+  longDraftRuns: [],
   refImageSize: "match",
   draftQuality: "standard",
   cfg: null,
@@ -116,6 +121,7 @@ function renderModeHints() {
   $("field-video").hidden = !has("source_video");
   $("field-refsize").hidden = !has("ref_image_size");
   $("field-refstrength").hidden = !has("reference_strength");
+  renderLongDraftField();
 
   $("image-label").textContent =
     mode === "motion_trace" ? "人物画像（顔・服・雰囲気をここから）" : "元画像";
@@ -169,6 +175,205 @@ function renderCacheHint() {
       `残り ${Math.max(0, n - 1)} 本は <span class="tag HIT">キャッシュ再利用</span>で速く出ます。`;
 }
 
+// ------------------------------------------------------- Long Draft (Phase 0)
+/* A long Motion Trace is dominated by sampling, and sampling grows faster than
+   the frame count (measured here: 18 s ran at 203.8 s per step, ~46 minutes).
+   Long Draft cuts the reference video into short pieces and generates them one
+   after another so the direction can be judged in a fraction of that time.
+
+   It is a Draft tool. Segments are generated independently -- no shared latent,
+   no overlap -- so a boundary can jump, and Final is never split. */
+function longDraftCfg() {
+  return (state.cfg && state.cfg.long_draft) || {};
+}
+
+function longDraftApplies() {
+  const cfg = longDraftCfg();
+  return (cfg.modes || []).indexOf(state.mode) >= 0;
+}
+
+function longDraftOn() {
+  return state.longDraft && longDraftApplies();
+}
+
+function renderLongDraftField() {
+  const field = $("field-longdraft");
+  if (!field) return;
+  const cfg = longDraftCfg();
+  field.hidden = !longDraftApplies();
+  /* Long Draft decides the length of every segment from the source video, and
+     produces one video per segment rather than N variations of one. Leaving
+     those two controls live would let the operator set values that are then
+     silently ignored. */
+  const on = longDraftOn();
+  $("btn-generate").textContent = on ? "長尺Draftを生成する" : "生成する";
+  $("field-duration").hidden = on;
+  $("field-variations").hidden = on;
+  if (field.hidden) return;
+  const un = $("longdraft-unavailable");
+  un.hidden = cfg.available !== false;
+  un.textContent = cfg.available === false ? (cfg.reason || "長尺Draftは使えません。") : "";
+  document.querySelectorAll("#longdraft-seg button").forEach((b) => {
+    b.disabled = cfg.available === false;
+  });
+  $("ld-warning").textContent = cfg.warning || "";
+  renderLongDraftPlan();
+}
+
+let ldPlanToken = 0;
+async function refreshLongDraftPlan() {
+  if (!longDraftOn()) { renderLongDraftPlan(); return; }
+  const meta = state.sourceVideoMeta || {};
+  if (!meta.duration) { state.longDraftPlan = null; renderLongDraftPlan(); return; }
+  const token = ++ldPlanToken;
+  try {
+    const plan = await api("/api/long_draft/plan", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source_duration: meta.duration,
+        segment_seconds: longDraftCfg().segment_seconds_default,
+        params: { megapixels: preset().megapixels, steps: preset().steps,
+                  aspect_ratio: $("aspect").value },
+      }),
+    });
+    if (token !== ldPlanToken) return;   // a newer request already answered
+    state.longDraftPlan = plan;
+  } catch (e) {
+    state.longDraftPlan = { error: e.message };
+  }
+  renderLongDraftPlan();
+}
+
+function renderLongDraftPlan() {
+  const box = $("longdraft-plan");
+  if (!box) return;
+  if (!longDraftOn()) { box.hidden = true; return; }
+  box.hidden = false;
+  const body = $("ld-plan-body");
+  const plan = state.longDraftPlan;
+  if (!plan) {
+    body.innerHTML = `<p class="hint">元動画を選ぶと、分割の計画をここに表示します。</p>`;
+    return;
+  }
+  if (plan.error) {
+    body.innerHTML = `<p class="hint warn">${esc(plan.error)}</p>`;
+    return;
+  }
+  const rows = plan.segments.map((sg) =>
+    `<tr><td>Segment ${sg.index + 1}</td><td>${sg.start.toFixed(1)} - ${sg.end.toFixed(1)} 秒</td>
+     <td>${sg.duration.toFixed(1)} 秒</td><td>${sg.frames} フレーム</td></tr>`).join("");
+  /* Both numbers are estimates and are labelled as such. They come from
+     measured history when this machine has comparable runs, and from the
+     duration-scaled baseline when it does not. */
+  const saved = plan.single_estimated_seconds && plan.estimated_seconds
+    ? plan.single_estimated_seconds / plan.estimated_seconds : null;
+  body.innerHTML = `
+    <div class="ld-head">元動画 <b>${plan.source_duration.toFixed(1)} 秒</b> ·
+      分割 <b>${plan.segment_count}</b> · 1 segment <b>${plan.segment_seconds} 秒</b></div>
+    <table class="ld-table"><tbody>${rows}</tbody></table>
+    <div class="ld-eta">
+      <div>通常生成（1本）: <b>推定 約${fmtDuration(plan.single_estimated_seconds)}</b></div>
+      <div>長尺Draft（${plan.segment_count} 分割合計）: <b>推定 約${fmtDuration(plan.estimated_seconds)}</b>
+        ${saved ? ` · <span class="tag HIT">推定 ${saved.toFixed(1)}倍速</span>` : ""}</div>
+      <div class="hint">どちらも<b>推定</b>です。実測ではありません。長尺Draftを実行するとその実測が履歴に入り、次回からの推定が実測ベースになります。</div>
+    </div>
+    ${(plan.notes || []).map((n) => `<p class="hint warn">${esc(n)}</p>`).join("")}`;
+}
+
+document.querySelectorAll("#longdraft-seg button").forEach((b) => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll("#longdraft-seg button").forEach((x) => x.classList.remove("on"));
+    b.classList.add("on");
+    state.longDraft = b.dataset.longdraft === "on";
+    renderLongDraftField();
+    refreshLongDraftPlan();
+  });
+});
+
+const JP_SEG = { pending: "待機", queued: "待機", running: "生成中", done: "完了",
+                 cancelled: "中止", error: "エラー" };
+const SEG_ICON = { done: "✓", running: "●", queued: "●", pending: "○",
+                   cancelled: "×", error: "!" };
+
+function renderLongDraftRun(run) {
+  const box = $("longdraft-run");
+  if (!box) return;
+  if (!run) { box.hidden = true; box.innerHTML = ""; return; }
+  state.longDraftRun = run;
+  box.hidden = false;
+  const cur = run.current_index;
+  const segs = run.segments.map((sg) => {
+    const live = sg.status === "running" && sg.sampler && sg.sampler.max
+      ? ` Sampling ${Math.round(sg.sampler.value || 0)} / ${Math.round(sg.sampler.max)}`
+      : (sg.progress_text ? " " + esc(sg.progress_text) : "");
+    const vid = sg.output_url
+      ? `<video src="${sg.output_url}" controls preload="metadata" playsinline></video>` : "";
+    return `<div class="ld-seg ${sg.status}">
+      <div class="ld-seg-head">${SEG_ICON[sg.status] || "·"} Segment ${sg.index + 1}
+        <span class="dim">${sg.start.toFixed(1)}-${sg.end.toFixed(1)} 秒 · seed ${sg.seed}</span></div>
+      <div class="ld-seg-state">${JP_SEG[sg.status] || sg.status}${live}
+        ${sg.cache_result ? `<span class="tag ${sg.cache_result}">${sg.cache_result}</span>` : ""}
+        ${sg.generation_seconds ? `<span class="dim">${fmtDuration(sg.generation_seconds)}</span>` : ""}</div>
+      ${vid}
+      ${sg.error ? `<div class="hint warn">${esc(sg.error)}</div>` : ""}
+    </div>`;
+  }).join("");
+  const running = run.status === "running" || run.status === "planned";
+  box.innerHTML = `
+    <h2>長尺Draft ${run.done_count} / ${run.segment_count}</h2>
+    <div class="ld-run-head">
+      ${cur != null ? `現在: Segment ${cur + 1} / ${run.segment_count} · ` : ""}
+      状態: <b>${JP_SEG[run.status] || run.status}</b>
+      ${running && run.remaining_seconds
+        ? ` · 全体推定残り <b>約${fmtDuration(run.remaining_seconds)}</b>（推定）` : ""}
+    </div>
+    <div class="ld-segs">${segs}</div>
+    ${run.preview_url ? `<h2>結合プレビュー（確認用）</h2>
+      <video class="ld-preview" src="${run.preview_url}" controls preload="metadata" playsinline></video>
+      <p class="hint">segment を順番につないだだけの確認用プレビューです。個々の segment 動画はそのまま残っています。</p>` : ""}
+    <p class="hint warn">${esc(run.warning || "")}</p>
+    ${run.resumable ? `<button class="btn" id="btn-ld-resume" data-ld="${run.id}">未完了の segment だけ再開する</button>` : ""}
+    <p class="hint">manifest: ${esc(run.manifest_path || "")}</p>`;
+}
+
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest("#btn-ld-resume");
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    const run = await api(`/api/long_draft/${btn.dataset.ld}/resume`,
+                          { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    notice("info", "未完了の segment から再開しました。");
+    renderLongDraftRun(run);
+  } catch (err) { notice("error", err.message); btn.disabled = false; }
+});
+
+async function startLongDraft() {
+  const payload = {
+    mode: state.mode,
+    prompt: $("prompt").value,
+    image: state.image,
+    local_path: state.localPath,
+    source_video: state.sourceVideo,
+    source_video_local: state.sourceVideoLocal,
+    source_video_meta: state.sourceVideoMeta,
+    source_duration: (state.sourceVideoMeta || {}).duration,
+    segment_seconds: longDraftCfg().segment_seconds_default,
+    aspect_ratio: $("aspect").value,
+    ref_image_size: state.refImageSize,
+    quality: "draft",
+  };
+  if (!$("refstrength").disabled) payload.reference_strength = Number($("refstrength").value);
+  const run = await api("/api/long_draft", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  state.batch = null;
+  $("results").innerHTML = "";
+  renderLongDraftRun(run);
+  notice("info", `長尺Draft を開始しました（${run.segment_count} segment を順番に生成します）。`);
+}
+
 // ---------------------------------------------------------------- status
 let statusTimer = null;
 async function pollStatus() {
@@ -189,6 +394,14 @@ async function pollStatus() {
       const fresh = s.batches.find((b) => b.id === state.batch.id);
       if (fresh) renderResults(fresh);
       tickResults();
+    }
+    /* Same rule as the batch panel: a reload must not lose a Long Draft that is
+       running or finished. The run is in this payload either way. */
+    state.longDraftRuns = s.long_drafts || [];
+    if (state.longDraftRuns.length) {
+      const shown = state.longDraftRun
+        && state.longDraftRuns.find((r) => r.id === state.longDraftRun.id);
+      renderLongDraftRun(shown || state.longDraftRuns[0]);
     }
     state.comfyReady = Boolean(s.gpu.comfy_ready);
     renderReadiness();
@@ -691,6 +904,7 @@ $("video-file").addEventListener("change", async (e) => {
     const r = await api("/api/upload?kind=video", { method: "POST", body: fd });
     state.sourceVideo = r.video;
     state.sourceVideoMeta = r.probe;
+    state.sourceVideoLocal = r.local_path;
     const p = r.probe || {};
     const bits = [r.video, (Math.round(r.bytes / 1024 / 1024 * 10) / 10) + " MB"];
     if (p.duration) bits.push(p.duration + "s");
@@ -705,6 +919,7 @@ $("video-file").addEventListener("change", async (e) => {
     v.src = URL.createObjectURL(f);
     v.hidden = false;
     renderCacheHint();
+    refreshLongDraftPlan();
   } catch (err) {
     $("video-status").textContent = "";
     notice("error", err.message);
@@ -735,6 +950,15 @@ $("image-file").addEventListener("change", async (e) => {
 });
 
 $("btn-generate").addEventListener("click", async () => {
+  /* Long Draft is a different submission entirely: one parent run of N
+     sequential segments, not N variations of one clip. */
+  if (longDraftOn()) {
+    $("btn-generate").disabled = true;
+    try { await startLongDraft(); }
+    catch (e) { notice("error", e.message); }
+    finally { $("btn-generate").disabled = false; }
+    return;
+  }
   const payload = {
     mode: state.mode,
     prompt: $("prompt").value,
@@ -913,12 +1137,23 @@ function historyBatchToView(b) {
 }
 
 let historyBatches = [];
+let longDraftHistory = [];
 
 async function loadHistory() {
   try {
     const h = await api("/api/history?limit=15");
     historyBatches = h.batches;
-    $("history").innerHTML = h.batches.map((b) => {
+    /* "These three videos were one Long Draft" is a fact that has to survive a
+       Studio restart, so it is read back from history, not from memory. */
+    longDraftHistory = h.long_drafts || [];
+    const ldRows = longDraftHistory.map((d) => {
+      const done = (d.segments || []).filter((x) => x.status === "done").length;
+      return `<div class="h-item h-ld" data-longdraft="${d.id}"><b>長尺Draft · ${JP_MODE[d.mode] || d.mode}</b><br>
+        ${esc((d.prompt || "").slice(0, 70))}<br>
+        ${(d.source_duration || 0).toFixed(1)} 秒 · ${d.segment_count} segments ·
+        ${done}/${(d.segments || []).length} 本完了 · ${JP_SEG[d.status] || d.status}</div>`;
+    }).join("");
+    $("history").innerHTML = ldRows + h.batches.map((b) => {
       const done = b.generations.filter((g) => g.status === "done").length;
       const sel = b.generations.find((g) => g.selected);
       return `<div class="h-item" data-batch="${b.id}"><b>${JP_KIND[b.kind] || b.kind} · ${JP_MODE[b.mode] || b.mode}</b><br>
@@ -937,7 +1172,16 @@ async function loadHistory() {
   } catch (e) { /* history is non-critical */ }
 }
 
-$("history").addEventListener("click", (e) => {
+$("history").addEventListener("click", async (e) => {
+  const ld = e.target.closest("[data-longdraft]");
+  if (ld) {
+    try {
+      const run = await api("/api/long_draft/" + ld.dataset.longdraft);
+      renderLongDraftRun(run);
+      notice("info", "履歴からこの長尺Draftを開きました。");
+    } catch (err) { notice("error", err.message); }
+    return;
+  }
   const item = e.target.closest("[data-batch]");
   if (!item) return;
   const b = historyBatches.find((x) => x.id === item.dataset.batch);

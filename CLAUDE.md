@@ -105,8 +105,10 @@ GPU ON後に環境修理をしない / 状態をユーザーへ見せる / 終�
 
 - 「H3 Studio V2 Stable に戻して」→ `bash scripts/rollback_stable.sh`（`--dry-run` で無害確認）
 - 物理コピー → `bash scripts/stable_snapshot.sh`（`~/Downloads/H3_CLOUD_REPRO_BACKUPS/`）
-- **Long Draft / EasyCache / H3-Optimizations / sparse attention / SageAttention /
-  DualRes / Face Refine / RTX VSR は、すべてこのタグより後の実験**。`feature/long-draft`
+- **Long Draft は `feature/long-draft` で Phase 0 まで実装済み**（`docs/V2_LONG_DRAFT.md`）。
+  Motion Trace のみ・Draft のみ・順次実行・Final は無変更。**実機未検証**
+- **EasyCache / H3-Optimizations / sparse attention / SageAttention / DualRes /
+  Face Refine / RTX VSR は、すべてこのタグより後の未着手の実験**。`feature/long-draft`
   で行い、`main` と `h3-studio-v2-stable` を直接触らない
 - `results/V2_READY` は `59d5d0c` の実機証跡。以後の Studio 変更はオフライン150テストのみ。
   次に GPU を起動したら最初に `bash scripts/v2_validate.sh` で証跡を更新する

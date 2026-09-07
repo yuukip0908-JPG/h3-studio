@@ -22,7 +22,7 @@ if __package__ in (None, ""):  # allow `python3 studio/server.py`
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "studio"
 
-from . import (comfy_client, config, gpu_plan, graph, history, jobs, mediaprobe,  # noqa: E402
+from . import (comfy_client, config, gpu_plan, graph, history, jobs, longdraft, mediaprobe,  # noqa: E402
                preflight, runpod_ctl, startup)
 
 STARTED_AT = time.time()
@@ -460,6 +460,19 @@ class Handler(BaseHTTPRequestHandler):
                         "source_video_seconds": [mediaprobe.MIN_SECONDS, mediaprobe.MAX_SECONDS],
                         "expected_fps": mediaprobe.H3_FPS,
                     },
+                    "long_draft": dict(MANAGER.long_draft_available(), **{
+                        # Motion Trace only, on purpose: Image Trace and Prompt
+                        # Cinema have no reference video to cut.
+                        "modes": [graph.MODE_MOTION_TRACE],
+                        "segment_seconds_default": longdraft.SEGMENT_SECONDS_DEFAULT,
+                        "segment_seconds_choices": list(longdraft.SEGMENT_SECONDS_CHOICES),
+                        "min_segment_seconds": longdraft.MIN_SEGMENT_SECONDS,
+                        "max_segment_seconds": longdraft.MAX_SEGMENT_SECONDS,
+                        "max_segments": longdraft.MAX_SEGMENTS,
+                        "seed_policies": list(longdraft.SEED_POLICIES),
+                        "seed_policy_default": longdraft.SEED_POLICY_DEFAULT,
+                        "warning": longdraft.BOUNDARY_WARNING,
+                    }),
                     "draft_quality": _draft_quality_choices(),
                     "finish_options": _finish_option_catalog(),
                     "output_dir": config.OUTPUT_DIR,
@@ -472,9 +485,18 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/history":
                 limit = int((query.get("limit") or ["50"])[0])
                 return self._json({"batches": history.list_batches(limit=limit),
+                                   "long_drafts": history.list_long_drafts(limit=10),
                                    "stats": history.stats()})
             if path.startswith("/api/video/"):
                 return self._video(path.rsplit("/", 1)[-1])
+            if path == "/api/long_draft":
+                return self._json({"long_drafts": MANAGER.recent_long_drafts(),
+                                   "available": MANAGER.long_draft_available()})
+            if path.startswith("/api/long_draft/"):
+                rest = path[len("/api/long_draft/"):]
+                if rest.endswith("/preview"):
+                    return self._long_draft_preview(rest[:-len("/preview")])
+                return self._long_draft(rest)
             if path == "/api/doctor":
                 return self._json(_doctor())
             return self._error(404, "unknown endpoint")
@@ -495,6 +517,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(b.as_dict())
         if path == "/api/cancel":
             return self._json({"ok": MANAGER.cancel_all()})
+        if path == "/api/long_draft/plan":
+            # Planning is free: no GPU, no files, no commitment. It exists so
+            # the split and both estimates can be seen before deciding.
+            return self._json(MANAGER.plan_long_draft(
+                data.get("source_duration"),
+                segment_seconds=data.get("segment_seconds"),
+                params=data.get("params")))
+        if path == "/api/long_draft":
+            return self._json(self._long_draft_start(data))
+        if path.startswith("/api/long_draft/") and path.endswith("/resume"):
+            ld_id = path[len("/api/long_draft/"):-len("/resume")]
+            return self._json(MANAGER.resume_long_draft(ld_id).as_dict())
         if path == "/api/export":
             dest = data.get("dest") or os.path.join(config.STUDIO_DATA_DIR, "exports")
             out = MANAGER.export(data["generation_id"], dest)
@@ -531,6 +565,7 @@ class Handler(BaseHTTPRequestHandler):
             "uptime_seconds": round(time.time() - STARTED_AT),
             "gpu": _gpu_status(),
             "batches": MANAGER.recent_batches(),
+            "long_drafts": MANAGER.recent_long_drafts(),
             "events": MANAGER.events[-10:],
             "stats": history.stats(),
         }
@@ -612,6 +647,53 @@ class Handler(BaseHTTPRequestHandler):
             seeds=data.get("seeds"),
         )
         return batch.as_dict()
+
+    def _long_draft_start(self, data):
+        """Start a Long Draft. Motion Trace only; Draft only; Final is untouched."""
+        if data.get("mode") not in (None, graph.MODE_MOTION_TRACE):
+            raise ValueError("long draft is Motion Trace only")
+        ref = data.get("reference_strength")
+        run = MANAGER.submit_long_draft(
+            prompt_text=data.get("prompt", ""),
+            image=data.get("image"),
+            image_source=data.get("local_path"),
+            source_video=data.get("source_video"),
+            source_video_local=data.get("source_video_local"),
+            source_video_meta=data.get("source_video_meta"),
+            source_duration=data.get("source_duration"),
+            segment_seconds=data.get("segment_seconds"),
+            aspect_ratio=data.get("aspect_ratio", graph.ASPECT_RATIOS[0]),
+            reference_strength=float(ref) if ref not in (None, "") else None,
+            ref_image_size=data.get("ref_image_size", "match"),
+            quality=data.get("quality", "draft"),
+            parent_seed=data.get("parent_seed"),
+            seed_policy=data.get("seed_policy") or longdraft.SEED_POLICY_DEFAULT,
+            quality_overrides=data.get("quality_overrides"))
+        return run.as_dict()
+
+    def _long_draft(self, ld_id):
+        run = MANAGER.find_long_draft(ld_id)
+        if run is None:
+            return self._error(404, "no such long draft")
+        payload = run.as_dict()
+        payload["manifest"] = longdraft.read_manifest(ld_id)
+        return self._json(payload)
+
+    def _long_draft_preview(self, ld_id):
+        """Serve the stitched preview.
+
+        Same rule as /api/video: the id comes from a URL, so the resolved path
+        is confined to the long draft tree before anything is opened.
+        """
+        run = MANAGER.long_draft(ld_id)
+        path = run.preview_path if run is not None else None
+        if not path:
+            row = history.get_long_draft(ld_id)
+            path = (row or {}).get("preview_path")
+        if not path or not longdraft.contains(path) or not os.path.exists(path):
+            return self._error(404, "no preview for %s" % ld_id)
+        with open(path, "rb") as f:
+            return self._send(200, f.read(), "video/mp4", {"Accept-Ranges": "bytes"})
 
     def _video(self, gen_id):
         """Serve a finished video, from memory or from history.
