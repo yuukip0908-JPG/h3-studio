@@ -805,3 +805,52 @@ OpenAPI に載っている本当のパスはこの2つ）。今日のGPU料金�
 生成後停止と heartbeat / 停止の検証 / 課金集計 / Pod削除ガード / ウォッチドッグ実動作。
 
 GPU は**一度も起動していない**。Pod は2基とも EXITED のまま。
+
+### 実機確認（2026-09-07、GPU 約4分・約 $0.06）
+
+pre-flight を全て PASS させてから、UI と同じ経路（`POST /api/gpu/start`）で1回だけ起動した。
+生成は行っていない（今回の目的は運用経路の確認のため）。
+
+**1回目は課金ゼロで「提示のみ」に落ちた** — が、これは正しい挙動ではなく**バグの発見**だった。
+
+```
+✓ 二重起動の確認   RUNNING な Pod は無い（2基すべて停止）
+✓ 事前チェック     10 件 PASS
+✗ GPU の確保      ufhtfdg9ulv3fj: 在庫なし; 新規作成: HTTP 400
+→ needs_confirmation（2秒で判定・課金ゼロ）
+```
+
+HTTP 400 の中身は `allowedCudaVersions: got string, want array` と `env: got string, want object`。
+`recreate_spec.json` は**説明文を値として持つキー**を含んでおり、それをそのまま
+POST していた。`pod_migrate.sh` は必要キーだけを組み立てていたので露見していなかった。
+**外から見ると「在庫なし」と区別がつかず、新規作成は一度も試されていなかった。**
+
+対策: `config.create_pod_body()` に許可キーを一元化し、spec 側の散文キーは `_note` へ改名。
+**pre-flight に「作成リクエストの形」検査を追加**（GPU不要で型まで検証）。回帰テスト2件追加。
+
+**2回目（修正後）— 実機で全工程 PASS:**
+
+| 工程 | 結果 |
+|---|---|
+| 二重起動の確認 | RUNNING な Pod なし |
+| 事前チェック（GPU不要） | **11 件 PASS / 不明 0** |
+| GPU の確保 | 新Pod `nkiurl6132qe5t` を **217秒**で確保 |
+| 実カード | **nvidia-smi で NVIDIA RTX 6000 Ada Generation 49140 MiB** |
+| 単価 | **$0.84/時**（A100 $1.59 ではない。安い方を選べている） |
+| Network Volume | `olmj77x4pc` → `/workspace` MOUNTED |
+| ComfyUI | start_h3.sh exit=0 / `/object_info` **907ノード** |
+| 起動後チェック | **10件すべて OK**（必要ノード欠落なし・Reference Strength 登録済み・Turbo LoRA 利用可・モデル一式あり・**doctor FAIL=0 WARN=0**・input/output あり） |
+| ウォッチドッグ | armed（heartbeat 8秒前） |
+| セッション料金 | $0.055（「推定」表示） |
+| **STOP** | **ok / verified=True / EXITED** |
+| 停止の独立確認 | RunPod API で3基とも EXITED、Volume 200GB 健在 |
+
+`describe()` の GPU 名詐称も実地で確認できた。起動直後は記録値の A100 が出て
+UI に「記録名。実価格 $0.84/時と一致しません」と警告が出たが、nvidia-smi 実行後に
+記録が RTX 6000 Ada へ**自動訂正**され、表示も正常化した。
+
+Pod は3基（active `nkiurl6132qe5t` / backup `ufhtfdg9ulv3fj` / 不要 `y9ts66clj5wml6`）。
+`y9ts66clj5wml6` は $1.59 の A100 で役目を終えており削除候補だが、
+CLAUDE.md の規則どおり**指示があるまで削除しない**。
+
+テスト **138件 PASS**。

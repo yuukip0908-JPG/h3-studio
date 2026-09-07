@@ -1686,6 +1686,38 @@ class PreflightTests(unittest.TestCase):
         guard = [c for c in checks if c["key"] == "no_double_start"][0]
         self.assertFalse(guard["ok"])
 
+    def test_the_create_body_carries_no_prose(self):
+        """The recreate spec documents itself; RunPod validates its schema.
+
+        Forwarding the file sent `env` and `allowedCudaVersions` as strings of
+        explanation, which RunPod rejected with a 400 -- indistinguishable from
+        "no capacity" at the UI, so the create attempt never actually happened.
+        """
+        from studio import config
+        body = config.create_pod_body(["NVIDIA RTX 6000 Ada Generation"])
+        self.assertEqual(body["gpuTypeIds"], ["NVIDIA RTX 6000 Ada Generation"])
+        self.assertIsInstance(body["ports"], list)
+        self.assertIsInstance(body["dataCenterIds"], list)
+        self.assertNotIn("env", body)
+        self.assertNotIn("allowedCudaVersions", body)
+        for key in body:
+            self.assertFalse(key.endswith("_note"), key)
+            self.assertIn(key, config.CREATE_POD_KEYS, key)
+
+    def test_a_malformed_create_body_fails_preflight(self):
+        from studio import config, preflight
+        orig = config.recreate_spec
+        try:
+            config.recreate_spec = lambda: {"imageName": "x", "ports": "8188/http",
+                                            "networkVolumeId": config.network_volume_id()}
+            checks = preflight.offline_checks(list_pods=lambda: [],
+                                              get_volume=lambda v: {"id": v},
+                                              have_api_key=lambda: True)
+        finally:
+            config.recreate_spec = orig
+        body = [c for c in checks if c["key"] == "create_body"][0]
+        self.assertFalse(body["ok"])
+
     def test_unknown_is_never_counted_as_a_pass(self):
         from studio import preflight
         checks = preflight.offline_checks(list_pods=None, get_volume=None, have_api_key=None)

@@ -5,7 +5,7 @@
   "sshKeyName": "h3-cloud-repro-mac",
   "sshKeyFingerprint": "SHA256:ZAaXMhNmwvzHZ9rLalrIhf4RQB2bMsqONoZ0UWCN3/I",
   "sshPrivateKeyPath": "~/.ssh/runpod_h3_ed25519",
-  "plannedGpuTypeId": "NVIDIA A100-SXM4-80GB",
+  "plannedGpuTypeId": "NVIDIA RTX 6000 Ada Generation",
   "plannedGpuVramGb": 48,
   "plannedGpuUsdPerHour": 0.74,
   "plannedDataCenterId": "US-WA-1",
@@ -23,17 +23,17 @@
     "containerDiskInGb": 60,
     "cloudType": "SECURE"
   },
-  "podId": "y9ts66clj5wml6",
+  "podId": "nkiurl6132qe5t",
   "networkVolumeId": "olmj77x4pc",
   "status": "BASELINE_READY",
   "lastUpdated": "2026-09-07",
   "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
   "note_allowedCudaVersions": "omitted: requiring 13.0 returned \"no instances currently available\"",
-  "publicIp": "195.26.233.82",
-  "sshPort": 32315,
-  "costPerHrTotal": 1.59,
+  "publicIp": "195.26.233.14",
+  "sshPort": 25387,
+  "costPerHrTotal": 0.84,
   "gpuUsdPerHour": 1.59,
-  "comfyUrl": "https://y9ts66clj5wml6-8188.proxy.runpod.net",
+  "comfyUrl": "https://nkiurl6132qe5t-8188.proxy.runpod.net",
   "accountSpendRatePerHr": 0.867,
   "comfyuiCommit": "169fcf35a2fc163fec31338b816503ddac0d3fcf",
   "clipcachedCommit": "f17ba8f369740a02a2138031517f853eb67b9d43",
@@ -50,16 +50,20 @@
     "doctor": "FAIL=0 WARN=0"
   },
   "previousPods": [
-    "ufhtfdg9ulv3fj"
+    "ufhtfdg9ulv3fj",
+    "y9ts66clj5wml6"
   ],
-  "previousPodId": "ufhtfdg9ulv3fj",
+  "previousPodId": "y9ts66clj5wml6",
   "podCleanup": "2026-09-07: six unused EXITED Pods deleted on the operator's instruction (ttgvtu9fb864k4, u3j83y0qfrdc56, jqj722x4jkwcan, otyu05x8yh2v96, sgiaeck1hh0m1l, 3lbxf2rnkjsqte). Nothing unique lived on them -- every persistent path is under /workspace on network volume olmj77x4pc, which was verified present afterwards. Remaining: y9ts66clj5wml6 (current) and ufhtfdg9ulv3fj (original, insurance).",
   "gpuVerified": true,
-  "gpuVerifiedFor": "y9ts66clj5wml6",
+  "gpuVerifiedFor": "nkiurl6132qe5t",
   "podRoles": {
-    "active": "y9ts66clj5wml6",
+    "active": "nkiurl6132qe5t",
     "backup": "ufhtfdg9ulv3fj",
-    "temporary": [],
+    "temporary": [
+      "y9ts66clj5wml6"
+    ],
+    "note": "nkiurl6132qe5t created 2026-09-07 by the new START GPU path: RTX 6000 Ada 48GB at $0.84/hr, verified by nvidia-smi. y9ts66clj5wml6 is the A100 at $1.59/hr the old path acquired; it is redundant now and is a deletion candidate (EXITED, not active, shares olmj77x4pc, no volume of its own).",
     "policy": "A Pod is disposable; the network volume is the environment. Delete only when EXITED, not active, mounting olmj77x4pc and carrying no volume of its own (studio.runpod_ctl.delete_pod enforces all four). The volume is never deleted."
   }
 }

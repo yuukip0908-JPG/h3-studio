@@ -93,6 +93,23 @@ def offline_checks(list_pods=None, get_volume=None, have_api_key=None):
     out.append(_check("recreate_spec", "Pod 作成レシピ", spec_ok,
                       "image=%s volume=%s" % (spec.get("imageName", "-"), spec.get("networkVolumeId", "-"))))
 
+    # A malformed create body fails with HTTP 400, which from the outside looks
+    # exactly like "no capacity" -- the create attempt silently never happens.
+    # The shape is knowable here, with no GPU and no request.
+    body = config.create_pod_body(["NVIDIA RTX 6000 Ada Generation"])
+    problems = []
+    for key, want in (("imageName", str), ("gpuTypeIds", list), ("dataCenterIds", list),
+                      ("ports", list), ("containerDiskInGb", int), ("gpuCount", int),
+                      ("networkVolumeId", str), ("volumeMountPath", str)):
+        if key not in body:
+            problems.append("%s が無い" % key)
+        elif not isinstance(body[key], want):
+            problems.append("%s の型が %s" % (key, type(body[key]).__name__))
+    if body.get("networkVolumeId") and body["networkVolumeId"] != vid:
+        problems.append("networkVolumeId が %s（期待 %s）" % (body["networkVolumeId"], vid))
+    out.append(_check("create_body", "Pod 作成リクエストの形", not problems,
+                      "; ".join(problems) or "%d 項目・型すべて妥当" % len(body)))
+
     missing = [w for w in REQUIRED_WORKFLOWS
                if not os.path.isfile(os.path.join(config.PROJECT_DIR, "workflows", w))]
     bad = []

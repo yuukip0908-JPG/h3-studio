@@ -107,6 +107,25 @@ def recreate_spec():
         return {}
 
 
+# The only keys rest.runpod.io accepts when creating a Pod. The recreate spec
+# also carries prose (why this image, why no allowedCudaVersions), and sending
+# those as values fails schema validation with a 400 -- which looked exactly
+# like "no capacity" from the outside and meant the create attempt never
+# happened at all. Compose the body; never forward the file.
+CREATE_POD_KEYS = ("name", "imageName", "gpuTypeIds", "gpuTypePriority", "gpuCount",
+                   "dataCenterIds", "cloudType", "networkVolumeId", "volumeMountPath",
+                   "containerDiskInGb", "ports")
+
+
+def create_pod_body(gpu_type_ids=None, spec=None):
+    """The exact JSON to POST /pods, built from the recreate spec."""
+    src = spec if spec is not None else recreate_spec()
+    body = {k: src[k] for k in CREATE_POD_KEYS if src.get(k) is not None}
+    if gpu_type_ids:
+        body["gpuTypeIds"] = list(gpu_type_ids)
+    return body
+
+
 def gpu_hourly_usd():
     state = load_runpod_state()
     for key in ("costPerHrTotal", "gpuUsdPerHour"):

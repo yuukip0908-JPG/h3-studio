@@ -40,9 +40,9 @@
       "8188/http",
       "22/tcp"
     ],
-    "allowedCudaVersions": "OMITTED ON PURPOSE - requiring 13.0 returns 'no instances currently available' even on machines reporting CUDA 13.0",
-    "env": "PUBLIC_KEY is injected by RunPod from the account SSH keys; not set by us",
-    "gpuTypeIds_note": "Ordered by preference: the baseline RTX 6000 Ada first, then other 48 GB cards, then larger. 48 GB is the floor because the measured cache-MISS peak is 47.3 GiB. If a non-Ada card is used, absolute times and VRAM are NOT comparable to the baseline measurements -- only the A/B/C comparison among themselves is."
+    "gpuTypeIds_note": "Ordered by preference: the baseline RTX 6000 Ada first, then other 48 GB cards, then larger. 48 GB is the floor because the measured cache-MISS peak is 47.3 GiB. If a non-Ada card is used, absolute times and VRAM are NOT comparable to the baseline measurements -- only the A/B/C comparison among themselves is.",
+    "env_note": "PUBLIC_KEY is injected by RunPod from the account SSH keys; not set by us",
+    "allowedCudaVersions_note": "OMITTED ON PURPOSE - requiring 13.0 returns 'no instances currently available' even on machines reporting CUDA 13.0"
   },
   "measured_requirements": {
     "peak_vram_mib": 48392,

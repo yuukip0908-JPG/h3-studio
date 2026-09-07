@@ -300,11 +300,9 @@ class GpuStarter:
 
         # 2) create one, with only the cards we may start unattended.
         wanted = [self.approved_gpu] if self.approved_gpu else gpu_plan.auto_start_gpu_ids()
-        spec = dict(config.recreate_spec())
-        if spec and create_used < config.MAX_CREATE_ATTEMPTS and time.time() < deadline:
+        spec = config.create_pod_body(wanted)
+        if spec.get("imageName") and create_used < config.MAX_CREATE_ATTEMPTS and time.time() < deadline:
             create_used += 1
-            spec = {k: v for k, v in spec.items() if not k.endswith("_note")}
-            spec["gpuTypeIds"] = wanted
             self._stage("acquire", "active", "新規 Pod を作成: %s" % ", ".join(wanted))
             try:
                 info = self.ctl.create_pod(spec, wait_seconds=max(60, int(deadline - time.time())))
@@ -336,6 +334,12 @@ class GpuStarter:
         return None, reason
 
     def _offer(self, gpu_id, price, how):
+        """Offer a card, cheapest known price first.
+
+        An option the operator can be quoted a price for is more useful than a
+        cheaper-class card nobody can price, so priced options lead and the
+        unpriced ones follow in preference order.
+        """
         if not gpu_id:
             return
         card = gpu_plan.price_card(gpu_id, price)
@@ -343,3 +347,5 @@ class GpuStarter:
         if any(o["gpu"] == card["gpu"] for o in self.offers):
             return
         self.offers.append(card)
+        self.offers.sort(key=lambda o: (o.get("usd_per_hour") is None,
+                                        o.get("usd_per_hour") or 0))
