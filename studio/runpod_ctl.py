@@ -495,11 +495,21 @@ class CostGuard(threading.Thread):
     an unknown job state is treated as "busy", never as "idle".
     """
 
-    def __init__(self, is_busy, on_warn, on_stop, interval=20.0):
+    def __init__(self, is_busy, on_warn, on_stop, interval=20.0,
+                 is_sequence_active=None):
         super().__init__(daemon=True, name="cost-guard")
         self.is_busy = is_busy
         self.on_warn = on_warn
         self.on_stop = on_stop
+        # "Is a multi-step run still in progress?" -- separate from is_busy()
+        # because between two Long Draft segments the Studio is genuinely idle:
+        # the previous generation is terminal, the next is not submitted yet, and
+        # there is a deliberate pause while ComfyUI unloads its models. Read as
+        # busy->idle, that gap is indistinguishable from "the work is finished",
+        # and stop_after_generation would stop the Pod after segment 1 of 3.
+        # Defaults to "no sequence", so a guard built without it behaves exactly
+        # as before.
+        self.is_sequence_active = is_sequence_active or (lambda: False)
         self.interval = interval
         self.idle_minutes = config.DEFAULT_AUTO_STOP_MINUTES
         # Opt-in, off by default: stopping the GPU the moment a batch ends is
@@ -510,6 +520,13 @@ class CostGuard(threading.Thread):
         self.warned = False
         self._stop = threading.Event()
         self.last_action = None
+
+    def _sequence_active(self):
+        """Never let a broken predicate look like "nothing is running"."""
+        try:
+            return bool(self.is_sequence_active())
+        except Exception:  # noqa: BLE001 - unknown counts as still running
+            return True
 
     def touch(self):
         self.last_activity = time.time()
@@ -561,6 +578,12 @@ class CostGuard(threading.Thread):
             if busy:
                 self.was_busy = True
                 self.touch()
+                continue
+
+            # A sequence still has work to submit, so the edge below has not
+            # been reached yet. was_busy is deliberately left standing: the edge
+            # belongs to the end of the whole run, not to the gap inside it.
+            if self.was_busy and self._sequence_active():
                 continue
 
             # "Stop when the generation finishes" -- an explicit opt-in, and the

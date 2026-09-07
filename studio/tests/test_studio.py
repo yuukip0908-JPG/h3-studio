@@ -2726,19 +2726,53 @@ class LongDraftRunTests(StudioTestCase):
             self.assertTrue(any(f["at"] < row["created_at"] for f in mock_comfy.STATE.freed),
                             "segment %d was queued with nothing freed first" % seg.index)
 
-    def test_a_failed_free_warns_but_does_not_stop_the_run(self):
-        """An unload that cannot be asked for is a warning, not a lost run."""
+    def test_a_failed_free_stops_the_run_instead_of_walking_into_the_oom(self):
+        """The unload is what stands between three MISSes and the OOM killer.
+
+        Measured on the Pod: the third consecutive segment re-staged the 25.9 GB
+        encoder and the container's 57.7 GiB limit killed ComfyUI. Continuing
+        with a warning would be continuing into exactly that.
+        """
         m = self.make_manager()
+        calls = []
+
+        def refuse(*a, **k):
+            calls.append(1)
+            raise comfy_client.ComfyError("free unavailable")
+
         real = m.client.free_models
-        m.client.free_models = lambda *a, **k: (_ for _ in ()).throw(
-            comfy_client.ComfyError("free unavailable"))
+        m.client.free_models = refuse
+        try:
+            run = self.wait_run(self.start_run(m))
+        finally:
+            m.client.free_models = real
+        self.assertEqual(run.status, "error")
+        self.assertEqual(run.segments[0].status, "error")
+        self.assertIn("/free", run.segments[0].error)
+        self.assertEqual(len(mock_comfy.STATE.submitted), 0,
+                         "no segment may be queued once the unload has failed")
+        self.assertGreaterEqual(len(calls), 2, "the unload is retried once before giving up")
+        self.assertTrue(any("解放" in e["text"] for e in m.events))
+
+    def test_a_free_that_succeeds_on_the_retry_lets_the_run_continue(self):
+        """One dropped request must not cost eight minutes of finished work."""
+        m = self.make_manager()
+        state = {"n": 0}
+        real = m.client.free_models
+
+        def flaky(*a, **k):
+            state["n"] += 1
+            if state["n"] == 1:
+                raise comfy_client.ComfyError("transient")
+            return real(*a, **k)
+
+        m.client.free_models = flaky
         try:
             run = self.wait_run(self.start_run(m))
         finally:
             m.client.free_models = real
         self.assertEqual(run.status, "done")
-        self.assertTrue(any("free" in e["text"] or "解放" in e["text"] for e in m.events),
-                        "the operator is told the memory was not released")
+        self.assertEqual([s.status for s in run.segments], ["done"] * 3)
 
     def test_an_ordinary_generation_never_frees(self):
         """Only Long Draft pays the reload cost; the normal flow is untouched."""
@@ -3451,6 +3485,547 @@ class ForceStopTests(ApiServerTests):
         self.assertLess(handler.index("confirm(", handler.index("needs_force")),
                         handler.index("stop(true)"),
                         "force is sent before the operator is asked")
+
+
+# --------------------------------------------------------------------------
+# Reliability Phase 1: a generation the Studio lost track of can be collected,
+# stopped or written off -- and never quietly abandoned. All offline.
+class ReconciliationTests(StudioTestCase):
+    """One path decides a generation's fate: collect, keep, or write off.
+
+    Split into two, the halves disagree exactly when it costs the most. On
+    2026-09-07 a segment that had run 524 s was finished on the Pod while the
+    Studio still called it running; a reaper that only asked "is it queued?"
+    would have written that off instead of collecting it.
+    """
+
+    def _one(self, m, seconds=6.0):
+        mock_comfy.STATE.job_seconds = seconds
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="reconcile",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        return batch.generations[0]
+
+    def test_a_job_comfyui_finished_is_collected_not_written_off(self):
+        """Case 1: finished on the Pod, still 'running' here."""
+        m = self.make_manager()
+        gen = self._one(m, seconds=0.3)
+        self.assertTrue(wait_until(lambda: gen.status == "done", 20))
+        # Now stage the fault: a generation the Studio still believes is running
+        # for a prompt ComfyUI has already finished.
+        gen.status = "running"
+        gen.output_path = None
+        history.update_generation(gen.id, status="running")
+        self.assertEqual(m.reconcile_generation(gen), "done")
+        self.assertEqual(gen.status, "done")
+        self.assertTrue(gen.output_path and os.path.exists(gen.output_path))
+        self.assertEqual(history.get_generation(gen.id)["status"], "done")
+
+    def test_a_prompt_still_on_the_queue_is_left_alone(self):
+        m = self.make_manager()
+        gen = self._one(m, seconds=6.0)
+        self.assertTrue(wait_until(lambda: gen.prompt_id is not None, 10))
+        self.assertEqual(m.reconcile_generation(gen), "live")
+        self.assertIn(gen.status, jobs.ACTIVE_STATES)
+        self.assertEqual(gen.misses, 0)
+
+    def test_one_disappearance_is_not_a_death_sentence(self):
+        """Case 2: absent from both, once. A blip is not a verdict."""
+        m = self.make_manager()
+        gen = self._one(m, seconds=6.0)
+        self.assertTrue(wait_until(lambda: gen.prompt_id is not None, 10))
+        self._forget(gen.prompt_id)
+        self.assertEqual(m.reconcile_generation(gen), "live")
+        self.assertIn(gen.status, jobs.ACTIVE_STATES)
+        self.assertEqual(gen.misses, 1)
+        # A second look immediately afterwards is still not enough: the streak
+        # has to span real time, or one bad minute of network reads as death.
+        self.assertEqual(m.reconcile_generation(gen), "live")
+        self.assertNotEqual(gen.status, "error")
+
+    def test_a_prompt_comfyui_really_forgot_does_not_stay_running_forever(self):
+        """Case 3: the streak is confirmed, so the row stops lying."""
+        m = self.make_manager()
+        gen = self._one(m, seconds=6.0)
+        self.assertTrue(wait_until(lambda: gen.prompt_id is not None, 10))
+        self._forget(gen.prompt_id)
+        m.reconcile_generation(gen)
+        gen.first_miss_at -= m.RECONCILE_CONFIRM_SECONDS + 1     # the streak has aged
+        self.assertEqual(m.reconcile_generation(gen), "error")
+        self.assertEqual(gen.status, "error")
+        self.assertIn("ComfyUI", gen.error)
+        self.assertFalse(m.is_busy(), "a written-off job must stop counting as busy")
+        self.assertEqual(history.get_generation(gen.id)["status"], "error")
+
+    def test_an_unreachable_comfyui_decides_nothing(self):
+        """Unknown is not a verdict, and must not advance the streak."""
+        m = self.make_manager()
+        gen = self._one(m, seconds=6.0)
+        self.assertTrue(wait_until(lambda: gen.prompt_id is not None, 10))
+        mock_comfy.STATE.pod_stopped = True
+        try:
+            self.assertEqual(m.reconcile_generation(gen), "unknown")
+        finally:
+            mock_comfy.STATE.pod_stopped = False
+        self.assertEqual(gen.misses, 0, "a network failure counted as a miss")
+        self.assertNotEqual(gen.status, "error")
+
+    def test_finding_it_again_clears_the_streak(self):
+        m = self.make_manager()
+        gen = self._one(m, seconds=6.0)
+        self.assertTrue(wait_until(lambda: gen.prompt_id is not None, 10))
+        pid, prompt = gen.prompt_id, mock_comfy.STATE.jobs.get(gen.prompt_id)
+        self._forget(pid)
+        m.reconcile_generation(gen)
+        self.assertEqual(gen.misses, 1)
+        with mock_comfy.STATE.lock:                    # ComfyUI answers again
+            mock_comfy.STATE.jobs[pid] = prompt
+            mock_comfy.STATE.pending.append(pid)
+        self.assertEqual(m.reconcile_generation(gen), "live")
+        self.assertEqual(gen.misses, 0)
+
+    @staticmethod
+    def _forget(prompt_id):
+        """Make ComfyUI answer as if it had never heard of this prompt."""
+        with mock_comfy.STATE.lock:
+            mock_comfy.STATE.history.pop(prompt_id, None)
+            mock_comfy.STATE.jobs.pop(prompt_id, None)
+            if prompt_id in mock_comfy.STATE.pending:
+                mock_comfy.STATE.pending.remove(prompt_id)
+            if mock_comfy.STATE.running == prompt_id:
+                mock_comfy.STATE.running = None
+
+
+
+class SubmitCrashWindowTests(StudioTestCase):
+    """Case 4: the Studio dies between ComfyUI accepting a prompt and this
+    process writing the id down.
+
+    Before Phase 1 that row was indistinguishable from one that had never been
+    sent, and the prompt was unfindable -- eight or nine minutes of GPU time per
+    Long Draft segment with no handle back to it.
+    """
+
+    def test_the_row_says_submitting_while_the_call_is_in_flight(self):
+        m = self.make_manager()
+        seen = {}
+        real = m.client.submit
+
+        def watched(api_prompt, client_id):
+            # What a crash at this exact instant would leave behind.
+            rows = history.connect().execute(
+                "SELECT id, status, prompt_id, params FROM generations").fetchall()
+            seen["rows"] = [dict(r) for r in rows]
+            return real(api_prompt, client_id)
+
+        m.client.submit = watched
+        try:
+            m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="crash window",
+                           quality="draft", variations=1, duration=2.0,
+                           aspect_ratio=graph.ASPECT_RATIOS[0])
+        finally:
+            m.client.submit = real
+        row = seen["rows"][0]
+        self.assertEqual(row["status"], "submitting",
+                         "a crash here would look like a job that was never sent")
+        self.assertIsNone(row["prompt_id"])
+        self.assertTrue(json.loads(row["params"])["filename_prefix"],
+                        "the durable handle back to the prompt must already be stored")
+
+    def test_submitting_counts_as_busy_so_the_pod_is_not_read_as_idle(self):
+        m = self.make_manager()
+        self.assertIn("submitting", jobs.ACTIVE_STATES)
+        gen = jobs.Generation("g_x", "b_x", 0, 1, {}, {}, "MISS")
+        gen.status = "submitting"
+        with m.lock:
+            m.generations[gen.id] = gen
+        self.assertTrue(m.is_busy())
+
+    def test_a_lost_prompt_id_is_recovered_from_the_queue_by_its_prefix(self):
+        """The filename prefix is chosen and stored before the submit, so it
+        survives the crash that the prompt id does not."""
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 6.0
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="orphan",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        gen = batch.generations[0]
+        self.assertTrue(wait_until(lambda: gen.prompt_id is not None, 10))
+        real_pid = gen.prompt_id
+
+        # Exactly what the crash leaves: the prompt is on ComfyUI, the Studio
+        # has the row and the prefix but not the id.
+        gen.prompt_id = None
+        gen.status = "submitting"
+        history.update_generation(gen.id, status="submitting", prompt_id=None)
+
+        self.assertEqual(m.reconcile_generation(gen), "live")
+        self.assertEqual(gen.prompt_id, real_pid, "the prompt was not found again")
+        self.assertEqual(history.get_generation(gen.id)["prompt_id"], real_pid)
+        self.assertEqual(m.by_prompt_id[real_pid], gen.id)
+        self.wait_batch(batch)
+        self.assertEqual(gen.status, "done", "and it still completes normally")
+
+    def test_a_generation_that_was_never_sent_is_not_hunted_for(self):
+        """Between creating the rows and submitting them, a generation has no
+        prompt on ComfyUI. Counting that as a miss starts a death streak
+        against a job that was never sent."""
+        m = self.make_manager()
+        gen = jobs.Generation("g_z", "b_z", 0, 1,
+                              {"filename_prefix": "video/H3Studio_b_z_0"}, {}, "MISS")
+        gen.status = "queued"                     # created, not yet submitted
+        with m.lock:
+            m.generations[gen.id] = gen
+        self.assertEqual(m.reconcile_generation(gen), "live")
+        self.assertEqual(gen.misses, 0)
+
+    def test_a_prefix_that_is_nowhere_is_not_adopted_from_someone_else(self):
+        m = self.make_manager()
+        gen = jobs.Generation("g_y", "b_y", 0, 1,
+                              {"filename_prefix": "video/H3Studio_nothing_0"}, {}, "MISS")
+        gen.status = "submitting"
+        with m.lock:
+            m.generations[gen.id] = gen
+        history.create_batch("b_y", kind="draft", mode="prompt_cinema", prompt="p")
+        history.create_generation("g_y", "b_y", 0, 1, gen.params)
+        self.assertEqual(m.reconcile_generation(gen), "live")
+        self.assertIsNone(gen.prompt_id)
+        self.assertEqual(gen.misses, 1)
+
+
+class CancelOwnershipTests(StudioTestCase):
+    """Case 5: /interrupt takes no prompt id -- it aborts whatever ComfyUI is
+    running, whoever queued it. Removing from the queue IS per-id."""
+
+    def _foreign_prompt(self, m):
+        """A prompt this Studio did not submit, occupying ComfyUI."""
+        api_prompt, _params = graph.build(graph.MODE_PROMPT_CINEMA, "someone else", 7,
+                                          quality="draft", duration=2.0,
+                                          aspect_ratio=graph.ASPECT_RATIOS[0],
+                                          filename_prefix="video/NotOurs")
+        return m.client.submit(api_prompt, "another-client")
+
+    def test_a_foreign_job_is_never_interrupted(self):
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 8.0
+        foreign = self._foreign_prompt(m)
+        self.assertTrue(wait_until(lambda: mock_comfy.STATE.queue_snapshot()[0] == foreign, 10))
+
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="ours",
+                               quality="draft", variations=2, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        interrupts = []
+        real = m.client.interrupt
+        m.client.interrupt = lambda: interrupts.append(1) or real()
+        try:
+            m.cancel_all()
+        finally:
+            m.client.interrupt = real
+        self.assertEqual(interrupts, [],
+                         "someone else's generation was interrupted")
+        self.assertTrue(all(g.status == "cancelled" for g in batch.generations),
+                        "our queued jobs must still be removed")
+        self.assertEqual(mock_comfy.STATE.queue_snapshot()[0], foreign,
+                         "the foreign job must still be running")
+
+    def test_our_own_running_job_is_interrupted(self):
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 8.0
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="ours",
+                               quality="draft", variations=2, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        self.assertTrue(wait_until(m.is_busy, 10))
+        self.assertTrue(wait_until(
+            lambda: mock_comfy.STATE.queue_snapshot()[0] in
+            {g.prompt_id for g in batch.generations}, 10))
+        interrupts = []
+        real = m.client.interrupt
+        m.client.interrupt = lambda: interrupts.append(1) or real()
+        try:
+            m.cancel_all()
+        finally:
+            m.client.interrupt = real
+        self.assertEqual(len(interrupts), 1)
+        self.assertTrue(wait_until(lambda: not m.is_busy(), 15))
+
+    def test_an_unreadable_queue_stops_nothing_it_cannot_account_for(self):
+        """Confirmation does not exist, so neither does the interrupt."""
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 8.0
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="ours",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        self.assertTrue(wait_until(m.is_busy, 10))
+        interrupts = []
+        real = m.client.interrupt
+        m.client.interrupt = lambda: interrupts.append(1) or real()
+        mock_comfy.STATE.pod_stopped = True
+        try:
+            m.cancel_all()
+        finally:
+            m.client.interrupt = real
+            mock_comfy.STATE.pod_stopped = False
+        self.assertEqual(interrupts, [])
+        self.assertNotEqual(batch.generations[0].status, "cancelled",
+                            "a status we could not verify must not be written")
+
+
+class LongDraftStopPolicyTests(unittest.TestCase):
+    """Case 6: between two Long Draft segments the Studio is genuinely idle --
+    previous generation terminal, next not submitted, ComfyUI unloading models.
+
+    Read as a busy->idle edge, that gap stops the Pod after segment 1 of 3.
+    """
+
+    def _guard(self, busy, sequence, stopped):
+        guard = runpod_ctl.CostGuard(lambda: busy[0], lambda s: None,
+                                     lambda: stopped.append(1), interval=0.05,
+                                     is_sequence_active=lambda: sequence[0])
+        guard.stop_after_generation = True
+        return guard
+
+    def test_the_gap_between_segments_does_not_stop_the_pod(self):
+        busy, sequence, stopped = [True], [True], []
+        guard = self._guard(busy, sequence, stopped)
+        guard.start()
+        try:
+            time.sleep(0.25)
+            busy[0] = False              # segment 1 finished; segment 2 not sent yet
+            time.sleep(0.5)
+            self.assertEqual(stopped, [], "the Pod was stopped between two segments")
+            busy[0] = True               # segment 2 runs
+            time.sleep(0.2)
+            busy[0] = False
+            sequence[0] = False          # ...and now the whole run is over
+            self.assertTrue(wait_until(lambda: stopped, 3.0),
+                            "the Pod must stop once the run is actually finished")
+        finally:
+            guard.stop_thread()
+
+    def test_an_ordinary_batch_still_stops_on_the_edge(self):
+        busy, sequence, stopped = [True], [False], []
+        guard = self._guard(busy, sequence, stopped)
+        guard.start()
+        try:
+            time.sleep(0.2)
+            busy[0] = False
+            self.assertTrue(wait_until(lambda: stopped, 3.0))
+        finally:
+            guard.stop_thread()
+
+    def test_a_broken_predicate_counts_as_still_running(self):
+        busy, stopped = [True], []
+
+        def explode():
+            raise RuntimeError("cannot tell")
+
+        guard = runpod_ctl.CostGuard(lambda: busy[0], lambda s: None,
+                                     lambda: stopped.append(1), interval=0.05,
+                                     is_sequence_active=explode)
+        guard.stop_after_generation = True
+        guard.start()
+        try:
+            time.sleep(0.2)
+            busy[0] = False
+            time.sleep(0.4)
+            self.assertEqual(stopped, [], "unknown was treated as finished")
+        finally:
+            guard.stop_thread()
+
+    def test_the_manager_reports_a_long_draft_as_a_live_sequence(self):
+        """The predicate the guard is wired to, against the real manager."""
+        class _Run:
+            def __init__(self, active):
+                self._active = active
+
+            def is_active(self):
+                return self._active
+
+        m = jobs.JobManager(comfy=comfy_client.ComfyClient("http://127.0.0.1:1"))
+        self.assertFalse(m.has_active_long_draft())
+        m.long_draft_runs.append(_Run(True))
+        self.assertTrue(m.has_active_long_draft())
+        m.long_draft_runs[:] = [_Run(False)]
+        self.assertFalse(m.has_active_long_draft())
+
+    def test_the_idle_timer_is_untouched(self):
+        """Phase 1 changes what stop_after_generation means, and nothing else."""
+        stopped = []
+        guard = runpod_ctl.CostGuard(lambda: False, lambda s: None,
+                                     lambda: stopped.append(1), interval=0.05,
+                                     is_sequence_active=lambda: False)
+        guard.idle_minutes = 20
+        guard.last_activity = time.time() - 10 * 3600
+        guard.start()
+        try:
+            self.assertTrue(wait_until(lambda: stopped, 3.0))
+        finally:
+            guard.stop_thread()
+
+
+class MockQueueFidelityTests(StudioTestCase):
+    """Phase 1 leans on /queue to tell alive from forgotten. A mock that always
+    answered "empty" would let every one of those tests pass while being wrong
+    about the only case they exist for."""
+
+    def test_a_prompt_is_on_the_queue_the_moment_submit_returns(self):
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 6.0
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="queue",
+                               quality="draft", variations=3, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        ours = {g.prompt_id for g in batch.generations}
+        snapshot = m.client.queue_snapshot()
+        running, pending = comfy_client.ComfyClient.queue_ids(snapshot)
+        self.assertTrue(ours <= set(running) | set(pending),
+                        "a submitted prompt was not visible on the queue")
+
+    def test_the_queue_carries_the_prompt_so_a_prefix_can_be_found(self):
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 6.0
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="prefix",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        gen = batch.generations[0]
+        found = comfy_client.ComfyClient.queue_find_by_prefix(
+            m.client.queue_snapshot(), gen.params["filename_prefix"])
+        self.assertEqual(found, gen.prompt_id)
+
+    def test_a_deleted_prompt_leaves_the_queue(self):
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 6.0
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="drop",
+                               quality="draft", variations=3, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        victim = batch.generations[-1].prompt_id
+        m.client.cancel_queued([victim])
+        _running, pending = comfy_client.ComfyClient.queue_ids(m.client.queue_snapshot())
+        self.assertNotIn(victim, pending)
+
+    def test_an_unreachable_comfyui_raises_instead_of_answering_empty(self):
+        m = self.make_manager()
+        mock_comfy.STATE.pod_stopped = True
+        try:
+            with self.assertRaises(comfy_client.ComfyError):
+                m.client.queue_snapshot()
+            self.assertEqual(m.client.queue_state(), {},
+                             "the best-effort reader keeps its old contract")
+        finally:
+            mock_comfy.STATE.pod_stopped = False
+
+
+class ComfyUiOnlyStartTests(ApiServerTests):
+    """Case 8: the Pod is RUNNING and paid for, and ComfyUI is dead.
+
+    Until now runpod_ctl.start_comfyui() had exactly one caller -- inside the
+    GPU start sequence, which refuses when a Pod is already up -- so the only
+    way back was an SSH session by hand while the Pod billed.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.started = []
+        self.gpu_starts = []
+        # NOT self._orig: ApiServerTests.tearDown restores its own pair from that.
+        self._p1_orig = (runpod_ctl.start_comfyui, self.srv._start_gpu, self.srv.time)
+        runpod_ctl.start_comfyui = lambda *a, **k: (self.started.append(1) or (0, "ok", ""))
+        self.srv._start_gpu = lambda *a, **k: self.gpu_starts.append(1) or {}
+        # The readiness wait is 30 x 2 s on a Pod. The verdict is what is under
+        # test, not the waiting, so the sleep is removed rather than endured.
+        self.srv.time = _FastSleep(time)
+
+    def tearDown(self):
+        runpod_ctl.start_comfyui, self.srv._start_gpu, self.srv.time = self._p1_orig
+        super().tearDown()
+
+    def _pod_state(self, state):
+        runpod_ctl.describe = lambda pod_id=None: {
+            "podId": "testpod", "desiredStatus": state, "gpu": "RTX 6000 Ada",
+            "gpuCount": 1, "costPerHr": 0.84, "networkVolumeId": "vol1",
+            "lastStartedAt": None}
+
+    def test_it_starts_comfyui_on_a_running_pod_and_never_the_gpu(self):
+        """The whole point: the Pod stays up, only ComfyUI comes back."""
+        self._pod_state("RUNNING")
+        mock_comfy.STATE.pod_stopped = True          # ComfyUI is down
+
+        def revive(*a, **k):
+            self.started.append(1)
+            mock_comfy.STATE.pod_stopped = False     # start_h3.sh worked
+            return (0, "HEALTHY", "")
+
+        runpod_ctl.start_comfyui = revive
+        try:
+            r = self.post("/api/comfyui/start", {})
+        finally:
+            mock_comfy.STATE.pod_stopped = False
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r["comfy_ready"])
+        self.assertEqual(len(self.started), 1, "start_comfyui was not called")
+        self.assertEqual(self.gpu_starts, [], "the GPU start sequence must never be entered")
+
+    def test_an_exited_pod_is_refused_rather_than_started(self):
+        self._pod_state("EXITED")
+        r = self.post("/api/comfyui/start", {})
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "pod_not_running")
+        self.assertEqual(self.started, [], "a stopped Pod must not be woken by this button")
+        self.assertEqual(self.gpu_starts, [])
+        self.assertIn("START GPU", r["error"])
+
+    def test_a_healthy_comfyui_is_not_restarted_by_accident(self):
+        self._pod_state("RUNNING")
+        r = self.post("/api/comfyui/start", {})
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "already_running")
+        self.assertEqual(self.started, [])
+
+    def test_an_unknown_pod_state_is_refused_not_guessed(self):
+        def explode(pod_id=None):
+            raise runpod_ctl.RunPodError("api down")
+        runpod_ctl.describe = explode
+        r = self.post("/api/comfyui/start", {})
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "pod_unknown")
+        self.assertEqual(self.started, [])
+
+    def test_a_start_that_leaves_comfyui_silent_is_reported_as_a_failure(self):
+        self._pod_state("RUNNING")
+        mock_comfy.STATE.pod_stopped = True
+        try:
+            r = self.post("/api/comfyui/start", {})
+        finally:
+            mock_comfy.STATE.pod_stopped = False
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "not_healthy")
+        self.assertFalse(r["comfy_ready"])
+
+    def test_the_button_is_offered_only_when_the_pod_is_up_and_comfyui_is_not(self):
+        self._pod_state("RUNNING")
+        mock_comfy.STATE.pod_stopped = True
+        try:
+            self.assertTrue(self.get("/api/status")["gpu"]["comfy_start_available"])
+        finally:
+            mock_comfy.STATE.pod_stopped = False
+        self.assertFalse(self.get("/api/status")["gpu"]["comfy_start_available"],
+                         "a healthy ComfyUI must not be offered a restart button")
+        self._pod_state("EXITED")
+        self.assertFalse(self.get("/api/status")["gpu"]["comfy_start_available"],
+                         "a stopped Pod must never offer it")
+
+
+class _FastSleep:
+    """time, with sleep() removed -- for a readiness loop under test."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    @staticmethod
+    def sleep(_seconds):
+        return None
 
 
 if __name__ == "__main__":

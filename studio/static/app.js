@@ -483,6 +483,12 @@ function renderGpu(g) {
   const chk = $("stop-after-gen");
   if (chk && document.activeElement !== chk) chk.checked = Boolean(as.stop_after_generation);
 
+  /* Offered only when the Pod is RUNNING and ComfyUI is not answering -- the
+     situation that cost an unattended half hour of billing and a hand-run SSH
+     session. The server checks the same two conditions itself. */
+  const comfyDown = $("comfy-down");
+  if (comfyDown) comfyDown.hidden = !g.comfy_start_available;
+
   /* Two separate facts, because reading one as the other is what let a Pod bill
      unattended on 2026-09-07: the heartbeat says the STUDIO is alive (the Studio
      writes it), the pulse says the WATCHDOG is alive (only the watchdog writes
@@ -1143,6 +1149,26 @@ $("btn-gpu-stop").addEventListener("click", async () => {
                  + "まだ実行中ならもう一度 STOP GPU を押してください。", 0);
   }
   pollStatus();
+});
+
+$("btn-comfy-start").addEventListener("click", async () => {
+  const btn = $("btn-comfy-start");
+  btn.disabled = true;
+  btn.textContent = "ComfyUI を起動中…";
+  try {
+    const r = await api("/api/comfyui/start", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    if (r.ok) notice("info", "ComfyUI を起動しました。生成を再開できます。");
+    else notice("warn", r.error || "ComfyUI を起動できませんでした。", 0);
+  } catch (e) {
+    notice("warn", "起動要求の応答を受け取れませんでした（" + e.message + "）。"
+                 + "サーバ側では続いている可能性があります。状態表示を確認してください。", 0);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "ComfyUI を起動";
+    pollStatus();
+  }
 });
 
 $("stop-after-gen").addEventListener("change", async (e) => {

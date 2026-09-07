@@ -144,10 +144,69 @@ class ComfyClient:
         return bool(info)
 
     def queue_state(self):
+        """Best-effort queue read: {} means "empty OR unreachable"."""
         try:
             return self._json("/queue") or {}
         except ComfyError:
             return {}
+
+    def queue_snapshot(self):
+        """The queue, or a raised ComfyError -- never a silent empty.
+
+        Reconciliation decides whether a prompt is alive or forgotten from this,
+        and "I could not ask" must never be read as "it is not there". That is
+        the difference between waiting out a network blip and declaring a
+        running generation dead.
+        """
+        return self._json("/queue") or {}
+
+    @staticmethod
+    def queue_ids(snapshot):
+        """(running_ids, pending_ids) from a /queue payload.
+
+        The id is found by scanning each entry for a string, not by trusting a
+        fixed index: ComfyUI's entries are [number, prompt_id, prompt, ...] but
+        only the pending shape is established in this project, and a wrong index
+        would silently report every prompt as missing.
+        """
+        def ids(entries):
+            out = []
+            for entry in entries or []:
+                if isinstance(entry, str):
+                    out.append(entry)
+                elif isinstance(entry, (list, tuple)):
+                    out.extend(x for x in entry if isinstance(x, str))
+            return out
+        if not isinstance(snapshot, dict):
+            return [], []
+        return ids(snapshot.get("queue_running")), ids(snapshot.get("queue_pending"))
+
+    @staticmethod
+    def queue_find_by_prefix(snapshot, filename_prefix):
+        """The prompt id of a queued job whose SaveVideo writes `filename_prefix`.
+
+        This is the handle back to a prompt whose id was lost -- the Studio picks
+        the prefix before it submits and stores it, so it survives a crash that
+        the prompt id does not.
+        """
+        if not filename_prefix or not isinstance(snapshot, dict):
+            return None
+        for key in ("queue_running", "queue_pending"):
+            for entry in snapshot.get(key) or []:
+                if not isinstance(entry, (list, tuple)):
+                    continue
+                graphs = [x for x in entry if isinstance(x, dict)]
+                for graph_obj in graphs:
+                    for node in graph_obj.values():
+                        if not isinstance(node, dict):
+                            continue
+                        inputs = node.get("inputs")
+                        if isinstance(inputs, dict) and \
+                                inputs.get("filename_prefix") == filename_prefix:
+                            found = [x for x in entry if isinstance(x, str)]
+                            if found:
+                                return found[0]
+        return None
 
     def submit(self, api_prompt, client_id):
         resp = self._json("/prompt", {"prompt": api_prompt, "client_id": client_id})

@@ -93,6 +93,10 @@ def _gpu_status():
             out["session_cost_is_estimate"] = True
 
     # What the operator has to see before anything starts billing.
+    # The one situation this covers: the Pod is up and paid for, and ComfyUI is
+    # not answering. Anything else and the button must not be offered.
+    out["comfy_start_available"] = bool(out.get("pod_state") == "RUNNING"
+                                        and out.get("comfy_ready") is not True)
     out["recommended"] = gpu_plan.recommended()
     out["price"] = gpu_plan.price_card(out.get("gpu"), out.get("cost_per_hr"))
     out["network_volume_id"] = config.network_volume_id()
@@ -101,6 +105,68 @@ def _gpu_status():
     out["start"] = STARTER.status() if STARTER else {"state": startup.IDLE, "stages": [], "offers": []}
     out["billing"] = _billing_cached()
     return out
+
+
+# One ComfyUI start at a time. start_h3.sh over SSH takes ~45 s, and two of
+# them racing on the Pod is how you get two ComfyUI processes on one cache
+# directory -- a baseline-level prohibition.
+_COMFY_START = {"busy": False, "lock": threading.Lock()}
+
+
+def _start_comfyui_only(force=False):
+    """Bring ComfyUI back up on a Pod that is already RUNNING.
+
+    This is not START GPU and must never become it. On 2026-09-07 ComfyUI was
+    OOM-killed while the Pod stayed RUNNING and billing, and the only way back
+    was an SSH session by hand: runpod_ctl.start_comfyui() had exactly one
+    caller, inside the GPU start sequence, which refuses whenever a Pod is
+    already up. Nothing here creates, starts or stops a Pod.
+    """
+    try:
+        info = runpod_ctl.describe()
+    except runpod_ctl.RunPodError as e:
+        return {"ok": False, "reason": "pod_unknown",
+                "error": "Pod の状態を確認できませんでした（%s）。" % str(e)[:200]}
+    state = info.get("desiredStatus")
+    if state != "RUNNING":
+        # Deliberately a refusal, not an escalation: starting a Pod costs money
+        # and is the operator's decision, made with START GPU.
+        return {"ok": False, "reason": "pod_not_running", "pod_state": state,
+                "error": "Pod が %s です。ComfyUI だけを起動することはできません。"
+                         "GPU が必要なら START GPU を押してください。" % (state or "不明")}
+    if MANAGER.client.is_alive() and not force:
+        return {"ok": False, "reason": "already_running",
+                "error": "ComfyUI はすでに応答しています。"}
+
+    with _COMFY_START["lock"]:
+        if _COMFY_START["busy"]:
+            return {"ok": False, "reason": "in_progress",
+                    "error": "ComfyUI の起動をすでに実行中です。"}
+        _COMFY_START["busy"] = True
+    try:
+        code, out, err = runpod_ctl.start_comfyui()
+        ready = False
+        for _ in range(30):
+            if MANAGER.client.is_alive():
+                ready = True
+                break
+            time.sleep(2.0)
+        if ready:
+            # The socket died with the old process; reconnect now rather than
+            # waiting out the listener's backoff, and drop the node/LoRA answers
+            # cached from the previous ComfyUI.
+            MANAGER.rebind(config.comfy_url())
+            MANAGER.notice("info", "ComfyUI を起動しました。")
+        return {"ok": bool(ready), "reason": None if ready else "not_healthy",
+                "exit_code": code, "comfy_ready": ready,
+                "detail": (out or "")[-800:] or (err or "")[-800:],
+                "error": None if ready else
+                "起動を実行しましたが ComfyUI が応答しません。Pod のログを確認してください。"}
+    except runpod_ctl.RunPodError as e:
+        return {"ok": False, "reason": "start_failed", "error": str(e)[:400]}
+    finally:
+        with _COMFY_START["lock"]:
+            _COMFY_START["busy"] = False
 
 
 _BILLING_CACHE = {"at": 0.0, "value": None}
@@ -547,6 +613,9 @@ class Handler(BaseHTTPRequestHandler):
                                          wait_seconds=float(data.get("wait_seconds") or 0)))
         if path == "/api/gpu/stop":
             return self._json(_stop_gpu(force=bool(data.get("force"))))
+        if path == "/api/comfyui/start":
+            # Separate from /api/gpu/start on purpose: this one never starts a Pod.
+            return self._json(_start_comfyui_only(force=bool(data.get("force"))))
         if path == "/api/motion_prompt":
             # One source of truth for the wording: the UI picks roles, the
             # server composes the tagged prompt.
@@ -928,7 +997,8 @@ def build_app(comfy=None):
         except runpod_ctl.RunPodError as e:
             MANAGER.notice("error", "Cost guard could not stop the Pod: %s" % e)
 
-    GUARD = runpod_ctl.CostGuard(MANAGER.is_busy, on_warn, on_stop)
+    GUARD = runpod_ctl.CostGuard(MANAGER.is_busy, on_warn, on_stop,
+                                 is_sequence_active=MANAGER.has_active_long_draft)
     GUARD.start()
     global STARTER
     STARTER = _build_starter()

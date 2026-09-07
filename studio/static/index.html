@@ -200,6 +200,13 @@
 
     <p class="hint warn" id="gpu-why" hidden></p>
 
+    <!-- Pod up, ComfyUI not answering. Restarting ComfyUI is not restarting the
+         GPU, and this must never become START GPU: the Pod is already paid for. -->
+    <div id="comfy-down" hidden>
+      <p class="hint warn">Pod は起動していますが ComfyUI が応答していません。GPU は課金中です。</p>
+      <button id="btn-comfy-start" class="btn">ComfyUI を起動</button>
+    </div>
+
     <div id="gpu-cost" class="gpu-cost"></div>
 
     <details id="gpu-details">

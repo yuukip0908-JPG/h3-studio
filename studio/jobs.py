@@ -18,7 +18,10 @@ import uuid
 
 from . import comfy_client, config, graph, history, longdraft, mediaprobe
 
-ACTIVE_STATES = ("queued", "running")
+# "submitting" is the window between deciding to submit and knowing the prompt
+# id. It counts as active on purpose: something may already be queued on the
+# Pod, so the Studio is not idle and the Cost Guard must not treat it as such.
+ACTIVE_STATES = ("submitting", "queued", "running")
 
 
 def _short_id(prefix):
@@ -56,6 +59,11 @@ class Generation:
         self.phase = None             # transfer | encode | sampling | decode | save
         self.phase_started = None
         self.phase_seconds = {}       # phase -> accumulated seconds
+        # Reconciliation bookkeeping: how many consecutive passes have failed to
+        # find this prompt anywhere on ComfyUI, and when the streak started. One
+        # miss is a blip; a streak is a forgotten prompt.
+        self.misses = 0
+        self.first_miss_at = None
 
     def _sampler_dict(self):
         """Live sampling rate, so the ETA comes from this run rather than a guess.
@@ -254,6 +262,8 @@ class LongDraftRun:
     # Submitting immediately would race it into the wrong order, so give the
     # unload a moment to land. It is seconds against an eight-minute segment.
     FREE_SETTLE_SECONDS = 2.0
+    # One retry before giving up on the unload. Interruptible, like the settle.
+    FREE_RETRY_SECONDS = 1.0
 
     def _run_segment(self, seg):
         # Before, not after: the point is that this segment starts from a clean
@@ -266,12 +276,28 @@ class LongDraftRun:
         # next segment queued anyway.
         if self._cancelled.is_set():
             return
-        if self.manager.release_models():
-            if self._cancelled.wait(self.FREE_SETTLE_SECONDS):
-                return
-        else:
-            self.manager.notice("warn", "ComfyUI のモデル解放（/free）に失敗しました。"
-                                        "segment を続けますが、メモリ不足で落ちる可能性があります。")
+        # Freeing is not advisory. Three consecutive cache MISSes in one ComfyUI
+        # process is what the container's 57.7 GiB limit killed on 2026-09-07,
+        # and every Long Draft segment is a MISS. If the unload cannot be asked
+        # for, the next segment is exactly the run that got OOM-killed -- so the
+        # run stops here instead, keeping the segments that did finish.
+        # One retry, because a single dropped request is not a reason to throw
+        # away eight minutes of work; no more than one, because a loop around a
+        # dead ComfyUI is worse than a clear failure.
+        freed = self.manager.release_models()
+        if not freed and not self._cancelled.wait(self.FREE_RETRY_SECONDS):
+            freed = self.manager.release_models()
+        if not freed:
+            seg.status = "error"
+            seg.error = ("ComfyUI のモデル解放（/free）に失敗しました。"
+                         "この状態で次の segment に進むとメモリ不足で ComfyUI ごと落ちるため、"
+                         "ここで停止しました。完了済みの segment は残っています。")
+            history.update_long_draft_segment(self.id, seg.index,
+                                              status="error", error=seg.error)
+            self.manager.notice("error", "長尺Draft %s: %s" % (self.id, seg.error))
+            return
+        if self._cancelled.wait(self.FREE_SETTLE_SECONDS):
+            return
         if self._cancelled.is_set():
             return
         try:
@@ -761,12 +787,26 @@ class JobManager:
         batch.meta["cache_before"] = sorted(cache_before) if cache_before is not None else None
 
         for g in gens:
+            # The row is marked "submitting" BEFORE the network call, so a crash
+            # in the window between ComfyUI accepting the prompt and this process
+            # writing the id down leaves a durable statement that work may
+            # already be on the Pod. Without it the row was indistinguishable
+            # from one that had never been sent, and the prompt was unfindable.
+            # The handle back to it is params["filename_prefix"], which was
+            # chosen and persisted with the row above and is unique per
+            # generation; reconcile_generation() reads it out of /queue.
+            g.status = "submitting"
+            g.progress_text = "投入中"
+            history.update_generation(g.id, status="submitting")
             try:
                 g.prompt_id = self.client.submit(g.api_prompt, self.client_id)
                 with self.lock:
                     self.by_prompt_id[g.prompt_id] = g.id
+                g.status = "queued"
                 g.progress_text = "順番待ち"
+                # id first, then the state that says the id should exist.
                 history.update_generation(g.id, prompt_id=g.prompt_id)
+                history.update_generation(g.id, status="queued")
             except comfy_client.ComfyError as e:
                 self._fail(g, str(e))
         return batch
@@ -865,6 +905,15 @@ class JobManager:
                 if run.id == ld_id:
                     return run
         return None
+
+    def has_active_long_draft(self):
+        """True while a Long Draft still has segments to submit.
+
+        The Cost Guard asks this so the pause between two segments is not read
+        as the end of the work.
+        """
+        with self.lock:
+            return any(r.is_active() for r in self.long_draft_runs)
 
     def find_long_draft(self, ld_id):
         """This process's run, or one rebuilt from history after a restart."""
@@ -1151,10 +1200,45 @@ class JobManager:
         # between the removal below and the interrupt.
         for run in runs:
             run.cancel()
+
+        # /interrupt takes no prompt id: it aborts whatever ComfyUI is executing
+        # right now, whoever queued it. Removing from the queue IS per-id, so
+        # that half is already ownership-safe. The interrupt is only fired once
+        # the running prompt is confirmed to be one of ours -- and if the queue
+        # cannot be read, that confirmation does not exist and nothing is
+        # interrupted. Safe here means "kill only your own work", not "kill
+        # something".
+        mine = {g.prompt_id for g in active if g.prompt_id}
+        try:
+            snapshot = self.client.queue_snapshot()
+        except comfy_client.ComfyError:
+            snapshot = None
+        running_ids, pending_ids = ((), ())
+        if snapshot is not None:
+            running_ids, pending_ids = comfy_client.ComfyClient.queue_ids(snapshot)
+
         self.client.cancel_queued(queued_ids)
-        ok = self.client.interrupt()
+
+        ok = True
+        ours_running = [pid for pid in running_ids if pid in mine]
+        if ours_running:
+            ok = self.client.interrupt()
+        elif snapshot is None:
+            ok = False
+            self.notice("warn", "ComfyUI の状態を確認できないため中断を送りませんでした。"
+                                "他のジョブを巻き込まないための判断です。")
+        elif running_ids:
+            self.notice("warn", "ComfyUI が別のジョブを実行中のため中断を送りませんでした。"
+                                "こちらの待機中ジョブはキューから外しました。")
+
+        # Only what we actually stopped is written as stopped. Anything we could
+        # not account for keeps its status and is settled by reconciliation,
+        # rather than being recorded as cancelled while it is still running.
+        stopped = set(ours_running) | (set(pending_ids) & mine)
         with self.lock:
             for g in active:
+                if g.prompt_id and g.prompt_id not in stopped:
+                    continue
                 g.status = "cancelled"
                 g.progress_text = "中止しました"
                 history.update_generation(g.id, status="cancelled")
@@ -1234,26 +1318,106 @@ class JobManager:
             except Exception:  # noqa: BLE001 - a poll failure must never kill the loop
                 pass
 
-    def _poll_once(self):
-        with self.lock:
-            pending = [g for g in self.generations.values()
-                       if g.status in ACTIVE_STATES and g.prompt_id]
-        self._refresh_queue_positions()
-        for gen in pending:
+    # Reconciliation. A prompt is only declared lost after the same answer twice,
+    # far enough apart that a network blip cannot produce both.
+    RECONCILE_CONFIRM_SECONDS = 30.0
+    RECONCILE_MISSES_REQUIRED = 2
+
+    def reconcile_generation(self, gen):
+        """Decide one generation's fate against ComfyUI. The only place that does.
+
+        Collection and death share this path deliberately. Split apart, the two
+        halves disagree exactly when it is expensive: on 2026-09-07 a segment
+        that had run for 524 s was finished on the Pod while the Studio still
+        called it running, and a reaper that had only asked "is it queued?"
+        would have written it off instead of collecting it.
+
+        Order matters, and it is: finished, then alive, then missing.
+
+          * /history has a result   -> collect it. A completed job is never lost,
+                                       whatever the queue says.
+          * the queue holds it      -> alive; forget any earlier miss.
+          * neither, id unknown     -> look for our own filename_prefix in the
+                                       queue and adopt the id back.
+          * neither, twice, 30 s+   -> ComfyUI has genuinely forgotten it.
+
+        Returns "done" | "error" | "live" | "unknown". "unknown" means the
+        question could not be asked and nothing was decided -- it is not a
+        verdict and never advances the miss streak.
+        """
+        if gen.status not in ACTIVE_STATES:
+            return "live"
+        if not gen.prompt_id and gen.status != "submitting":
+            # Created but not yet handed to submit_batch's loop. There is nothing
+            # on ComfyUI to look for, and counting a miss here would start a
+            # streak against a prompt that was never sent.
+            return "live"
+        if gen.prompt_id:
             try:
                 h = self.client.history(gen.prompt_id)
             except comfy_client.ComfyError:
+                return "unknown"
+            if h:
+                status = (h.get("status") or {})
+                if status.get("status_str") == "error":
+                    self._fail(gen, _first_error(status))
+                    return "error"
+                if status.get("completed"):
+                    self._complete(gen, h)
+                    return "done"
+                self._clear_misses(gen)
+                return "live"
+
+        try:
+            snapshot = self.client.queue_snapshot()
+        except comfy_client.ComfyError:
+            return "unknown"
+        running, pending = comfy_client.ComfyClient.queue_ids(snapshot)
+        if gen.prompt_id:
+            if gen.prompt_id in running or gen.prompt_id in pending:
+                self._clear_misses(gen)
+                return "live"
+        else:
+            # The submit-crash window: the prompt may be on ComfyUI under an id
+            # this process never got to keep. The filename prefix was chosen and
+            # stored before the submit, so it is the handle that survived.
+            prefix = (gen.params or {}).get("filename_prefix")
+            found = comfy_client.ComfyClient.queue_find_by_prefix(snapshot, prefix)
+            if found:
+                gen.prompt_id = found
+                with self.lock:
+                    self.by_prompt_id[found] = gen.id
+                history.update_generation(gen.id, prompt_id=found)
+                self.notice("info", "投入済みだった生成を ComfyUI 側で見つけて追跡を再開しました（%s）。" % gen.id)
+                self._clear_misses(gen)
+                return "live"
+
+        now = time.time()
+        if gen.first_miss_at is None:
+            gen.first_miss_at = now
+        gen.misses += 1
+        if (gen.misses >= self.RECONCILE_MISSES_REQUIRED
+                and now - gen.first_miss_at >= self.RECONCILE_CONFIRM_SECONDS):
+            self._fail(gen, "ComfyUI にこのジョブがありません（ComfyUI が再起動した可能性があります）。")
+            return "error"
+        return "live"
+
+    @staticmethod
+    def _clear_misses(gen):
+        gen.misses = 0
+        gen.first_miss_at = None
+
+    def _poll_once(self):
+        with self.lock:
+            # Generations with no prompt_id are included on purpose: that is the
+            # submit-crash window, and reconciliation is what closes it.
+            pending = [g for g in self.generations.values() if g.status in ACTIVE_STATES]
+        self._refresh_queue_positions()
+        for gen in pending:
+            try:
+                self.reconcile_generation(gen)
+            except Exception:  # noqa: BLE001 - one bad generation must not stop the rest
                 continue
-            if not h:
-                continue
-            status = (h.get("status") or {})
-            state = status.get("status_str")
-            if state == "error":
-                self._fail(gen, _first_error(status))
-                continue
-            if not status.get("completed"):
-                continue
-            self._complete(gen, h)
 
     @staticmethod
     def _enter_phase(gen, phase):

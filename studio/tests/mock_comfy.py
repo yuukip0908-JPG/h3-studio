@@ -85,16 +85,34 @@ class MockState:
         # makes variation 1 a MISS and variations 2-4 real cache HITs, so the
         # mock has to reproduce it or the cache tests would pass by accident.
         self.queue = _queue.Queue()
+        # What /queue reports. Kept beside the work queue rather than derived
+        # from it, because the answer has to be true the instant /prompt
+        # returns: the Studio decides whether a prompt is alive or forgotten
+        # from this, and a queue that said "empty" between submit and execute
+        # would let a reconciliation test pass while being wrong about the one
+        # case it exists to cover.
+        self.pending = []          # prompt ids, in queue order
+        self.running = None        # prompt id currently executing, or None
         self.worker = threading.Thread(target=self._drain, daemon=True)
         self.worker.start()
+
+    def queue_snapshot(self):
+        """(running, pending) as ComfyUI's /queue reports them."""
+        with self.lock:
+            return self.running, list(self.pending)
 
     def _drain(self):
         while True:
             item = self.queue.get()
             if item is None:
                 return
+            with self.lock:
+                if item[0] in self.pending:
+                    self.pending.remove(item[0])
             if item[0] in self.cancelled:
                 continue
+            with self.lock:
+                self.running = item[0]
             try:
                 # Pass our own state, not the module global: a worker left over
                 # from a finished test would otherwise write its cache entries
@@ -102,6 +120,10 @@ class MockState:
                 run_job(item[0], item[1], state=self)
             except Exception:  # noqa: BLE001 - a mock job must not kill the worker
                 pass
+            finally:
+                with self.lock:
+                    if self.running == item[0]:
+                        self.running = None
 
     def broadcast(self, message):
         payload = json.dumps(message).encode("utf-8")
@@ -373,8 +395,17 @@ class Handler(BaseHTTPRequestHandler):
                 h = STATE.history.get(pid)
             return self._json({pid: h} if h else {})
         if path == "/queue":
-            return self._json({"queue_running": [], "queue_pending": [],
-                               "exec_info": {"queue_remaining": STATE.queue.qsize()}})
+            # ComfyUI's queue entries are [number, prompt_id, prompt, extra, outputs].
+            # The Studio reads the id defensively rather than by index, but the
+            # shape is reproduced so a test cannot pass against a simpler lie.
+            running, pending = STATE.queue_snapshot()
+            with STATE.lock:
+                jobs = dict(STATE.jobs)
+            item = lambda n, pid: [n, pid, jobs.get(pid, {}), {}, []]  # noqa: E731
+            return self._json({
+                "queue_running": [item(0, running)] if running else [],
+                "queue_pending": [item(i + 1, pid) for i, pid in enumerate(pending)],
+                "exec_info": {"queue_remaining": len(pending) + (1 if running else 0)}})
         if path == "/h3_cache_manager/check":
             if not STATE.cache_route:
                 return self._json({"error": "not found"}, 404)
@@ -437,6 +468,7 @@ class Handler(BaseHTTPRequestHandler):
             with STATE.lock:
                 STATE.jobs[pid] = prompt
                 STATE.submitted.append(prompt)
+                STATE.pending.append(pid)
             STATE.queue.put((pid, prompt))
             return self._json({"prompt_id": pid, "number": len(STATE.jobs), "node_errors": {}})
 
@@ -477,6 +509,7 @@ class Handler(BaseHTTPRequestHandler):
                 for item in keep:
                     STATE.queue.put(item)
                 STATE.cancelled |= drop
+                STATE.pending = [pid for pid in STATE.pending if pid not in drop]
             return self._json({})
         return self._json({"error": "not found"}, 404)
 
