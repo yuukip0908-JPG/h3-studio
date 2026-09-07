@@ -33,8 +33,9 @@
 
 | 項目 | 状態 |
 |---|---|
-| active Pod | `3lbxf2rnkjsqte`（RTX 6000 Ada 48GB / US-WA-1 / $0.84時）**EXITED** |
-| 保険 Pod | `ufhtfdg9ulv3fj` **EXITED**。**起動・削除しない** |
+| active Pod | ~~`3lbxf2rnkjsqte`~~ → **`y9ts66clj5wml6`**（A100 80GB / US-WA-1 / $1.59時）**EXITED** |
+| 保険 Pod | `ufhtfdg9ulv3fj` **EXITED**。**起動しない** |
+| （2026-09-07） | 不要な6基をユーザー指示で削除。`3lbxf2rnkjsqte` を含む。Volume は無傷 |
 | Network Volume | `olmj77x4pc` → `/workspace` |
 | baseline | 無変更。Pod側 `doctor.sh` FAIL=0 |
 | 実機検証済みの範囲 | 2秒/16:9 の3モード、18秒/9:16 Motion Trace |
@@ -200,7 +201,7 @@ bash scripts/ab_test.sh steps 12 8 image_trace   # ※turbo有効化フラグ付
 | Pod venv | `bash scripts/venv_rollback.sh pre_turbo` |
 | LoRA | `models/loras/` から削除するだけ。他に影響なし |
 | グラフ | `140:139` を `false` に戻せば現在と完全同一 |
-| 保険 | 旧Pod `ufhtfdg9ulv3fj` は EXITED のまま**触らない** |
+| 保険 | 初代Pod `ufhtfdg9ulv3fj` は EXITED のまま**触らない**（削除対象からも外してある） |
 
 ---
 

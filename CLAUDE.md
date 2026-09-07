@@ -21,7 +21,11 @@
 - git pull / blanket pip upgrade / CUDA・torchの不用意な更新
 - baseline workflow (`workflows/READY_TO_USE_*`, `H3_STOCK_*`) の破壊的上書き
 - 同じcache directoryを複数ComfyUI processで共有
-- Network Volume (`olmj77x4pc`) の削除、Podのterminate
+- Network Volume (`olmj77x4pc`) の削除 — **無条件禁止**
+- Pod の terminate — **ユーザーの明示指示がある場合を除き禁止**
+  （2026-09-07、ユーザー指示で不要な6基を削除。永続データは全て `/workspace`
+  ＝共有ボリューム上なので、Pod自体は使い捨てられる。現存は
+  `y9ts66clj5wml6`（現行）と `ufhtfdg9ulv3fj`（初代・保険）の2基）
 - secret（RunPod API key / SSH private key）のログ出力・ファイル書き込み・commit
 - ユーザーへのターミナル操作要求（ssh / pip / git clone / bash の代行はこちらで行う）
 
@@ -35,7 +39,7 @@ enter_cache_phase → MISS → 完全再起動 → HIT → matrix → snapshot_e
 ```
 Mac: studio/ (H3 Studio, 標準ライブラリのみ, 127.0.0.1:8010)
         │ HTTP/WS ──▶ Pod: ComfyUI :8188（無改変の baseline）
-        └ RunPod REST ──▶ Pod start/stop（terminateはしない）
+        └ RunPod REST ──▶ Pod start/stop（terminateは指示があるときだけ）
 ```
 Studio が Mac 側にあるのは**論理的強制**。Pod上のbackendはPodと共に停止するため
 「START GPU」を提供できない。

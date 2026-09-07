@@ -51,13 +51,23 @@ print("=== new Pod request ===")
 print(json.dumps(body, indent=2))
 print()
 
-# The old Pod must be exactly as we left it before we touch anything.
-old = runpod_ctl.describe(old_id)
-print("=== old Pod %s ===" % old_id)
-print("  desiredStatus :", old.get("desiredStatus"), "(must stay EXITED, never deleted)")
-print("  networkVolume :", old.get("networkVolumeId"))
-if old.get("desiredStatus") == "RUNNING":
-    sys.exit("REFUSING: the old Pod is RUNNING. Stop it first so it is not billed alongside.")
+# Nothing may be RUNNING before we create another one -- two Pods billing at
+# once, and worse, two ComfyUI processes sharing one cache directory on the
+# network volume, which the baseline forbids outright.
+#
+# This used to describe() one hardcoded old Pod id, which broke the moment that
+# Pod was deleted: the guard crashed and took the whole acquisition path with
+# it. Asking about every Pod is both safer and immune to the pile changing.
+print("=== existing Pods ===")
+running = []
+for pod in runpod_ctl._call("GET", "/pods"):
+    mark = " <-- spec's old_pod" if pod.get("id") == old_id else ""
+    print("  %-18s %-30s %s%s" % (pod.get("id"), pod.get("name"), pod.get("desiredStatus"), mark))
+    if pod.get("desiredStatus") == "RUNNING":
+        running.append(pod.get("id"))
+if running:
+    sys.exit("REFUSING: %s already RUNNING. Stop it first -- two Pods on one network "
+             "volume would share the cache directory." % ", ".join(running))
 
 if mode != "--create":
     print("\n--plan only. Nothing created. Re-run with --create to proceed.")

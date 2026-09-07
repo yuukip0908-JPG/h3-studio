@@ -680,3 +680,39 @@ Pod に v2 の `*.api.json` が存在しないため。詳細は上のセクシ�
 
 GPU 使用は3セッション合計で約 25 分（$0.03 + 約 $0.29 + 約 $0.29 ≒ **$0.6**）。
 baseline・Network Volume・既存Pod は無変更。終了時に全8基 EXITED を API で確認済み。
+
+### 2026-09-07 START GPU が失敗する件と、Pod 8基の整理
+
+**START GPU の失敗は Studio 側ではなかった。** 確認した事実:
+Studio 稼働中（PID 34493）/ APIキー認識済み / 全Pod EXITED（課金ゼロ）/
+**Studio ログに `_start_gpu` の例外記録なし**（残っていたのは中断された `/api/status` 2件）。
+RunPod が host full を返すと Studio は例外を出さず `ok:false` を返すだけなのでログに残らない。
+同日の A/B セッション中も restart が4回以上連続で拒否されている（§1.5 の既知条件）。
+
+UI 側に実害が2点あったので直した:
+
+| 症状 | 直し方 |
+|---|---|
+| 在庫切れ（`retryable: true`）を「失敗:」と表示 | 「空き待ち。Pod・データは無事、課金も無し」と表示。サーバは元から区別していたが UI が捨てていた |
+| 起動リクエストがブラウザ側で切れると「error」とだけ出る | **サーバは起動を続けるので、画面が失敗と言いながら課金が始まりうる**（`studio.log` に BrokenPipe 実例2件）。「起動している可能性がある。状態を確認し不要なら STOP GPU」に変更 |
+
+**Pod 8基 → 2基（ユーザー指示による terminate）。**
+削除: `ttgvtu9fb864k4` `u3j83y0qfrdc56` `jqj722x4jkwcan` `otyu05x8yh2v96`
+`sgiaeck1hh0m1l` `3lbxf2rnkjsqte`。残置: `y9ts66clj5wml6`（現行）/ `ufhtfdg9ulv3fj`（初代・保険）。
+
+削除前に確認したこと:
+- 全て EXITED、`volumeInGb: 0`、`networkVolumeId: olmj77x4pc`（Pod固有ボリュームなし）
+- 永続パスは全て `/workspace`（共有ボリューム）— `scripts/common.sh` の
+  `COMFYUI_DIR` / `PIP_CACHE_DIR` / `HF_HOME` すべて。コンテナディスクには素のイメージのみ
+- 削除後に Network Volume `olmj77x4pc`（200GB / US-WA-1）の存在を API で再確認
+
+**削除で壊れる箇所を1つ事前に潰した。** `pod_migrate.sh` は
+`describe('3lbxf2rnkjsqte')` で「旧PodがRUNNINGでないこと」を確認していたため、
+その Pod を消すと**GPU取得ルートが起動前に落ちる**。全Podを列挙して
+**1基でも RUNNING なら拒否**する形に変更した。台数が変わっても壊れず、
+「同一ボリュームに2つの ComfyUI」というbaseline禁止事項の予防にもなる。
+
+**停止中Podのコンテナディスク課金（60GB × 8）は確認できなかった。**
+REST v1 に課金エンドポイントが無く、GraphQL は現APIキーを 403 で拒否する
+（Bearer / 生 / x-api-key の3形式とも）。Chrome拡張も未接続でコンソールを開けない。
+**金額は未確認のまま**。Network Volume は1個（200GB）で Pod 数に依存しない。

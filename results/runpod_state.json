@@ -50,13 +50,8 @@
     "doctor": "FAIL=0 WARN=0"
   },
   "previousPods": [
-    "ufhtfdg9ulv3fj",
-    "3lbxf2rnkjsqte",
-    "sgiaeck1hh0m1l",
-    "otyu05x8yh2v96",
-    "jqj722x4jkwcan",
-    "u3j83y0qfrdc56",
-    "ttgvtu9fb864k4"
+    "ufhtfdg9ulv3fj"
   ],
-  "previousPodId": "ttgvtu9fb864k4"
+  "previousPodId": "ufhtfdg9ulv3fj",
+  "podCleanup": "2026-09-07: six unused EXITED Pods deleted on the operator's instruction (ttgvtu9fb864k4, u3j83y0qfrdc56, jqj722x4jkwcan, otyu05x8yh2v96, sgiaeck1hh0m1l, 3lbxf2rnkjsqte). Nothing unique lived on them -- every persistent path is under /workspace on network volume olmj77x4pc, which was verified present afterwards. Remaining: y9ts66clj5wml6 (current) and ufhtfdg9ulv3fj (original, insurance)."
 }

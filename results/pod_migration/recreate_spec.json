@@ -6,7 +6,7 @@
     "name": "h3-clipcached-baseline",
     "machineId": "bkwan6a3ct4i",
     "desiredStatus": "EXITED",
-    "note": "host full again (2026-09-06). Kept EXITED. ufhtfdg9ulv3fj is also kept EXITED as the original insurance pod."
+    "note": "DELETED 2026-09-07 on the operator's instruction, along with four other unused Pods. The id is kept for provenance; pod_migrate.sh no longer describes it -- it refuses when ANY Pod is RUNNING instead, which does not break when the pile changes."
   },
   "recreate_spec": {
     "name": "h3-clipcached-baseline-3",
