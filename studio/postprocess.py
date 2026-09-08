@@ -93,6 +93,35 @@ def deliver(output_path, dest_path, source_path=None, source_fps=None,
     return dest_path
 
 
+def poster_path(output_path):
+    root, _ext = os.path.splitext(output_path)
+    return root + "_poster.jpg"
+
+
+def poster(video_path, dest_path=None, at_fraction=0.35):
+    """One frame, so the shelf is a shelf of videos and not a list of strings.
+
+    Taken a third of the way in rather than at 0: the first frames of a
+    generation are often the least characteristic of it, and a black opening
+    frame makes every take look identical in a strip.
+    """
+    dest_path = dest_path or poster_path(video_path)
+    if not os.path.exists(video_path):
+        raise PostprocessError("no video to take a poster from: %s" % video_path)
+    seek = 0.0
+    probe = mediaprobe.describe_for_motion_trace(video_path)
+    if probe.get("duration"):
+        seek = max(0.0, float(probe["duration"]) * float(at_fraction))
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    longdraft._run_ffmpeg(["-nostdin", "-y", "-loglevel", "error",
+                           "-ss", "%.3f" % seek, "-i", video_path,
+                           "-frames:v", "1", "-vf", "scale=320:-2",
+                           "-q:v", "4", dest_path], timeout=120)
+    if not os.path.exists(dest_path):
+        raise PostprocessError("ffmpeg wrote no poster")
+    return dest_path
+
+
 def delivery_path(output_path):
     """Beside the raw output, never over it. The raw file is the evidence that
     the generation happened; this one is what the operator wanted."""

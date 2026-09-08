@@ -12,7 +12,9 @@ const JP_KIND = { draft: "下書き", final: "仕上げ" };
 const state = {
   mode: "image_trace",
   quality: "draft",
-  variations: 4,
+  /* One take. 46 batches, 42 of them one take: generating four candidates is
+     the exception, and at 22 minutes each it is an expensive default. */
+  variations: 1,
   image: null,
   localPath: null,
   sourceVideo: null,
@@ -1432,6 +1434,14 @@ $("auto-stop").addEventListener("change", async (e) => {
 /* History rows come from SQLite and carry output_path but no output_url; the
    video route now serves from history too, so the URL can be derived. This is
    what makes a finished clip survive a Studio restart, not just a reload. */
+/* /api/poster 404s for anything made before posters existed, so the tile falls
+   back to a label rather than a broken image icon. */
+function thumb(genId) {
+  if (!genId) return '<div class="h-thumb none">NO PREVIEW</div>';
+  return `<img class="h-thumb" loading="lazy" alt="" src="/api/poster/${genId}"
+    onerror="this.outerHTML='&lt;div class=\'h-thumb none\'&gt;NO PREVIEW&lt;/div&gt;'">`;
+}
+
 function historyBatchToView(b) {
   return Object.assign({}, b, {
     generations: (b.generations || []).map((g) => Object.assign({}, g, {
@@ -1450,20 +1460,27 @@ async function loadHistory() {
     /* "These three videos were one Long Draft" is a fact that has to survive a
        Studio restart, so it is read back from history, not from memory. */
     longDraftHistory = h.long_drafts || [];
+    /* A shelf is looked at, not read. Each tile is one picture and two short
+       lines; the prompt excerpt that used to be the whole entry is the title
+       attribute, for the one time somebody needs it. */
     const ldRows = longDraftHistory.map((d) => {
-      const done = (d.segments || []).filter((x) => x.status === "done").length;
-      return `<div class="h-item h-ld" data-longdraft="${d.id}"><b>長尺Draft · ${JP_MODE[d.mode] || d.mode}</b><br>
-        ${esc((d.prompt || "").slice(0, 70))}<br>
-        ${(d.source_duration || 0).toFixed(1)} 秒 · ${d.segment_count} segments ·
-        ${done}/${(d.segments || []).length} 本完了 · ${JP_SEG[d.status] || d.status}</div>`;
+      const segs = d.segments || [];
+      const done = segs.filter((x) => x.status === "done").length;
+      const shot = segs.find((x) => x.status === "done" && x.generation_id);
+      return `<div class="h-item h-ld" data-longdraft="${d.id}" title="${esc(d.prompt || "")}">
+        ${thumb(shot && shot.generation_id)}
+        <div class="h-meta"><b>長尺 · ${JP_MODE[d.mode] || d.mode}</b>
+        <span class="h-sub">${(d.source_duration || 0).toFixed(1)}秒 · ${done}/${segs.length} 本</span></div></div>`;
     }).join("");
     $("history").innerHTML = ldRows + h.batches.map((b) => {
       const done = b.generations.filter((g) => g.status === "done").length;
       const sel = b.generations.find((g) => g.selected);
-      return `<div class="h-item" data-batch="${b.id}"><b>${JP_KIND[b.kind] || b.kind} · ${JP_MODE[b.mode] || b.mode}</b><br>
-        ${esc((b.prompt || "").slice(0, 70))}<br>
-        ${done}/${b.generations.length} 本${sel ? " · ★選択済み" : ""}
-        ${b.reference_strength ? " · 忠実度 " + b.reference_strength : ""}</div>`;
+      const shot = sel || b.generations.find((g) => g.status === "done");
+      return `<div class="h-item" data-batch="${b.id}" title="${esc(b.prompt || "")}">
+        ${thumb(shot && shot.id)}
+        <div class="h-meta"><b>${sel ? "★ " : ""}${JP_MODE[b.mode] || b.mode}</b>
+        <span class="h-sub">${JP_KIND[b.kind] || b.kind} · ${done}/${b.generations.length}本${
+          b.duration ? " · " + b.duration + "秒" : ""}</span></div></div>`;
     }).join("") || "<div class='hint'>まだ履歴はありません。</div>";
 
     /* Nothing on screen and nothing in this process's memory (a restarted
@@ -1525,6 +1542,22 @@ async function restoreLastInputs() {
   renderSourceBudget();
   refreshLongDraftPlan();
 }
+
+/* The Pod drawer. Detail lives behind a button so the column it used to fill
+   can be the shelf; anything that means "something is wrong" -- gpu-why,
+   comfy-down, the start sequence, a paid-card offer -- stays in the layout
+   above the work, because a problem nobody sees is worse than a crowded bar. */
+function setDrawer(open) {
+  const d = $("gpu-drawer");
+  if (!d) return;
+  d.hidden = !open;
+  $("btn-drawer").setAttribute("aria-expanded", open ? "true" : "false");
+}
+$("btn-drawer").addEventListener("click", () => setDrawer($("gpu-drawer").hidden));
+$("btn-drawer-close").addEventListener("click", () => setDrawer(false));
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("gpu-drawer").hidden) setDrawer(false);
+});
 
 (async function init() {
   try { await loadConfig(); maybeSuggestTags(); renderDurationHint(); }

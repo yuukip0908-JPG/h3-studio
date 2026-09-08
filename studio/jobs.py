@@ -51,6 +51,7 @@ class Generation:
         # The corrected file (source audio, source timing). None when the raw
         # output already is what was asked for.
         self.delivery_path = None
+        self.poster_path = None
         self.error = None
         self.cache_result = None
         self.selected = False
@@ -748,6 +749,7 @@ class JobManager:
         gen.output_path = row.get("output_path")
         gen.output_filename = row.get("output_filename")
         gen.delivery_path = row.get("delivery_path")
+        gen.poster_path = row.get("poster_path")
         gen.cache_result = row.get("cache_result")
         gen.error = row.get("error")
         gen.selected = bool(row.get("selected"))
@@ -1924,6 +1926,16 @@ class JobManager:
                         % str(e)[:160])
             return None
 
+    def _poster(self, video_path):
+        """Best effort. A shelf without a picture is worse; a lost generation
+        because a thumbnail failed would be unforgivable."""
+        if not postprocess.available():
+            return None
+        try:
+            return postprocess.poster(video_path)
+        except Exception:  # noqa: BLE001
+            return None
+
     def _complete(self, gen, hist):
         files = []
         for node_id, out in (hist.get("outputs") or {}).items():
@@ -1947,6 +1959,7 @@ class JobManager:
         gen.output_path = dest
         gen.output_filename = f["filename"]
         gen.delivery_path = self._deliver(gen, dest)
+        gen.poster_path = self._poster(gen.delivery_path or dest)
         gen.finished_at = time.time()
         # started_at comes from the WebSocket execution_start event. If that
         # event was missed (a reconnect, or a job that completed between
@@ -1976,7 +1989,7 @@ class JobManager:
             gen.id, status="done", finished_at=gen.finished_at,
             generation_seconds=measured,
             output_path=dest, output_filename=f["filename"], cache_result=gen.cache_result,
-            delivery_path=gen.delivery_path,
+            delivery_path=gen.delivery_path, poster_path=gen.poster_path,
             # Everything the ETA learns from, recorded at completion.
             turbo_enabled=1 if p.get("turbo") else 0,
             turbo_lora=p.get("turbo_lora"), lora_strength=p.get("turbo_strength"),

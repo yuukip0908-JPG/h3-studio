@@ -7,39 +7,63 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<!-- A fixed shell, not a document. The whole working surface is one viewport
+     tall and never scrolls as a page: only the three columns scroll, and only
+     when their own content genuinely exceeds them. Below 1000px there is no
+     honest way to hold three columns, so the page falls back to a normal
+     scrolling document rather than pretending. -->
+<div class="app">
+
 <header class="bar">
   <h1>H3 STUDIO</h1>
-  <div id="gpu-chip" class="chip chip-unknown">GPU: …</div>
+
+  <!-- The highest-level choice, so it sits above the columns rather than
+       inside the input panel where it used to push everything else down. -->
+  <div class="seg seg-mode" id="mode-seg">
+    <button data-mode="image_trace" class="on">Image Trace<span class="sub">画像から</span></button>
+    <button data-mode="motion_trace">Motion Trace<span class="sub">動きをまねる</span></button>
+    <button data-mode="prompt_cinema">Prompt Cinema<span class="sub">文章から</span></button>
+  </div>
+
   <div class="spacer"></div>
+
+  <!-- GPU is two facts most of the time: is it running, and what has it cost.
+       Everything else about the Pod is detail and lives in the drawer. -->
+  <div id="gpu-chip" class="chip chip-unknown">GPU: …</div>
   <div id="cost" class="cost"></div>
   <button id="btn-gpu-start" class="btn btn-go">START GPU</button>
   <button id="btn-gpu-stop" class="btn btn-stop">STOP GPU</button>
+  <button id="btn-drawer" class="btn btn-ghost" aria-expanded="false"
+          aria-controls="gpu-drawer" title="Pod の詳細">詳細</button>
 </header>
 
-<div id="offline-banner" class="notice error" hidden>
-  H3 Studio backend に接続できません。ブラウザは開いたままで構いません —
-  バックエンドが起動すれば自動的に復帰します。
+<!-- Anything that means "something is wrong" stays in the layout, above the
+     work. A problem hidden inside a drawer is a problem nobody sees. -->
+<div class="alerts">
+  <div id="offline-banner" class="notice error" hidden>
+    H3 Studio backend に接続できません。ブラウザは開いたままで構いません —
+    バックエンドが起動すれば自動的に復帰します。
+  </div>
+  <div id="notices"></div>
+  <p class="hint warn" id="gpu-why" hidden></p>
+  <div id="comfy-down" hidden>
+    <p class="hint warn">Pod は起動していますが ComfyUI が応答していません。GPU は課金中です。</p>
+    <button id="btn-comfy-start" class="btn">ComfyUI を起動</button>
+  </div>
+  <ol id="gpu-progress" class="gpu-progress" hidden></ol>
+  <div id="gpu-offer" class="gpu-offer" hidden></div>
 </div>
-<div id="notices"></div>
 
-<main>
-  <section class="panel" id="panel-input">
-    <h2>1 · 入力</h2>
+<main class="work">
 
-    <div class="field">
-      <label>モード</label>
-      <div class="seg" id="mode-seg">
-        <button data-mode="image_trace" class="on">Image Trace<span class="sub">画像から</span></button>
-        <button data-mode="motion_trace">Motion Trace<span class="sub">動きをまねる</span></button>
-        <button data-mode="prompt_cinema">Prompt Cinema<span class="sub">文章から</span></button>
-      </div>
-      <p class="hint" id="mode-hint"></p>
-    </div>
+  <!-- ── left: what goes in ─────────────────────────────────────────── -->
+  <section class="panel col" id="panel-input">
+    <h2>素材</h2>
+    <p class="hint" id="mode-hint"></p>
 
     <p class="hint" id="upload-pending" hidden>
       GPU がまだ起動していませんが、ファイルはこのMacで預かっています。
-      <b>生成する</b> を押したときに自動で転送されるので、このまま
-      プロンプトを書いて進めて大丈夫です。
+      <b>生成する</b> を押したときに自動で転送されます。
     </p>
 
     <div class="field" id="field-image">
@@ -58,31 +82,6 @@
       <video id="video-preview" controls preload="metadata" hidden></video>
     </div>
 
-    <div class="field" id="field-refsize">
-      <label>人物の再現精度</label>
-      <div class="seg" id="refsize-seg">
-        <button data-refsize="match" class="on">標準<span class="sub">速い</span></button>
-        <button data-refsize="max">高精度<span class="sub">2048px・VRAM大</span></button>
-      </div>
-      <p class="hint">「高精度」は人物をより正確に再現しますが、VRAM を約1.8倍使います（実測 53 GiB）。48GB の GPU では遅くなることがあります。ふだんは「標準」で十分です。</p>
-    </div>
-
-    <!-- Long Draft. Motion Trace only: it works by cutting the reference
-         video, and the other two modes have no reference video. It is a Draft
-         tool -- Final is never split. -->
-    <div class="field" id="field-longdraft" hidden>
-      <label>長尺Draft <span class="dim">長い動画を短く分けて速く確認する</span></label>
-      <div class="seg" id="longdraft-seg">
-        <button data-longdraft="off" class="on">OFF<span class="sub">これまでどおり1本で生成</span></button>
-        <button data-longdraft="on">ON<span class="sub">分割して速く確認</span></button>
-      </div>
-      <p class="hint" id="longdraft-unavailable" hidden></p>
-      <div id="longdraft-plan" hidden>
-        <div class="ld-plan" id="ld-plan-body"></div>
-        <p class="hint warn" id="ld-warning"></p>
-      </div>
-    </div>
-
     <div class="field">
       <label>プロンプト（どんな動画にしたいか）</label>
       <textarea id="prompt" rows="4" placeholder="どんな動きにしたいかを書いてください"></textarea>
@@ -91,8 +90,8 @@
            <Picture 1> / <Video 1> silently re-renders the source video. Rather
            than asking the operator to remember that, the roles are picked here
            and the server composes the tagged prompt. -->
-      <div id="mt-prompt-helper" hidden>
-        <p class="hint">どこから何を取るかを選ぶと、H3 が理解できる形のプロンプトを作ります。</p>
+      <details id="mt-prompt-helper" hidden>
+        <summary class="hint">どこから何を取るか選んでプロンプトを作る</summary>
         <div class="mt-opts">
           <label>人物<select id="mtp-person">
             <option value="picture">画像の人物に置き換える</option>
@@ -115,7 +114,7 @@
         </div>
         <input type="text" id="mtp-extra" placeholder="追加の指示（任意・英語）">
         <button id="btn-mtp-build" class="btn">この内容でプロンプトを作る</button>
-      </div>
+      </details>
     </div>
 
     <div class="row">
@@ -130,16 +129,8 @@
     </div>
     <p class="hint warn" id="duration-hint" hidden></p>
 
-    <div class="field" id="field-refstrength">
-      <label id="refstrength-label">REFERENCE STRENGTH <span id="ref-value">0.999</span></label>
-      <input type="range" id="refstrength" min="0.90" max="1.0" step="0.001" value="0.999">
-      <p class="hint">高いほど元画像そっくりになります。下げると動きは自由になりますが、顔や服が変わりやすくなります。<br>
-        この値を変えても再エンコードは起きません（キャッシュはそのまま使えます）。</p>
-      <p class="hint warn" id="ref-unavailable" hidden></p>
-    </div>
-
-    <h2>2 · 画質</h2>
     <div class="field">
+      <label>画質</label>
       <div class="seg" id="quality-seg">
         <button data-quality="draft" class="on">下書き<span class="sub">安く速く候補を出す</span></button>
         <button data-quality="final">仕上げ<span class="sub">選んだ1本を高画質に</span></button>
@@ -147,28 +138,73 @@
       <p class="hint" id="quality-hint"></p>
     </div>
 
-    <div class="field" id="field-draftq">
-      <label>Draft の速さ</label>
-      <div class="seg" id="draftq-seg"></div>
-      <p class="hint" id="draftq-hint"></p>
-    </div>
-
-    <div class="field" id="field-variations">
-      <label>生成本数</label>
-      <div class="seg" id="var-seg">
-        <button data-var="1">1</button>
-        <button data-var="4" class="on">4</button>
-        <button data-var="8">8</button>
+    <!-- Long Draft. Motion Trace only: it works by cutting the reference
+         video, and the other two modes have no reference video. It is a Draft
+         tool -- Final is never split. -->
+    <div class="field" id="field-longdraft" hidden>
+      <label>長尺Draft <span class="dim">長い動画を短く分けて速く確認する</span></label>
+      <div class="seg" id="longdraft-seg">
+        <button data-longdraft="off" class="on">OFF<span class="sub">1本で生成</span></button>
+        <button data-longdraft="on">ON<span class="sub">分割して速く確認</span></button>
       </div>
-      <p class="hint" id="cache-hint"></p>
+      <p class="hint" id="longdraft-unavailable" hidden></p>
+      <div id="longdraft-plan" hidden>
+        <div class="ld-plan" id="ld-plan-body"></div>
+        <p class="hint warn" id="ld-warning"></p>
+      </div>
     </div>
 
-    <button id="btn-generate" class="btn btn-primary btn-big">生成する</button>
-    <button id="btn-cancel" class="btn btn-ghost" hidden>中止</button>
+    <!-- Levers that are real but rarely moved. Folded away so the things that
+         change every run -- the material, the prompt, the length -- are what
+         the column actually shows. -->
+    <details class="adv">
+      <summary>詳細設定</summary>
+
+      <div class="field" id="field-refstrength">
+        <label id="refstrength-label">REFERENCE STRENGTH <span id="ref-value">0.999</span></label>
+        <input type="range" id="refstrength" min="0.90" max="1.0" step="0.001" value="0.999">
+        <p class="hint">高いほど元画像そっくりになります。下げると動きは自由になりますが、顔や服が変わりやすくなります。
+          この値を変えても再エンコードは起きません（キャッシュはそのまま使えます）。</p>
+        <p class="hint warn" id="ref-unavailable" hidden></p>
+      </div>
+
+      <div class="field" id="field-refsize">
+        <label>人物の再現精度</label>
+        <div class="seg" id="refsize-seg">
+          <button data-refsize="match" class="on">標準<span class="sub">速い</span></button>
+          <button data-refsize="max">高精度<span class="sub">2048px・VRAM大</span></button>
+        </div>
+        <p class="hint">「高精度」は VRAM を約1.8倍使います（実測 53 GiB）。48GB の GPU では遅くなることがあります。ふだんは「標準」で十分です。</p>
+      </div>
+
+      <div class="field" id="field-draftq">
+        <label>Draft の速さ</label>
+        <div class="seg" id="draftq-seg"></div>
+        <p class="hint" id="draftq-hint"></p>
+      </div>
+
+      <!-- Default 1. 46 batches, 42 of them one take: the choice stays for the
+           run where the direction is genuinely unknown, out of the main path. -->
+      <div class="field" id="field-variations">
+        <label>生成本数</label>
+        <div class="seg" id="var-seg">
+          <button data-var="1" class="on">1</button>
+          <button data-var="4">4</button>
+          <button data-var="8">8</button>
+        </div>
+        <p class="hint" id="cache-hint"></p>
+      </div>
+    </details>
+
+    <div class="go">
+      <button id="btn-generate" class="btn btn-primary btn-big">生成する</button>
+      <button id="btn-cancel" class="btn btn-ghost" hidden>中止</button>
+    </div>
   </section>
 
-  <section class="panel" id="panel-results">
-    <h2>3 · 結果</h2>
+  <!-- ── centre: what came out ──────────────────────────────────────── -->
+  <section class="panel col" id="panel-results">
+    <h2>結果</h2>
     <p class="hint" id="batch-progress" hidden></p>
     <div id="results" class="grid"></div>
 
@@ -178,57 +214,52 @@
     <div id="longdraft-run" class="ld-run" hidden></div>
 
     <div id="finish" hidden>
-      <h2>4 · 選んだ1本を仕上げる</h2>
+      <h2>選んだ1本を仕上げる</h2>
       <div id="finish-options" class="opts"></div>
       <button id="btn-finalize" class="btn btn-primary">この設定で仕上げる</button>
       <p class="hint">仕上げは選んだ1本だけに実行されます（他の候補にはGPUを使いません）。</p>
     </div>
   </section>
 
-  <section class="panel" id="panel-side">
-    <h2>GPU</h2>
-
-    <!-- What to press, what it costs, and whether it is running. Everything
-         else about the Pod is detail and lives further down. -->
-    <div id="gpu-card" class="gpu-card"></div>
-
-    <!-- The start is a sequence on the server, so it is shown as one. A reload
-         re-renders whatever stage it is really at. -->
-    <ol id="gpu-progress" class="gpu-progress" hidden></ol>
-
-    <!-- An expensive card is never taken automatically; it is offered here. -->
-    <div id="gpu-offer" class="gpu-offer" hidden></div>
-
-    <p class="hint warn" id="gpu-why" hidden></p>
-
-    <!-- Pod up, ComfyUI not answering. Restarting ComfyUI is not restarting the
-         GPU, and this must never become START GPU: the Pod is already paid for. -->
-    <div id="comfy-down" hidden>
-      <p class="hint warn">Pod は起動していますが ComfyUI が応答していません。GPU は課金中です。</p>
-      <button id="btn-comfy-start" class="btn">ComfyUI を起動</button>
-    </div>
-
-    <div id="gpu-cost" class="gpu-cost"></div>
-
-    <details id="gpu-details">
-      <summary class="hint">Pod の詳細</summary>
-      <dl id="gpu-info" class="kv"></dl>
-      <div id="gpu-checks" class="hint"></div>
-    </details>
-
-    <div class="field">
-      <label>自動停止</label>
-      <select id="auto-stop"></select>
-      <label class="check"><input type="checkbox" id="stop-after-gen"> 生成が終わったら停止する</label>
-      <p class="hint">操作がなく生成もしていないとき、GPUを自動で止めます。保存したデータ（Network Volume）は消えません。
-        生成中・仕上げ中・アップロード中・状態不明のときは停止しません。</p>
-      <p class="hint" id="watchdog-note"></p>
-    </div>
-    <h2>履歴</h2>
-    <div id="stats" class="hint"></div>
-    <div id="history"></div>
-  </section>
 </main>
+
+<!-- Everything ever made, as a strip rather than a column: a shelf of videos
+     read by picture, not by the first 70 characters of a prompt. It is wide
+     because thumbnails are wide, and it is at the bottom because the work is
+     what the eye should land on first. -->
+<section class="panel shelf" id="panel-side">
+  <div class="shelf-head">
+    <h2>棚</h2>
+    <div id="stats" class="hint"></div>
+  </div>
+  <div id="history"></div>
+</section>
+
+<!-- The Pod's detail: read when something needs explaining, not while
+     working. Opened from the bar; nothing here is required to generate. -->
+<aside id="gpu-drawer" class="drawer" hidden>
+  <div class="drawer-head">
+    <h2>Pod</h2>
+    <button id="btn-drawer-close" class="btn btn-ghost">閉じる</button>
+  </div>
+  <div id="gpu-card" class="gpu-card"></div>
+  <div id="gpu-cost" class="gpu-cost"></div>
+  <details id="gpu-details" open>
+    <summary class="hint">詳細</summary>
+    <dl id="gpu-info" class="kv"></dl>
+    <div id="gpu-checks" class="hint"></div>
+  </details>
+  <div class="field">
+    <label>自動停止</label>
+    <select id="auto-stop"></select>
+    <label class="check"><input type="checkbox" id="stop-after-gen"> 生成が終わったら停止する</label>
+    <p class="hint">操作がなく生成もしていないとき、GPUを自動で止めます。保存したデータ（Network Volume）は消えません。
+      生成中・仕上げ中・アップロード中・状態不明のときは停止しません。</p>
+    <p class="hint" id="watchdog-note"></p>
+  </div>
+</aside>
+
+</div>
 
 <script src="/app.js"></script>
 </body>

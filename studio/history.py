@@ -150,7 +150,9 @@ def _migrate(conn):
                          # The corrected file: source audio, source timing.
                          # Kept beside output_path rather than replacing it --
                          # the raw generation stays as the evidence it happened.
-                         ("delivery_path", "TEXT")):
+                         ("delivery_path", "TEXT"),
+                         # One frame, so history can be looked at rather than read.
+                         ("poster_path", "TEXT")):
         if column not in have_gen:
             conn.execute("ALTER TABLE generations ADD COLUMN %s %s" % (column, decl))
             added.append(column)

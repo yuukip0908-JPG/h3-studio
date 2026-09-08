@@ -677,6 +677,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "stats": history.stats()})
             if path.startswith("/api/video/"):
                 return self._video(path.rsplit("/", 1)[-1])
+            if path.startswith("/api/poster/"):
+                return self._poster(path.rsplit("/", 1)[-1])
             if path == "/api/long_draft":
                 return self._json({"long_drafts": MANAGER.recent_long_drafts(),
                                    "available": MANAGER.long_draft_available()})
@@ -886,6 +888,26 @@ class Handler(BaseHTTPRequestHandler):
         # A finished preview is a finished video: same validator, same 304, same
         # confinement check above.
         return self._serve_file(path, "video/mp4")
+
+    def _poster(self, gen_id):
+        """One frame of a finished generation. Same confinement as /api/video:
+        the id comes from a URL, so the resolved path is checked before it is
+        opened. Missing is a 404, not an error -- a generation made before
+        posters existed simply has none."""
+        path = None
+        gen = MANAGER.generation(gen_id)
+        if gen is not None and getattr(gen, "poster_path", None):
+            path = gen.poster_path
+        else:
+            row = history.get_generation(gen_id)
+            path = (row or {}).get("poster_path")
+        if path:
+            path = os.path.realpath(path)
+            if not path.startswith(os.path.realpath(config.OUTPUT_DIR) + os.sep):
+                path = None
+        if not path or not os.path.exists(path):
+            return self._error(404, "no poster for %s" % gen_id)
+        return self._serve_file(path, "image/jpeg")
 
     def _video(self, gen_id):
         """Serve a finished video, from memory or from history.

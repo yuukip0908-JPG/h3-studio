@@ -20,9 +20,97 @@ h2:first-child{margin-top:0}
 .chip-exited{background:rgba(194,69,59,.12);color:#f0928a;border-color:#7d3630}
 .chip-unknown{background:#1d222b;color:var(--dim)}
 
-main{display:grid;grid-template-columns:340px minmax(0,1fr) 300px;gap:16px;padding:16px;align-items:start}
-@media (max-width:1100px){main{grid-template-columns:1fr}}
+/* ---- fixed shell -------------------------------------------------------
+   The Studio is operated, not read, so the working surface is one viewport
+   and the page itself never scrolls. Only the three columns scroll, and only
+   when their own content exceeds them. `min-height:0` on every grid child is
+   what actually makes that work: without it a grid item refuses to shrink
+   below its content and the whole shell grows a page scrollbar instead. */
+html,body{height:100%}
+body{overflow:hidden}
+.app{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;height:100dvh;min-height:0}
+.bar{position:static}
+
+.alerts{display:flex;flex-direction:column;gap:8px;padding:0 16px;margin-top:12px}
+.alerts:empty{display:none}
+.alerts>*:not([hidden])~*{margin-top:0}
+
+/* Two columns, not three. The centre is the largest area, so it holds the
+   thing being looked at; the shelf is a strip under it. Three columns gave the
+   widest space to what is empty most of the time. */
+main.work{display:grid;grid-template-columns:330px minmax(0,1fr);
+  gap:14px;padding:14px 16px 10px;min-height:0}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+.col{min-height:0;overflow-y:auto;overscroll-behavior:contain}
+/* A column's own heading stays put while its content moves under it. */
+.col>h2:first-child{position:sticky;top:-16px;z-index:2;background:var(--panel);
+  margin:-16px -16px 10px;padding:16px 16px 6px}
+
+/* The generate button is the one control that must never be scrolled away. */
+#panel-input{display:flex;flex-direction:column}
+#panel-input .go{position:sticky;bottom:-16px;margin:auto -16px -16px;padding:12px 16px 16px;
+  background:linear-gradient(to top,var(--panel) 72%,transparent);z-index:2}
+#panel-input .go .btn{width:100%}
+
+details.adv{border-top:1px solid var(--line);margin:4px 0 12px;padding-top:10px}
+details.adv>summary{font-size:11px;letter-spacing:.12em;color:var(--dim);
+  text-transform:uppercase;cursor:pointer;list-style:none;padding:2px 0}
+details.adv>summary::-webkit-details-marker{display:none}
+details.adv>summary::before{content:"▸ ";color:var(--dim)}
+details.adv[open]>summary::before{content:"▾ "}
+details.adv[open]{padding-bottom:4px}
+#mt-prompt-helper>summary{cursor:pointer;margin:6px 0}
+
+/* In the bar the mode is a label, not a card: the sub-caption and the wrap
+   both belong to the column version of .seg. */
+.seg-mode{flex-wrap:nowrap;flex:0 0 auto}
+.seg-mode button{white-space:nowrap;padding:5px 12px}
+.seg-mode button .sub{display:none}
+/* An empty hint must not leave a gap in a column that cannot scroll. */
+.hint:empty{display:none}
+
+/* ---- shelf --------------------------------------------------------------
+   A fixed-height strip that scrolls sideways. Height is set by the thumbnail,
+   so it never eats the work area. */
+.shelf{margin:0 16px 14px;padding:10px 12px 12px;display:flex;flex-direction:column;gap:8px}
+.shelf-head{display:flex;align-items:baseline;gap:14px}
+.shelf-head h2{margin:0;border:none;padding:0}
+.shelf-head .hint{margin:0}
+#history{display:flex;gap:8px;overflow-x:auto;overflow-y:hidden;
+  padding-bottom:4px;overscroll-behavior-x:contain}
+#history .h-item{flex:0 0 auto;width:132px;border:1px solid var(--line);border-bottom:1px solid var(--line);
+  border-radius:8px;overflow:hidden;background:#12161d;padding:0;cursor:pointer;
+  font-size:11px;color:var(--dim);transition:border-color .12s}
+#history .h-item:hover{border-color:var(--accent)}
+#history .h-thumb{display:block;width:132px;height:88px;object-fit:cover;background:#0c0f14}
+#history .h-thumb.none{display:flex;align-items:center;justify-content:center;
+  font-size:10px;letter-spacing:.1em;color:#59637a}
+#history .h-meta{padding:5px 7px 7px;line-height:1.35}
+#history .h-item b{color:var(--fg);font-weight:500;display:block;font-size:11px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#history .h-sub{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#history .h-ld{border-color:#2f3a4d}
+
+/* ---- Pod drawer ---------------------------------------------------------
+   Detail, read when something needs explaining. It overlays rather than
+   taking a column, because the column it used to occupy is the shelf. */
+.drawer{position:fixed;top:0;right:0;bottom:0;width:340px;max-width:92vw;z-index:40;
+  background:var(--panel);border-left:1px solid var(--line);padding:16px;
+  overflow-y:auto;box-shadow:-16px 0 40px -20px rgba(0,0,0,.7)}
+.drawer-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}
+.drawer-head h2{margin:0;border:none;padding:0}
+
+@media (max-width:1000px){
+  /* Three columns do not fit. Stop pretending it is an app shell and let the
+     page scroll the way a document does. */
+  body{overflow:auto}
+  .app{display:block;height:auto}
+  main.work{grid-template-columns:1fr}
+  .shelf{margin:0 16px 16px}
+  .col{overflow:visible}
+  .col>h2:first-child{position:static;margin:0 0 10px;padding:0 0 6px}
+  #panel-input .go{position:static;margin:0;padding:0;background:none}
+}
 
 .field{margin-bottom:14px}
 .row{display:flex;gap:10px}
