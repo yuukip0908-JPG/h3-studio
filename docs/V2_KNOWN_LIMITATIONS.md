@@ -1,5 +1,42 @@
 # H3 Studio v2 — 既知の制約
 
+## Long Draft: run の終了判定と segment の掃き取りが原子的でない（2026-09-09 特定・未修正）
+
+`LongDraftRunTests` の3件が **3回に1回**落ちる。再現条件は負荷ではない。
+
+```
+試行1: 12.895s  OK
+試行2: 12.875s  OK
+試行3:  3.745s  FAILED   ← 速い。つまり timeout ではない
+```
+
+失敗時のスナップショット: `[(0, 'done'), (1, 'pending'), (2, 'pending')]`
+
+`RunState.is_active()` は `status in ("planned","running")` しか見ない。一方
+`_run_segment()` の早期 return は segment を `pending` のまま残し、`_finish()` が
+後から `cancelled` に掃く。**status が終端になるのと segment が掃かれるのが
+原子的でない**ため、その隙間で `is_active()` が False を返す。
+
+### 影響範囲
+
+- **Cost Guard は無事**。`has_active_long_draft()` 経由で全 run を見るので、
+  1本の run の隙間では止まらない
+- 影響が出るのは `run.is_active()` を直接見るコード（現状テストのみ）
+
+### 直していない理由
+
+2026-09-09 のセッション終盤に発見。**並行処理の修正を疲れた頭でやらない。**
+この日は同じ形の条件ミス（「良い意図の条件が例外を潰す」）を3回作っており、
+4回目を並行処理でやる価値はない。
+
+### 注意
+
+このテストが落ちても**まず自分の変更を疑わない**こと。実際この日、seed 検証を
+犯人と誤認して bisect まで進めた（無実だった）。**同じ1件を3回流す**のが最短の
+切り分け。
+
+---
+
 ## 1. 実機（GPU）検証の状態 — **完了**
 
 2026-09-06、新 Pod `3lbxf2rnkjsqte`（RTX 6000 Ada 48GB, US-WA-1）で

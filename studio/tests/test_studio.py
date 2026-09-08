@@ -5794,10 +5794,22 @@ class GettingBackOutTests(unittest.TestCase):
         self.assertIn("function renderResultsClear(", self.code)
 
     def test_the_preview_cannot_be_emptied_while_something_is_running(self):
-        """It is the only place a running generation is shown."""
+        """It is the only place a running generation is shown -- and it is read
+        per batch, so another batch running elsewhere does not pin this one."""
         i = self.code.find("function renderResultsClear(")
-        body = self.code[i:i + 400]
-        self.assertIn("state.busy", body)
+        self.assertGreater(i, 0)
+        body = self.code[i:i + 700]
+        for st in ("running", "queued", "submitting"):
+            self.assertIn('"%s"' % st, body)
+
+    def test_a_batch_that_only_errored_can_still_be_put_away(self):
+        """The × was gated on having a finished take, so it vanished in the one
+        case where emptying the panel matters most: a batch that produced
+        nothing but an error, left sitting in the largest area on the page."""
+        i = self.code.find("function renderResultsClear(")
+        body = self.code[i:i + 700]
+        self.assertNotIn('=== "done"', body)
+        self.assertIn("b.hidden = !state.batch || live;", body)
 
     def test_a_second_click_lets_go_of_a_tile(self):
         """Shelf and material grids: the same click that picks one releases it."""

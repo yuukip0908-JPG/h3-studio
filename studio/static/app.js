@@ -2340,8 +2340,17 @@ async function pollPremiere() {
 function renderResultsClear() {
   const b = $("results-clear");
   if (!b) return;
-  b.hidden = !state.batch || state.busy
-    || !(state.batch.generations || []).some((g) => g.status === "done");
+  /* Anything that is not still going can be put away -- finished, errored,
+     cancelled alike. Requiring a finished take was wrong in the one case where
+     emptying the panel matters most: a batch that only errored has nothing
+     "done" in it, so the × disappeared exactly when there was nothing worth
+     looking at. Only a generation still in flight holds the panel, because
+     this is the only place it is shown -- and it is read per batch rather than
+     from the global busy flag, so another batch running elsewhere does not
+     pin this one. */
+  const live = (state.batch && state.batch.generations || []).some(
+    (g) => ["running", "queued", "submitting"].includes(g.status));
+  b.hidden = !state.batch || live;
 }
 
 $("results-clear").addEventListener("click", () => {
