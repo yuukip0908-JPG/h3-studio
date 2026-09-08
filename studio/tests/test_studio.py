@@ -5457,6 +5457,19 @@ class GpuVerificationLifetimeTests(unittest.TestCase):
         self.assertFalse(runpod_ctl.gpu_verified())
         self.assertFalse(runpod_ctl.gpu_verified("ffw0tip8217ep0"))
 
+    def test_a_verification_with_no_lifetime_is_not_a_verification(self):
+        """The shape an older Studio writes, found live on 2026-09-08.
+
+        gpuVerified=true / gpuVerifiedFor=<the active Pod> / no lifetime, for a
+        Pod that had since been stopped and restarted on a different host port.
+        It matches on Pod id and is about a container that no longer exists.
+        """
+        self._put(podId="A", gpuVerified=True, gpuVerifiedFor="A")
+        self.assertFalse(runpod_ctl.gpu_verified())
+        self.assertFalse(runpod_ctl.gpu_verified("A"))
+        self._put(podId="A", gpuVerified=True, gpuVerifiedFor="A", gpuVerifiedLifetime=None)
+        self.assertFalse(runpod_ctl.gpu_verified("A"))
+
     def test_a_stale_verification_no_longer_skips_recording_the_real_card(self):
         """The early return is what made the contradiction durable."""
         self._put(podId="B", gpuVerified=True, gpuVerifiedFor="A", gpuVerifiedLifetime="X",

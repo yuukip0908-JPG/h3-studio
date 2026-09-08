@@ -26,7 +26,7 @@
   "podId": "ffw0tip8217ep0",
   "networkVolumeId": "olmj77x4pc",
   "status": "BASELINE_READY",
-  "lastUpdated": "2026-09-07",
+  "lastUpdated": "2026-09-08",
   "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
   "note_allowedCudaVersions": "omitted: requiring 13.0 returned \"no instances currently available\"",
   "publicIp": null,
@@ -72,5 +72,6 @@
     "policy": "A Pod is disposable; the network volume is the environment. Delete only when EXITED, not active, mounting olmj77x4pc and carrying no volume of its own (studio.runpod_ctl.delete_pod enforces all four). The volume is never deleted."
   },
   "endpoint_pod_id": null,
-  "gpuVerifiedLifetime": null
+  "gpuVerifiedLifetime": null,
+  "endpoint_started_at": null
 }

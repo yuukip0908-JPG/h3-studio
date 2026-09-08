@@ -585,6 +585,12 @@ def gpu_verified(pod_id=None, lifetime=None):
         return False
     if state.get("gpuVerifiedFor") != want:
         return False
+    # A verification with no lifetime is not a verification. It is what an
+    # older Studio wrote, and it was found in the live state file naming a Pod
+    # that had since been stopped and restarted on a different host port --
+    # true-looking, and about a container that no longer exists.
+    if not state.get("gpuVerifiedLifetime"):
+        return False
     if lifetime is not None and state.get("gpuVerifiedLifetime") != lifetime:
         return False
     return True
