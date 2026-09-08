@@ -59,6 +59,7 @@
   <!-- ── left: what goes in ─────────────────────────────────────────── -->
   <section class="panel col" id="panel-input">
     <h2>素材</h2>
+    <div class="pane-body">
     <p class="hint" id="mode-hint"></p>
 
     <p class="hint" id="upload-pending" hidden>
@@ -196,6 +197,8 @@
       </div>
     </details>
 
+    </div><!-- /pane-body -->
+
     <div class="go">
       <button id="btn-generate" class="btn btn-primary btn-big">生成する</button>
       <button id="btn-cancel" class="btn btn-ghost" hidden>中止</button>
@@ -205,6 +208,7 @@
   <!-- ── centre: what came out ──────────────────────────────────────── -->
   <section class="panel col" id="panel-results">
     <h2>結果</h2>
+    <div class="pane-body">
     <p class="hint" id="batch-progress" hidden></p>
     <div id="results" class="grid"></div>
 
@@ -219,6 +223,7 @@
       <button id="btn-finalize" class="btn btn-primary">この設定で仕上げる</button>
       <p class="hint">仕上げは選んだ1本だけに実行されます（他の候補にはGPUを使いません）。</p>
     </div>
+    </div><!-- /pane-body -->
   </section>
 
 </main>

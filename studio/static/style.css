@@ -1,7 +1,25 @@
 :root{
-  --bg:#0f1115; --panel:#161a21; --line:#262c37; --fg:#e6e9ef; --dim:#8d97a8;
-  --accent:#4f8cff; --go:#2e9e5b; --stop:#c2453b; --warn:#d9a441; --hit:#2e9e5b; --miss:#8a6d3b;
+  /* Layered, not flat. Four surfaces with a slight blue bias so a raised thing
+     reads as raised without a heavy border; the old palette was one grey and
+     one line colour, which flattened every panel into the same plane. */
+  --bg:#0B0D12; --panel:#141821; --raised:#1A1F2A; --sunk:#0E1117;
+  --line:#232936; --line-soft:#1B2029;
+  --fg:#E8ECF3; --dim:#8B95A7; --faint:#5C6678;
+  --accent:#5B8CFF; --accent-2:#8B6BFF; --accent-dim:#2B3B63;
+  --go:#2FA463; --stop:#D14A3E; --warn:#DCA741; --hit:#3FBE7C; --miss:#C79544;
+  --r-lg:14px; --r-md:10px; --r-sm:8px;
+  --edge:inset 0 1px 0 rgba(255,255,255,.045);
+  --lift:0 1px 2px rgba(0,0,0,.4), 0 12px 28px -20px rgba(0,0,0,.9);
+  --ring:0 0 0 3px rgba(91,140,255,.28);
 }
+::selection{background:rgba(91,140,255,.3)}
+*:focus-visible{outline:none;box-shadow:var(--ring);border-radius:var(--r-sm)}
+/* Scrollbars are part of the surface in a shell that never scrolls the page. */
+*{scrollbar-width:thin;scrollbar-color:#2A3140 transparent}
+*::-webkit-scrollbar{width:9px;height:9px}
+*::-webkit-scrollbar-thumb{background:#242A36;border-radius:99px;border:2px solid transparent;background-clip:content-box}
+*::-webkit-scrollbar-thumb:hover{background:#303849;background-clip:content-box}
+*::-webkit-scrollbar-track{background:transparent}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
   font:14px/1.5 -apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif}
@@ -10,15 +28,24 @@ h2{font-size:11px;letter-spacing:.16em;color:var(--dim);text-transform:uppercase
   margin:22px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
 h2:first-child{margin-top:0}
 
-.bar{display:flex;align-items:center;gap:12px;padding:12px 18px;
-  background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
+.bar{display:flex;align-items:center;gap:12px;padding:11px 16px;
+  background:linear-gradient(180deg,#171C26,#12161E);
+  border-bottom:1px solid var(--line);box-shadow:var(--edge);position:sticky;top:0;z-index:20}
+h1{font-weight:600;font-size:13px;letter-spacing:.2em;
+  background:linear-gradient(92deg,var(--fg),#9FB4E8);
+  -webkit-background-clip:text;background-clip:text;color:transparent;padding-right:4px}
 .spacer{flex:1}
 .cost{font-variant-numeric:tabular-nums;color:var(--dim);font-size:12px;text-align:right;white-space:pre-line}
 
-.chip{padding:3px 10px;border-radius:999px;font-size:11px;letter-spacing:.08em;border:1px solid var(--line)}
-.chip-running{background:rgba(46,158,91,.15);color:#6ee7a0;border-color:#2e9e5b}
-.chip-exited{background:rgba(194,69,59,.12);color:#f0928a;border-color:#7d3630}
-.chip-unknown{background:#1d222b;color:var(--dim)}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:4px 11px 4px 9px;border-radius:999px;
+  font-size:11px;letter-spacing:.06em;border:1px solid var(--line);background:var(--raised)}
+.chip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;
+  box-shadow:0 0 0 3px currentColor;opacity:.9;transform:scale(.9)}
+.chip-running{color:#5EDE9B;border-color:#265A3F;background:rgba(47,164,99,.12)}
+.chip-running::before{animation:h3-pulse 2.4s ease-in-out infinite}
+.chip-exited{color:#F2988D;border-color:#5E2E2A;background:rgba(209,74,62,.10)}
+.chip-unknown{color:var(--faint)}
+@keyframes h3-pulse{0%,100%{opacity:.95}50%{opacity:.35}}
 
 /* ---- fixed shell -------------------------------------------------------
    The Studio is operated, not read, so the working surface is one viewport
@@ -40,16 +67,20 @@ body{overflow:hidden}
    widest space to what is empty most of the time. */
 main.work{display:grid;grid-template-columns:330px minmax(0,1fr);
   gap:14px;padding:14px 16px 10px;min-height:0}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
-.col{min-height:0;overflow-y:auto;overscroll-behavior:contain}
-/* A column's own heading stays put while its content moves under it. */
-.col>h2:first-child{position:sticky;top:-16px;z-index:2;background:var(--panel);
-  margin:-16px -16px 10px;padding:16px 16px 6px}
-
-/* The generate button is the one control that must never be scrolled away. */
-#panel-input{display:flex;flex-direction:column}
-#panel-input .go{position:sticky;bottom:-16px;margin:auto -16px -16px;padding:12px 16px 16px;
-  background:linear-gradient(to top,var(--panel) 72%,transparent);z-index:2}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);
+  padding:16px;box-shadow:var(--edge),var(--lift)}
+/* Header, scrolling body, footer. A sticky footer would have content passing
+   underneath it -- which it did, straight through the 画質 buttons. The body
+   is the only part that scrolls, so nothing can ever slide under the one
+   control the column exists to reach. */
+.col{min-height:0;overflow:hidden;display:grid;grid-template-rows:auto minmax(0,1fr)}
+#panel-input{grid-template-rows:auto minmax(0,1fr) auto}
+.col>h2:first-child{margin:-16px -16px 0;padding:14px 16px 8px;
+  border-bottom:1px solid var(--line-soft)}
+.pane-body{min-height:0;overflow-y:auto;overscroll-behavior:contain;
+  margin:0 -16px;padding:12px 16px 4px}
+#panel-input .go{margin:0 -16px -16px;padding:12px 16px 16px;
+  border-top:1px solid var(--line-soft);background:var(--panel)}
 #panel-input .go .btn{width:100%}
 
 details.adv{border-top:1px solid var(--line);margin:4px 0 12px;padding-top:10px}
@@ -78,18 +109,21 @@ details.adv[open]{padding-bottom:4px}
 .shelf-head .hint{margin:0}
 #history{display:flex;gap:8px;overflow-x:auto;overflow-y:hidden;
   padding-bottom:4px;overscroll-behavior-x:contain}
-#history .h-item{flex:0 0 auto;width:132px;border:1px solid var(--line);border-bottom:1px solid var(--line);
-  border-radius:8px;overflow:hidden;background:#12161d;padding:0;cursor:pointer;
-  font-size:11px;color:var(--dim);transition:border-color .12s}
-#history .h-item:hover{border-color:var(--accent)}
-#history .h-thumb{display:block;width:132px;height:88px;object-fit:cover;background:#0c0f14}
+#history .h-item{flex:0 0 auto;width:136px;border:1px solid var(--line);
+  border-radius:12px;overflow:hidden;background:var(--raised);padding:0;cursor:pointer;
+  font-size:11px;color:var(--dim);box-shadow:var(--edge);
+  transition:border-color .14s,transform .14s,box-shadow .14s}
+#history .h-item:hover{border-color:var(--accent);transform:translateY(-2px);
+  box-shadow:var(--edge),0 12px 24px -14px rgba(0,0,0,.95)}
+#history .h-thumb{display:block;width:100%;height:90px;object-fit:cover;background:#080A0E}
 #history .h-thumb.none{display:flex;align-items:center;justify-content:center;
-  font-size:10px;letter-spacing:.1em;color:#59637a}
-#history .h-meta{padding:5px 7px 7px;line-height:1.35}
-#history .h-item b{color:var(--fg);font-weight:500;display:block;font-size:11px;
+  font-size:9px;letter-spacing:.16em;color:var(--faint);
+  background:repeating-linear-gradient(45deg,#0E1117,#0E1117 6px,#11151C 6px,#11151C 12px)}
+#history .h-meta{padding:6px 8px 8px;line-height:1.4}
+#history .h-item b{color:var(--fg);font-weight:600;display:block;font-size:11px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#history .h-sub{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#history .h-ld{border-color:#2f3a4d}
+#history .h-sub{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-variant-numeric:tabular-nums;color:var(--faint)}
 
 /* ---- Pod drawer ---------------------------------------------------------
    Detail, read when something needs explaining. It overlays rather than
@@ -107,17 +141,25 @@ details.adv[open]{padding-bottom:4px}
   .app{display:block;height:auto}
   main.work{grid-template-columns:1fr}
   .shelf{margin:0 16px 16px}
-  .col{overflow:visible}
-  .col>h2:first-child{position:static;margin:0 0 10px;padding:0 0 6px}
-  #panel-input .go{position:static;margin:0;padding:0;background:none}
+  .col{overflow:visible;display:block}
+  .col>h2:first-child{margin:0 0 10px;padding:0 0 6px}
+  .pane-body{overflow:visible;margin:0;padding:0}
+  #panel-input .go{margin:12px 0 0;padding:0;border:none}
 }
 
 .field{margin-bottom:14px}
 .row{display:flex;gap:10px}
 .row .field{flex:1}
 label{display:block;font-size:10px;letter-spacing:.12em;color:var(--dim);margin-bottom:5px;text-transform:uppercase}
-input[type=text],input[type=number],select,textarea{width:100%;background:#0d1016;color:var(--fg);
-  border:1px solid var(--line);border-radius:6px;padding:8px 10px;font:inherit}
+input[type=text],input[type=number],select,textarea{width:100%;background:var(--sunk);color:var(--fg);
+  border:1px solid var(--line);border-radius:var(--r-sm);padding:9px 11px;font:inherit;
+  transition:border-color .14s,box-shadow .14s}
+input[type=text]:hover,input[type=number]:hover,select:hover,textarea:hover{border-color:#2E3644}
+input[type=text]:focus,input[type=number]:focus,select:focus,textarea:focus{
+  border-color:var(--accent);box-shadow:var(--ring)}
+input[type=file]{padding:7px 9px;background:var(--sunk);border:1px dashed var(--line);
+  border-radius:var(--r-sm);width:100%;cursor:pointer;transition:border-color .14s}
+input[type=file]:hover{border-color:var(--accent-dim)}
 textarea{resize:vertical}
 input[type=range]{width:100%;accent-color:var(--accent)}
 input[type=file]{font-size:12px;color:var(--dim)}
@@ -126,25 +168,39 @@ input[type=file]{font-size:12px;color:var(--dim)}
 #image-preview{margin-top:8px;max-width:100%;border-radius:6px;border:1px solid var(--line)}
 
 .seg{display:flex;gap:6px;flex-wrap:wrap}
-.seg button{flex:1;min-width:60px;background:#0d1016;color:var(--dim);border:1px solid var(--line);
-  border-radius:6px;padding:8px;font:inherit;cursor:pointer}
-.seg button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.seg{gap:5px}
+.seg button{flex:1;min-width:60px;background:var(--sunk);color:var(--dim);border:1px solid var(--line);
+  border-radius:var(--r-sm);padding:8px;font:inherit;cursor:pointer;
+  transition:background .14s,border-color .14s,color .14s}
+.seg button:hover:not(.on):not(:disabled){color:var(--fg);border-color:#2E3644;background:var(--raised)}
+.seg button.on{background:linear-gradient(180deg,#5B8CFF,#4174E6);border-color:#6E9BFF;color:#fff;
+  box-shadow:var(--edge),0 4px 14px -8px rgba(91,140,255,.9)}
 .seg button:disabled{opacity:.4;cursor:not-allowed}
 
-.btn{border:1px solid var(--line);background:#0d1016;color:var(--fg);border-radius:6px;
-  padding:8px 14px;font:inherit;cursor:pointer;letter-spacing:.06em}
-.btn:hover:not(:disabled){border-color:var(--accent)}
-.btn:disabled{opacity:.45;cursor:not-allowed}
-.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
-.btn-go{background:var(--go);border-color:var(--go);color:#fff}
-.btn-stop{background:var(--stop);border-color:var(--stop);color:#fff}
-.btn-ghost{color:var(--dim)}
-.btn-big{width:100%;padding:12px;font-size:14px;letter-spacing:.14em;margin-top:4px}
+.btn{border:1px solid var(--line);background:var(--raised);color:var(--fg);border-radius:var(--r-sm);
+  padding:8px 14px;font:inherit;cursor:pointer;letter-spacing:.05em;box-shadow:var(--edge);
+  transition:background .14s,border-color .14s,transform .08s,box-shadow .14s}
+.btn:hover:not(:disabled){border-color:#313A4B;background:#20263180}
+.btn:active:not(:disabled){transform:translateY(1px)}
+.btn:disabled{opacity:.4;cursor:not-allowed;box-shadow:none}
+/* One gradient, on the one action the whole column exists to reach. */
+.btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  border-color:transparent;color:#fff;box-shadow:var(--edge),0 8px 22px -12px rgba(110,120,255,.95)}
+.btn-primary:hover:not(:disabled){background:linear-gradient(135deg,#6D9AFF,#9A7CFF);border-color:transparent}
+.btn-go{background:linear-gradient(180deg,#35B36D,#268A53);border-color:#2E9A5E;color:#fff}
+.btn-go:hover:not(:disabled){background:linear-gradient(180deg,#3DC378,#2C9A5C);border-color:#3AAE6C}
+.btn-stop{background:linear-gradient(180deg,#DB5346,#B93B31);border-color:#C2453B;color:#fff}
+.btn-stop:hover:not(:disabled){background:linear-gradient(180deg,#E6604F,#C4433A);border-color:#D4574A}
+.btn-ghost{color:var(--dim);background:transparent;box-shadow:none}
+.btn-ghost:hover:not(:disabled){color:var(--fg);background:var(--raised)}
+.btn-big{width:100%;padding:13px;font-size:14px;font-weight:600;letter-spacing:.12em;margin-top:4px}
 
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
-.card{background:#0d1016;border:1px solid var(--line);border-radius:8px;overflow:hidden;
-  display:flex;flex-direction:column}
-.card.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.card{background:var(--sunk);border:1px solid var(--line);border-radius:12px;overflow:hidden;
+  display:flex;flex-direction:column;box-shadow:var(--edge);transition:border-color .14s,box-shadow .14s}
+.card:hover{border-color:#2E3644}
+.card.sel{border-color:var(--accent);
+  box-shadow:var(--edge),0 0 0 1px var(--accent) inset,0 10px 30px -18px rgba(91,140,255,.9)}
 .card video{width:100%;display:block;background:#000;aspect-ratio:16/9;object-fit:contain}
 .card .ph{aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;
   color:var(--dim);font-size:12px;text-align:center;padding:10px}
@@ -154,10 +210,11 @@ input[type=file]{font-size:12px;color:var(--dim)}
 .card .acts .btn{flex:1;padding:6px;font-size:11px}
 .bar-progress{height:3px;background:#1d222b}
 .bar-progress > i{display:block;height:100%;background:var(--accent);transition:width .3s}
-.tag{padding:1px 6px;border-radius:4px;font-size:10px;letter-spacing:.06em;border:1px solid var(--line)}
-.tag.HIT{color:#6ee7a0;border-color:#2e9e5b}
-.tag.MISS{color:#e0b667;border-color:#8a6d3b}
-.tag.err{color:#f0928a;border-color:#7d3630}
+.tag{padding:2px 7px;border-radius:999px;font-size:10px;letter-spacing:.06em;
+  border:1px solid transparent;font-weight:600}
+.tag.HIT{color:var(--hit);background:rgba(63,190,124,.13);border-color:rgba(63,190,124,.3)}
+.tag.MISS{color:var(--miss);background:rgba(199,149,68,.13);border-color:rgba(199,149,68,.3)}
+.tag.err{color:#F2988D;background:rgba(209,74,62,.13);border-color:rgba(209,74,62,.32)}
 
 .opts{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px}
 .opt{display:flex;align-items:center;gap:6px;font-size:12px}
@@ -174,8 +231,6 @@ input[type=file]{font-size:12px;color:var(--dim)}
 .notice.warn{background:rgba(217,164,65,.12);border-color:#7d6430}
 .notice.info{background:rgba(79,140,255,.10);border-color:#2f4d8a}
 
-#history .h-item{border-bottom:1px solid #1d222b;padding:6px 0;font-size:11px;color:var(--dim)}
-#history .h-item b{color:var(--fg);font-weight:500}
 .dim{color:var(--dim);font-weight:400;letter-spacing:0}
 #video-preview{margin-top:8px;max-width:100%;border-radius:6px;border:1px solid var(--line);background:#000}
 #video-notes{white-space:pre-line}
@@ -225,8 +280,7 @@ input[type=file]{font-size:12px;color:var(--dim)}
 #mt-prompt-helper input[type=text]{margin-bottom:8px}
 #mt-prompt-helper .btn{width:100%}
 
-.h-item[data-batch]{cursor:pointer}
-.h-item[data-batch]:hover{border-color:var(--accent)}
+
 
 /* ---- Long Draft (Motion Trace only) ---------------------------------- */
 .ld-plan { margin-top: 8px; }
@@ -247,7 +301,9 @@ input[type=file]{font-size:12px;color:var(--dim)}
 .ld-seg-state { font-size: 12px; opacity: .9; margin: 3px 0 6px; }
 .ld-seg video, .ld-preview { width: 100%; border-radius: 6px; display: block; }
 .ld-preview { margin-bottom: 6px; }
-.h-ld { border-left: 3px solid #4a8; }
+/* A long draft is several takes of one clip; the strip says so with a rail,
+   not by being a different shape. */
+#history .h-ld{box-shadow:inset 3px 0 0 #3FBE7C}
 
 /* No step count yet (encode, queueing, a recovered generation): show that it is
    working rather than a percentage nobody measured. */
