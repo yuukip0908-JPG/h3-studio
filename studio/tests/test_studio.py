@@ -38,7 +38,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from studio import (comfy_client, config, graph, history, jobs,  # noqa: E402
-                    longdraft, mediaprobe, runpod_ctl, startup)
+                    longdraft, mediaprobe, postprocess, runpod_ctl,
+                    startup)
 from studio.tests import mock_comfy  # noqa: E402
 
 
@@ -5587,6 +5588,161 @@ class FrameExactCutTests(unittest.TestCase):
         finally:
             longdraft._run_ffmpeg, longdraft.describe_segment_file = orig_run, orig_desc
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+
+class DeliveryTests(unittest.TestCase):
+    """The raw generation is not what was asked for.
+
+    H3 reads reference frames at 24 fps whatever the source is, so a 30 fps
+    music video comes back at 0.8x -- against a prompt that says "follow the
+    motion, choreography, TIMING and camera framing of <Video 1>". And it
+    generates its own audio: the source's track is not wired into the graph at
+    all (GetVideoComponents output 1 goes nowhere), so the music is always a
+    different piece of music. Measured on g_e21cb351fb: source 44100 Hz,
+    output 32000 Hz.
+    """
+
+    def setUp(self):
+        if not postprocess.available():
+            self.skipTest("ffmpeg is not installed")
+        self.tmp = tempfile.mkdtemp(prefix="h3-deliver-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _make(self, name, seconds, fps, audio=True):
+        """A real file, because the point is what ffmpeg does to it."""
+        path = os.path.join(self.tmp, name)
+        args = ["-nostdin", "-y", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc=size=64x64:rate=%g:duration=%g" % (fps, seconds)]
+        if audio:
+            args += ["-f", "lavfi", "-i", "sine=frequency=440:duration=%g" % seconds]
+        args += ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
+        if audio:
+            args += ["-c:a", "aac", "-shortest"]
+        args += [path]
+        longdraft._run_ffmpeg(args)
+        return path
+
+    def _probe(self, path):
+        return mediaprobe.describe_for_motion_trace(path)
+
+    def _streams(self, path):
+        out = subprocess.run(
+            [shutil.which("ffprobe"), "-v", "error", "-show_entries",
+             "stream=codec_type,sample_rate,nb_frames,r_frame_rate",
+             "-of", "json", path], capture_output=True, text=True, timeout=60)
+        return json.loads(out.stdout)["streams"]
+
+    def test_a_30fps_source_gets_its_own_speed_back(self):
+        """294 frames at 24 fps is 12.25 s; the same frames at 30 fps is 9.8 s."""
+        out = self._make("out.mp4", 12.25, 24)
+        src = self._make("src.mp4", 12.0, 30)
+        dest = postprocess.deliver(out, os.path.join(self.tmp, "d.mp4"),
+                                   source_path=src, source_fps=30.0, frames=294)
+        v = [s for s in self._streams(dest) if s["codec_type"] == "video"][0]
+        self.assertEqual(v["r_frame_rate"], "30/1")
+        self.assertEqual(int(v["nb_frames"]), 294, "frames were dropped, not retimed")
+
+    def test_the_video_stream_is_copied_not_re_encoded(self):
+        """-itsscale retimes before decoding, so the pixels are untouched."""
+        out = self._make("out.mp4", 12.25, 24)
+        src = self._make("src.mp4", 12.0, 30)
+        dest = postprocess.deliver(out, os.path.join(self.tmp, "d.mp4"),
+                                   source_path=src, source_fps=30.0, frames=294)
+
+        def video_md5(path):
+            r = subprocess.run([shutil.which("ffmpeg"), "-nostdin", "-v", "error",
+                                "-i", path, "-map", "0:v", "-c", "copy", "-f", "md5", "-"],
+                               capture_output=True, text=True, timeout=120)
+            return r.stdout.strip()
+
+        self.assertEqual(video_md5(out), video_md5(dest))
+
+    def test_the_audio_comes_from_the_source_not_from_h3(self):
+        out = self._make("out.mp4", 12.25, 24, audio=True)
+        src = self._make("src.mp4", 12.0, 30, audio=True)
+        dest = postprocess.deliver(out, os.path.join(self.tmp, "d.mp4"),
+                                   source_path=src, source_fps=30.0, frames=294)
+        a = [s for s in self._streams(dest) if s["codec_type"] == "audio"]
+        self.assertTrue(a, "the delivered file lost its audio")
+        # 294/30 = 9.8 s: the window the generation actually consumed.
+        self.assertAlmostEqual(self._probe(dest)["duration"], 9.8, delta=0.2)
+
+    def test_a_24fps_source_with_no_audio_needs_nothing(self):
+        self.assertFalse(postprocess.needed(24.0, False))
+        self.assertTrue(postprocess.needed(30.0, False), "0.8x is not 'nothing'")
+        self.assertTrue(postprocess.needed(24.0, True), "H3's music is not the source's")
+
+    def test_a_source_without_an_audio_track_is_not_an_error(self):
+        out = self._make("out.mp4", 6.6, 24, audio=True)
+        src = self._make("src.mp4", 6.0, 30, audio=False)
+        dest = postprocess.deliver(out, os.path.join(self.tmp, "d.mp4"),
+                                   source_path=src, source_fps=30.0, frames=158)
+        self.assertTrue(os.path.exists(dest))
+
+    def test_the_raw_generation_is_kept_beside_the_delivered_one(self):
+        """It is the evidence the generation happened; it is never overwritten."""
+        raw = "/x/outputs/b_1/g_1_H3Studio.mp4"
+        self.assertNotEqual(postprocess.delivery_path(raw), raw)
+        self.assertTrue(postprocess.delivery_path(raw).endswith("_delivered.mp4"))
+
+
+class LastInputsTests(unittest.TestCase):
+    """One source video, a series of different photographs against it.
+
+    Before this the uploads directory held six byte-identical copies of one
+    photograph and five of one video: every session re-picked both, because
+    there was nowhere for "the thing I am working on" to live between loads.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="h3-inputs-")
+        self._saved = config.STUDIO_DATA_DIR
+        config.STUDIO_DATA_DIR = self.tmp
+        self.m = jobs.JobManager(comfy=comfy_client.ComfyClient("http://127.0.0.1:1"))
+
+    def tearDown(self):
+        config.STUDIO_DATA_DIR = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _file(self, name):
+        path = os.path.join(self.tmp, name)
+        with open(path, "wb") as f:
+            f.write(b"x" * 32)
+        return path
+
+    def test_the_last_video_and_image_come_back(self):
+        vid, img = self._file("v.mp4"), self._file("i.png")
+        self.m.remember_input("video", "v.mp4", vid, {"fps": 30.0, "duration": 12.0})
+        self.m.remember_input("image", "i.png", img)
+        got = self.m.last_inputs()
+        self.assertEqual(got["video"]["name"], "v.mp4")
+        self.assertEqual(got["video"]["meta"]["fps"], 30.0)
+        self.assertEqual(got["image"]["name"], "i.png")
+
+    def test_a_file_that_is_gone_does_not_come_back(self):
+        vid = self._file("v.mp4")
+        self.m.remember_input("video", "v.mp4", vid)
+        os.unlink(vid)
+        self.assertNotIn("video", self.m.last_inputs())
+
+    def test_restoring_re_registers_the_file_with_this_process(self):
+        """A restarted Studio has an empty self.inputs, and a name it cannot
+        resolve is worse than no name: nothing would reach ComfyUI."""
+        vid = self._file("v.mp4")
+        self.m.remember_input("video", "v.mp4", vid)
+        self.m.inputs.clear()
+        self.m.last_inputs()
+        self.assertIn("v.mp4", self.m.inputs)
+        self.assertEqual(self.m.inputs["v.mp4"]["local"], vid)
+
+    def test_a_missing_or_corrupt_record_is_not_an_error(self):
+        self.assertEqual(self.m.last_inputs(), {})
+        with open(os.path.join(self.tmp, jobs.JobManager.LAST_INPUTS), "w") as f:
+            f.write("not json")
+        self.assertEqual(self.m.last_inputs(), {})
 
 
 if __name__ == "__main__":

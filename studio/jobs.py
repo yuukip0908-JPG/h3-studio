@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 
-from . import comfy_client, config, graph, history, longdraft, mediaprobe
+from . import comfy_client, config, graph, history, longdraft, mediaprobe, postprocess
 
 # "submitting" is the window between deciding to submit and knowing the prompt
 # id. It counts as active on purpose: something may already be queued on the
@@ -48,6 +48,9 @@ class Generation:
         self.finished_at = None
         self.output_path = None
         self.output_filename = None
+        # The corrected file (source audio, source timing). None when the raw
+        # output already is what was asked for.
+        self.delivery_path = None
         self.error = None
         self.cache_result = None
         self.selected = False
@@ -744,6 +747,7 @@ class JobManager:
         gen.finished_at = row.get("finished_at")
         gen.output_path = row.get("output_path")
         gen.output_filename = row.get("output_filename")
+        gen.delivery_path = row.get("delivery_path")
         gen.cache_result = row.get("cache_result")
         gen.error = row.get("error")
         gen.selected = bool(row.get("selected"))
@@ -819,8 +823,62 @@ class JobManager:
         self._turbo_available = bool(options) and wanted in options
         return self._turbo_available
 
+    # ---------- the inputs the operator is still working with ----------
+    # The dominant Motion Trace loop is one source video and a series of
+    # different photographs against it, so the video is picked once and the
+    # photograph is what moves. Before this, every session re-picked both: the
+    # uploads directory held six byte-identical copies of one photograph and
+    # five of one video, because there was nowhere for "the thing I am working
+    # on" to live between page loads.
+    LAST_INPUTS = "last_inputs.json"
+
+    def _last_inputs_path(self):
+        return os.path.join(config.STUDIO_DATA_DIR, self.LAST_INPUTS)
+
+    def remember_input(self, kind, name, local_path, meta=None):
+        """Record the file the operator just picked. Best effort by design:
+        losing it costs one file-picker, so it must never fail a upload."""
+        try:
+            state = self.last_inputs(verify=False)
+            state[kind] = {"name": name, "local": local_path, "meta": meta}
+            tmp = self._last_inputs_path() + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, self._last_inputs_path())
+        except OSError:
+            pass
+
+    def last_inputs(self, verify=True):
+        """What was picked last, dropped if the file is no longer on disk.
+
+        With verify, the file is also re-registered with this process so it is
+        forwarded to ComfyUI at generate time -- a restarted Studio has an empty
+        self.inputs, and a name it cannot resolve is worse than no name at all.
+        """
+        try:
+            with open(self._last_inputs_path(), encoding="utf-8") as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(state, dict):
+            return {}
+        if not verify:
+            return state
+        out = {}
+        for kind, rec in state.items():
+            local = (rec or {}).get("local")
+            if not local or not os.path.exists(local):
+                continue
+            try:
+                name, _sub, _sent = self.accept_input(local, kind)
+            except Exception:  # noqa: BLE001 - a stale entry is not an error
+                continue
+            out[kind] = dict(rec, name=name)
+        return out
+
     def upload_source_image(self, local_path):
         name, subfolder, _sent = self.accept_input(local_path, "image")
+        self.remember_input("image", name, local_path)
         return name, subfolder
 
     def upload_source_video(self, local_path):
@@ -831,6 +889,7 @@ class JobManager:
         """
         meta = mediaprobe.describe_for_motion_trace(local_path)
         name, subfolder, _sent = self.accept_input(local_path, "video")
+        self.remember_input("video", name, local_path, meta)
         return name, subfolder, meta
 
     def _ensure_inputs_uploaded(self, *names):
@@ -1792,6 +1851,46 @@ class JobManager:
                     ahead = order.index(gen.prompt_id)
                     gen.progress_text = ("順番待ち（あと%d本）" % ahead) if ahead else "まもなく開始"
 
+    def _deliver(self, gen, raw_path):
+        """Correct the raw output: source timing, source audio. Never fatal.
+
+        H3 reads reference frames at 24 fps whatever the source really is, and
+        generates its own audio -- so a Motion Trace from a 30 fps music video
+        comes back at 0.8x with different music, against a prompt that asked it
+        to follow the source's timing. Failing to correct that must not lose
+        the generation, so every error here leaves the raw file as the answer.
+        """
+        p = gen.params or {}
+        if p.get("mode") != graph.MODE_MOTION_TRACE or not postprocess.available():
+            return None
+        batch = self.batch(gen.batch_id)
+        if batch is not None and (batch.meta or {}).get("long_draft_id"):
+            # A segment's source is its own cut file, and cut_segment strips the
+            # audio (-an), so there is nothing to put back -- delivering here
+            # would replace H3's music with silence. The joined preview is the
+            # right place to restore a Long Draft's audio, from the uncut
+            # source at each segment's offset. Not built yet, deliberately.
+            return None
+        meta = p.get("source_video_meta") or {}
+        fps = meta.get("fps")
+        local = None
+        name = p.get("source_video")
+        with self.lock:
+            rec = self.inputs.get(name) if name else None
+        if rec:
+            local = rec.get("local")
+        if not postprocess.needed(fps, bool(local)):
+            return None
+        try:
+            return postprocess.deliver(
+                raw_path, postprocess.delivery_path(raw_path),
+                source_path=local, source_fps=fps,
+                frames=longdraft.frame_count(p.get("duration") or 0))
+        except Exception as e:  # noqa: BLE001 - the raw generation still stands
+            self.notice("warn", "元動画の音と速度に合わせた書き出しに失敗しました（生成そのものは無事です）: %s"
+                        % str(e)[:160])
+            return None
+
     def _complete(self, gen, hist):
         files = []
         for node_id, out in (hist.get("outputs") or {}).items():
@@ -1814,6 +1913,7 @@ class JobManager:
             return
         gen.output_path = dest
         gen.output_filename = f["filename"]
+        gen.delivery_path = self._deliver(gen, dest)
         gen.finished_at = time.time()
         # started_at comes from the WebSocket execution_start event. If that
         # event was missed (a reconnect, or a job that completed between
@@ -1843,6 +1943,7 @@ class JobManager:
             gen.id, status="done", finished_at=gen.finished_at,
             generation_seconds=measured,
             output_path=dest, output_filename=f["filename"], cache_result=gen.cache_result,
+            delivery_path=gen.delivery_path,
             # Everything the ETA learns from, recorded at completion.
             turbo_enabled=1 if p.get("turbo") else 0,
             turbo_lora=p.get("turbo_lora"), lora_strength=p.get("turbo_strength"),
@@ -1927,7 +2028,7 @@ class JobManager:
         # A path out of the database is still a path. /api/video already
         # confines one to OUTPUT_DIR before opening it; export copies the file
         # somewhere the operator keeps things, so it confines it too.
-        source = os.path.realpath(gen.output_path)
+        source = os.path.realpath(getattr(gen, "delivery_path", None) or gen.output_path)
         if not source.startswith(os.path.realpath(config.OUTPUT_DIR) + os.sep):
             raise ValueError("generation %s points outside the output directory" % gen_id)
         if not os.path.exists(source):

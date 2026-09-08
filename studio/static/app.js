@@ -1082,11 +1082,62 @@ $("var-seg").addEventListener("click", (e) => {
 });
 $("prompt").addEventListener("input", renderCacheHint);
 $("aspect").addEventListener("change", renderCacheHint);
-$("duration").addEventListener("change", () => { renderCacheHint(); renderDurationHint(); });
+$("duration").addEventListener("change", () => {
+  renderCacheHint(); renderDurationHint(); renderSourceBudget();
+});
 
 /* H3 is trained on roughly 124-362 frames at 24 fps (about 5-15 s). Cost scales
    with the frame count, so a long clip is dramatically slower -- an 18 s Motion
    Trace measured 212 s per sampling step, about 43 minutes for one draft. */
+/* H3 reads a COUNT OF FRAMES at 24 fps, whatever the source's real rate is.
+   Three quantities follow from that and the UI used to show one: the frames
+   rendered, the seconds of output, and the seconds of SOURCE actually
+   consumed. A 12 s cut of a 30 fps video supplies only 9.8 s of action, played
+   over 12.25 s -- 0.8x, with 2.2 s of the cut never read. No post-processing
+   recovers the part that was not read, so it is said before the GPU starts. */
+const H3_FPS = 24;
+
+function h3Frames(seconds) {
+  let n = Math.max(5, Math.round(seconds * H3_FPS));
+  return n + (5 - (n % 17)) % 17;
+}
+
+function renderSourceBudget() {
+  const el = $("source-budget");
+  if (!el) return;
+  const meta = state.sourceVideoMeta || {};
+  const wanted = Number($("duration").value) || 0;
+  const inputs = (state.cfg && state.cfg.mode_inputs[state.mode]) || [];
+  if (!state.sourceVideo || inputs.indexOf("source_video") < 0 || !wanted) {
+    el.hidden = true;
+    return;
+  }
+  const frames = h3Frames(wanted);
+  const out = frames / H3_FPS;
+  const lines = [];
+  if (!meta.fps) {
+    lines.push(`${wanted}秒 = ${frames}フレーム → 出力 ${out.toFixed(1)}秒。` +
+               `元動画のフレームレートが読めないため、何秒ぶん使われるかは分かりません。`);
+  } else {
+    const usedSec = frames / meta.fps;
+    const have = meta.frames || (meta.duration ? Math.round(meta.duration * meta.fps) : null);
+    lines.push(`${wanted}秒 = ${frames}フレーム → 出力 ${out.toFixed(1)}秒。` +
+               `元動画（${meta.fps} fps）からは先頭 ${usedSec.toFixed(1)}秒を使います。`);
+    if (have !== null && have < frames) {
+      const need = frames / meta.fps;
+      lines.push(`⚠ 元動画が足りません（${have}フレームしかありません）。` +
+                 `${need.toFixed(2)}秒以上に切り直してください。`);
+    } else if (meta.duration && meta.duration - usedSec > 0.05) {
+      lines.push(`残り ${(meta.duration - usedSec).toFixed(1)}秒は使われません。` +
+                 (Math.abs(meta.fps - H3_FPS) > 1
+                   ? `24 fps に変換すれば同じ${frames}フレームで ${out.toFixed(1)}秒ぶんを等速で使えます。`
+                   : ""));
+    }
+  }
+  el.textContent = lines.join(" ");
+  el.hidden = false;
+}
+
 function renderDurationHint() {
   const el = $("duration-hint");
   if (!el) return;
@@ -1130,6 +1181,7 @@ $("video-file").addEventListener("change", async (e) => {
     v.src = URL.createObjectURL(f);
     v.hidden = false;
     renderCacheHint();
+    renderSourceBudget();
     refreshLongDraftPlan();
   } catch (err) {
     $("video-status").textContent = "";
@@ -1442,9 +1494,42 @@ $("history").addEventListener("click", async (e) => {
   notice("info", "履歴からこのバッチを開きました。");
 });
 
+/* The source video is picked once and the photograph is what changes, so the
+   video the operator was working with is put back rather than asked for again.
+   Preview thumbnails are not restored: the browser has no File object for a
+   file it did not just read, and /api/video is for finished generations, not
+   for inputs. The name, the probe and the readiness state are what matter. */
+async function restoreLastInputs() {
+  let inputs;
+  try { inputs = (await api("/api/last_inputs")).inputs || {}; }
+  catch (e) { return; }
+  if (inputs.video) {
+    state.sourceVideo = inputs.video.name;
+    state.sourceVideoMeta = inputs.video.meta || null;
+    state.sourceVideoLocal = inputs.video.local;
+    const p = state.sourceVideoMeta || {};
+    const bits = [inputs.video.name + "（前回の素材）"];
+    if (p.duration) bits.push(p.duration + "s");
+    if (p.fps) bits.push(p.fps + " fps");
+    if (p.frames) bits.push(p.frames + " frames");
+    $("video-status").textContent = bits.join(" · ");
+    $("video-notes").textContent = (p.notes || []).join("\n");
+  }
+  if (inputs.image) {
+    state.image = inputs.image.name;
+    state.localPath = inputs.image.local;
+    $("image-status").textContent = inputs.image.name + "（前回の素材）";
+  }
+  renderReadiness();
+  renderCacheHint();
+  renderSourceBudget();
+  refreshLongDraftPlan();
+}
+
 (async function init() {
   try { await loadConfig(); maybeSuggestTags(); renderDurationHint(); }
   catch (e) { notice("error", "設定の読み込みに失敗: " + e.message); }
+  restoreLastInputs();
   pollStatus();
   loadHistory();
   setInterval(loadHistory, 30000);

@@ -647,6 +647,11 @@ class Handler(BaseHTTPRequestHandler):
                     "finish_options": _finish_option_catalog(),
                     "output_dir": config.OUTPUT_DIR,
                 })
+            if path == "/api/last_inputs":
+                # Answered on page load so the source video the operator is
+                # working with is already in place. Verified against the disk,
+                # so a file that has been deleted simply does not come back.
+                return self._json({"inputs": MANAGER.last_inputs()})
             if path == "/api/batches":
                 return self._json({"batches": MANAGER.recent_batches()})
             if path.startswith("/api/batch/"):
@@ -893,12 +898,16 @@ class Handler(BaseHTTPRequestHandler):
         """
         path = None
         gen = MANAGER.generation(gen_id)
-        if gen is not None and gen.output_path:
-            path = gen.output_path
+        if gen is not None and (gen.delivery_path or gen.output_path):
+            # The delivered file when there is one: it is the same video with
+            # the source's timing and the source's audio, and it is what was
+            # asked for. The raw generation stays on disk either way.
+            path = gen.delivery_path or gen.output_path
         else:
             row = history.get_generation(gen_id)
-            if row and row.get("output_path"):
-                candidate = os.path.realpath(row["output_path"])
+            chosen = (row or {}).get("delivery_path") or (row or {}).get("output_path")
+            if chosen:
+                candidate = os.path.realpath(chosen)
                 if candidate.startswith(os.path.realpath(config.OUTPUT_DIR) + os.sep):
                     path = candidate
         if not path or not os.path.exists(path):

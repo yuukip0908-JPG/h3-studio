@@ -146,7 +146,11 @@ def _migrate(conn):
                          ("steps", "INTEGER"), ("duration", "REAL"),
                          ("aspect_ratio", "TEXT"), ("queue_seconds", "REAL"),
                          ("encode_seconds", "REAL"), ("sampling_seconds", "REAL"),
-                         ("decode_seconds", "REAL"), ("gpu", "TEXT")):
+                         ("decode_seconds", "REAL"), ("gpu", "TEXT"),
+                         # The corrected file: source audio, source timing.
+                         # Kept beside output_path rather than replacing it --
+                         # the raw generation stays as the evidence it happened.
+                         ("delivery_path", "TEXT")):
         if column not in have_gen:
             conn.execute("ALTER TABLE generations ADD COLUMN %s %s" % (column, decl))
             added.append(column)
