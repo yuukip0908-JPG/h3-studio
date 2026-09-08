@@ -143,8 +143,6 @@ function renderPresetEcho() {
   if (el) el.textContent = bits.length ? "（変更あり: " + bits.join(" / ") + "）" : "";
   const q = $("quality-hint");
   if (q) q.textContent = e.megapixels ? `${e.megapixels} MP・${e.steps} ステップ` : "";
-  setText($("kv-sampler"), e.sampler || "—");
-  setText($("kv-scheduler"), e.scheduler || "—");
   const sd = $("steps-default");
   if (sd) sd.textContent = p.steps ? "プリセット " + p.steps : "";
   if ($("steps") && document.activeElement !== $("steps")) $("steps").value = e.steps || "";
@@ -166,14 +164,18 @@ function renderModeHints() {
   $("refstrength-label").firstChild.nodeValue =
     mode === "motion_trace" ? "元の素材への忠実度（人物と動きの両方） " : "元画像への忠実度 ";
 
+  /* One line. The cards under it already carry the description, the prompt
+     helper already explains what to write, and 忠実度 is hidden outright in
+     Prompt Cinema -- so a third telling of each was pushing 生成本数 off the
+     bottom of a 212px column. */
   $("mode-hint").textContent =
     mode === "image_trace"
-      ? "1枚の画像から、人物・顔・服・雰囲気をそのままに動画にします。"
+      ? "画像の人物のまま動かします。"
       : mode === "motion_trace"
-      ? "元動画から動き・テンポ・カメラを、人物画像から顔・服・雰囲気を取ります。プロンプトには「何を残して、何を変えたいか」を書いてください。"
-      : "画像は使いません。プロンプトだけで世界観やカメラワークを探します（忠実度の設定はこのモードでは効きません）。";
+      ? "動きは動画から、人物は画像から取ります。"
+      : "文章だけで作ります（画像は使いません）。";
   renderPresetEcho();
-  arrangeTiers();
+  markCostly();
   renderCacheHint();
 }
 
@@ -187,25 +189,22 @@ const CACHE_KEYS = {
   prompt_cinema: [],
 };
 
-/* The two tiers are not a fixed layout: a control is expensive only if it is
-   in THIS mode's fingerprint. Duration re-encodes a Motion Trace (the reference
-   video is truncated to the frame count) but is free for Image Trace, and
-   Prompt Cinema passes images=[] so nothing here costs an encode at all.
-   Filing 長さ permanently under "変えると解析が入る" would have told an Image
-   Trace operator to avoid a change that is free. */
-function arrangeTiers() {
+/* Which controls cost an encode is not fixed: a setting is expensive only if
+   it is in THIS mode's fingerprint. Duration re-encodes a Motion Trace (the
+   reference video is truncated to the frame count) but is free for Image Trace,
+   and Prompt Cinema passes images=[] so nothing costs an encode at all. Marking
+   長さ permanently would have warned an Image Trace operator away from a change
+   that is free. */
+function markCostly() {
   const keys = CACHE_KEYS[state.mode] || [];
-  const cheap = $("tier-cheap"), costly = $("tier-costly");
-  if (!cheap || !costly) return;
-  const place = (blockId, keyName) => {
-    const el = $(blockId);
-    if (el) (keys.indexOf(keyName) >= 0 ? costly : cheap).appendChild(el);
+  const mark = (id, keyName) => {
+    const el = $(id);
+    if (el) el.hidden = keys.indexOf(keyName) < 0;
   };
-  place("blk-resolution", "megapixels");
-  place("blk-duration", "duration");
-  place("blk-refsize", "ref_image_size");
-  /* An empty "this costs 90 seconds" box is a warning about nothing. */
-  costly.hidden = costly.children.length <= 1;
+  mark("cost-duration", "duration");
+  mark("cost-aspect", "aspect_ratio");
+  mark("cost-megapixels", "megapixels");
+  mark("cost-refsize", "ref_image_size");
 }
 
 // Mirrors studio/graph.py expected_cache(): prompt and (Image Trace only) the
@@ -1819,15 +1818,15 @@ $("steps").addEventListener("input", (e) => {
 $("seed").addEventListener("input", (e) => {
   const n = parseInt(e.target.value, 10);
   state.seedFixed = Number.isFinite(n) ? n : null;
-  setText($("seed-hint"), state.seedFixed == null
-    ? "空欄なら毎回ランダム。数字を入れると固定されます。"
-    : "固定中。同じ設定で seed だけ変えるのは、キャッシュ再利用なので速いです。");
+  const sh = $("seed-hint");
+  sh.hidden = state.seedFixed == null;
+  setText(sh, "Seed 固定中。この状態で seed だけ変えると、解析なしで別の絵が出ます。");
   renderPresetEcho();
 });
 $("btn-seed-dice").addEventListener("click", () => {
   $("seed").value = "";
   state.seedFixed = null;
-  setText($("seed-hint"), "空欄なら毎回ランダム。数字を入れると固定されます。");
+  $("seed-hint").hidden = true;
   renderPresetEcho();
 });
 

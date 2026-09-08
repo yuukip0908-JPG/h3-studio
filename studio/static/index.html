@@ -77,13 +77,26 @@
         <!-- Long Draft is not on this list on purpose: it is not a quality
              setting but a different way of running Motion Trace, and it lives
              under the reference video that it cuts. -->
-        <label style="margin-top:16px">プリセット</label>
+        <label style="margin-top:12px">プリセット</label>
         <div class="seg seg-stack" id="preset-seg">
           <button data-preset="standard" class="on">標準<span class="sub">0.4MP · 12 steps</span></button>
           <button data-preset="hires">高解像度<span class="sub">1.0MP · 実験（VRAM未検証）</span></button>
           <button data-preset="final">仕上げ<span class="sub">0.4MP · 30 steps</span></button>
         </div>
         <p class="hint" id="quality-hint"></p>
+
+        <!-- Default 1. 46 batches, 42 of them one take: the choice stays for
+             the run where the direction is genuinely unknown. It belongs with
+             the mode and the preset -- all three answer "what kind of run is
+             this", none of them answer "how should it look". -->
+        <label style="margin-top:12px">生成本数</label>
+        <div class="field" id="field-variations">
+          <div class="seg" id="var-seg">
+            <button data-var="1" class="on">1</button>
+            <button data-var="4">4</button>
+            <button data-var="8">8</button>
+          </div>
+        </div>
 
         <!-- Kept in the DOM, not shown: preset-seg drives the same state, and
              app.js binds a listener to this element at load. -->
@@ -199,12 +212,35 @@
           </details>
         </div>
 
-        <!-- ── cheap: none of these enter the cache fingerprint, so changing
-             one and running again skips the 75-90 s Qwen3-VL encode. That is
-             the whole economics of the improvement loop, so it is the
-             organising principle of this column rather than a footnote. ── -->
-        <div class="tier tier-cheap" id="tier-cheap">
-          <div class="tier-head"><b>やり直しても速い</b><span>キャッシュ再利用・解析なし</span></div>
+        <div class="field" id="field-refstrength">
+          <label id="refstrength-label">元画像への忠実度 <span id="ref-value">0.999</span></label>
+          <input type="range" id="refstrength" min="0.90" max="1.0" step="0.001" value="0.999">
+          <p class="hint">高いほど元画像そっくりになります。下げると動きは自由になりますが、顔や服が変わりやすくなります。</p>
+          <p class="hint warn" id="ref-unavailable" hidden></p>
+        </div>
+
+        <!-- The 「+90秒」 marks are not decoration: these are the inputs the
+             encoder sees, so changing one pays for the Qwen3-VL pass again.
+             Which of them counts depends on the mode, so the marks are set at
+             runtime from the same table the forecast reads. -->
+        <div class="row">
+          <div class="field" id="field-duration">
+            <label>長さ（秒） <span class="cost" id="cost-duration" hidden>+90秒</span></label>
+            <input type="number" id="duration" value="2" min="0.5" max="20" step="0.5">
+          </div>
+          <div class="field" id="blk-aspect">
+            <label>縦横比 <span class="cost" id="cost-aspect" hidden>+90秒</span></label>
+            <select id="aspect"></select>
+          </div>
+        </div>
+        <p class="hint warn" id="duration-hint" hidden></p>
+
+        <!-- Everything below was added in one go and is not part of making a
+             video: it is part of tuning one. Out of the main path, with a
+             sentence each, because a control nobody can explain is worse than
+             no control at all. -->
+        <details class="more" id="adv-more">
+          <summary>詳しく決める<span>ふだんは触らなくて大丈夫です</span></summary>
 
           <div class="row">
             <div class="field" id="field-steps">
@@ -219,13 +255,14 @@
               </div>
             </div>
           </div>
-          <p class="hint" id="seed-hint">空欄なら毎回ランダム。数字を入れると固定されます。</p>
+          <p class="hint">Steps は「何回描き直すか」。多いほど丁寧ですが時間もかかります（標準12・仕上げ30）。
+            Seed は絵のくじ引き番号で、同じ数字なら同じ絵が出ます。<b>どちらも解析は起きません</b>。</p>
+          <p class="hint" id="seed-hint" hidden></p>
 
-          <div class="field" id="field-refstrength">
-            <label id="refstrength-label">元画像への忠実度 <span id="ref-value">0.999</span></label>
-            <input type="range" id="refstrength" min="0.90" max="1.0" step="0.001" value="0.999">
-            <p class="hint">高いほど元画像そっくりになります。下げると動きは自由になりますが、顔や服が変わりやすくなります。</p>
-            <p class="hint warn" id="ref-unavailable" hidden></p>
+          <div class="field" id="blk-resolution">
+            <label>解像度 <span class="cost" id="cost-megapixels" hidden>+90秒</span></label>
+            <select id="megapixels"></select>
+            <p class="hint">大きいほど細かく出ますが、VRAM と時間を使います。0.4MP が検証済みの値です。</p>
           </div>
 
           <div class="field" id="field-draftq">
@@ -234,66 +271,15 @@
             <p class="hint" id="draftq-hint"></p>
           </div>
 
-          <!-- Default 1. 46 batches, 42 of them one take: the choice stays for
-               the run where the direction is genuinely unknown. -->
-          <div class="field" id="field-variations">
-            <label>生成本数</label>
-            <div class="seg" id="var-seg">
-              <button data-var="1" class="on">1</button>
-              <button data-var="4">4</button>
-              <button data-var="8">8</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- ── expensive: these ARE the fingerprint. Changing one re-runs the
-             encoder. Which fields belong here is NOT fixed: duration is part of
-             the fingerprint for Motion Trace (the reference video is truncated
-             to the frame count) but not for Image Trace, and Prompt Cinema
-             passes images=[] so nothing here costs an encode at all. The blocks
-             below are moved between the two tiers by arrangeTiers(), which
-             reads the same table the forecast does. ── -->
-        <div class="tier tier-costly" id="tier-costly">
-          <div class="tier-head"><b>変えると解析が入る</b><span>+約90秒</span></div>
-        </div>
-
-        <!-- moved between the tiers at runtime -->
-        <div id="blk-resolution" class="row">
-          <div class="field">
-            <label>解像度</label>
-            <select id="megapixels"></select>
-          </div>
-          <div class="field">
-            <label>縦横比</label>
-            <select id="aspect"></select>
-          </div>
-        </div>
-        <div id="blk-duration">
-          <div class="field" id="field-duration">
-            <label>長さ（秒）</label>
-            <input type="number" id="duration" value="2" min="0.5" max="20" step="0.5">
-          </div>
-          <p class="hint warn" id="duration-hint" hidden></p>
-        </div>
-        <div id="blk-refsize">
           <div class="field" id="field-refsize">
-            <label>人物の再現精度</label>
+            <label>人物の再現精度 <span class="cost" id="cost-refsize" hidden>+90秒</span></label>
             <div class="seg" id="refsize-seg">
               <button data-refsize="match" class="on">標準<span class="sub">速い</span></button>
               <button data-refsize="max">高精度<span class="sub">VRAM大</span></button>
             </div>
-            <p class="hint">「高精度」は VRAM を約1.8倍使います（実測 53 GiB）。48GB の GPU では遅くなることがあります。</p>
+            <p class="hint">「高精度」は VRAM を約1.8倍使います（実測 53 GiB）。ふだんは「標準」で十分です。</p>
           </div>
-        </div>
-
-        <!-- Read-only: the sampler and scheduler are ComfyUI enum values, and
-             inventing options for a COMBO is how you get value_not_in_list and
-             an HTTP 400. Shown because they are part of what produced the
-             video; editable only once the live enum is exposed. -->
-        <dl class="kv fixed-kv">
-          <div><dt>Sampler</dt><dd id="kv-sampler">—</dd></div>
-          <div><dt>Scheduler</dt><dd id="kv-scheduler">—</dd></div>
-        </dl>
+        </details>
 
       </div>
 

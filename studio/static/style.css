@@ -127,20 +127,23 @@ main.screens{min-height:0;min-width:0;display:grid}
   padding:8px 11px;gap:2px}
 .seg-stack button .sub{font-size:10px;letter-spacing:.01em;opacity:.7}
 
-/* The two tiers of the settings column. This is the one piece of information
-   design here that comes from a measurement rather than a convention: the top
-   group does not enter the cache fingerprint, so re-running with a different
-   value skips the 75-90 s encode; the bottom group is the fingerprint. */
-.tier{border:1px solid var(--line);border-radius:var(--r-md);padding:11px 12px 2px;
-  margin-bottom:12px;background:var(--sunk)}
-.tier-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;
-  margin:-2px 0 10px}
-.tier-head b{font-size:11px;letter-spacing:.1em;font-weight:600}
-.tier-head span{font-size:10px;color:var(--faint);letter-spacing:.04em}
-.tier-cheap{border-color:rgba(63,190,124,.28)}
-.tier-cheap .tier-head b{color:var(--hit)}
-.tier-costly{border-color:rgba(220,167,65,.3)}
-.tier-costly .tier-head b{color:var(--warn)}
+/* One fold, for everything that tunes a video rather than makes one. */
+details.more{border:1px solid var(--line);border-radius:var(--r-md);
+  background:var(--sunk);margin:4px 0 12px;padding:0 12px}
+details.more>summary{list-style:none;cursor:pointer;padding:10px 0;
+  font-size:12px;color:var(--dim);display:flex;align-items:baseline;gap:8px}
+details.more>summary::-webkit-details-marker{display:none}
+details.more>summary::before{content:"▸";color:var(--faint);font-size:10px}
+details.more[open]>summary::before{content:"▾"}
+details.more>summary span{font-size:10.5px;color:var(--faint)}
+details.more[open]{padding-bottom:4px}
+details.more[open]>summary{border-bottom:1px solid var(--line-soft);margin-bottom:10px}
+
+/* The one piece of cache knowledge that survives on the main path: a mark on
+   the settings whose change re-runs the 75-90 s encode, in this mode. */
+.cost{display:inline-block;font-size:9px;letter-spacing:.04em;padding:1px 6px;
+  border-radius:999px;color:var(--warn);background:rgba(220,167,65,.12);
+  border:1px solid rgba(220,167,65,.32);vertical-align:middle;text-transform:none}
 .with-btn{display:flex;gap:5px}
 .with-btn input{min-width:0}
 .with-btn .btn{flex:0 0 auto;padding:0 10px}
@@ -481,3 +484,7 @@ input[type=file]{font-size:12px;color:var(--dim)}
   background:#080A0E;margin:0 0 8px}
 /* An uploaded filename is 40+ characters of hash and blew the column out. */
 #image-status,#video-status{overflow-wrap:anywhere;color:var(--faint);font-size:10.5px}
+
+/* Three numbers in a 212px column: the shared 60px minimum wrapped the last
+   one onto a line that the panel then clipped, so 生成本数 offered 1 and 4. */
+#var-seg button{min-width:0;padding:8px 4px}
