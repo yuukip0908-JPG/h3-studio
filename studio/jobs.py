@@ -1925,7 +1925,16 @@ class JobManager:
             # right place to restore a Long Draft's audio, from the uncut
             # source at each segment's offset. Not built yet, deliberately.
             return None
+        # The probe lives on the BATCH (submit_batch stores it in meta), not in
+        # graph's params -- graph.build never puts source_video_meta there. This
+        # read used to be p.get("source_video_meta"), which is always empty, so
+        # fps was always None: no -itsscale, and audio_from_source false as
+        # well. Every file this produced was a plain re-mux of the raw output,
+        # with H3's own audio and H3's 0.8x timing still in it. Measured on
+        # g_efeb695349: raw 10.12 s / 24 fps / 32000 Hz, "delivered" identical.
         meta = p.get("source_video_meta") or {}
+        if not meta and batch is not None:
+            meta = (batch.meta or {}).get("source_video_meta") or {}
         fps = meta.get("fps")
         local = None
         name = p.get("source_video")
@@ -1933,6 +1942,14 @@ class JobManager:
             rec = self.inputs.get(name) if name else None
         if rec:
             local = rec.get("local")
+        # Last resort, and the one that cannot go stale: the file itself. A
+        # recovered generation has no batch in memory, and an older row was
+        # written before the probe was stored at all.
+        if local and not fps and os.path.exists(local):
+            try:
+                fps = (mediaprobe.describe_for_motion_trace(local) or {}).get("fps")
+            except Exception:  # noqa: BLE001 - delivery is best effort
+                fps = None
         if not postprocess.needed(fps, bool(local)):
             return None
         try:

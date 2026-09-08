@@ -32,7 +32,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import types
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -5589,6 +5591,60 @@ class FrameExactCutTests(unittest.TestCase):
             longdraft._run_ffmpeg, longdraft.describe_segment_file = orig_run, orig_desc
             shutil.rmtree(tmp, ignore_errors=True)
 
+
+
+class DeliveryWiringTests(StudioTestCase):
+    """The delivery step read the probe from the wrong dictionary.
+
+    graph.build's params (studio/graph.py) has no source_video_meta key -- the
+    probe is stored on the batch by submit_batch. _deliver read gen.params, so
+    fps was always None, which skips the retime AND makes audio_from_source
+    false in postprocess.deliver. The result was a delivered file byte-for-byte
+    equivalent to the raw one: measured on g_efeb695349, 10.12 s / 24 fps /
+    32000 Hz before and after. The whole point of the module never fired.
+    """
+
+    def test_graph_params_really_do_not_carry_the_probe(self):
+        """The premise of the bug, asserted so a future change cannot hide it."""
+        _p, params = graph.build(
+            mode=graph.MODE_MOTION_TRACE, prompt_text="<Picture 1> <Video 1>",
+            quality="draft", seed=1, duration=2.0,
+            aspect_ratio=graph.ASPECT_RATIOS[0], image="a.png", source_video="b.mp4")
+        self.assertNotIn("source_video_meta", params)
+
+    def test_the_probe_is_found_on_the_batch(self):
+        mgr = self._manager()
+        gen = types.SimpleNamespace(
+            batch_id="b1", params={"mode": graph.MODE_MOTION_TRACE,
+                                   "source_video": "src.mp4", "duration": 2.0})
+        batch = types.SimpleNamespace(
+            id="b1", meta={"source_video_meta": {"fps": 30.0}}, generations=[gen])
+        mgr.batches.append(batch)
+        mgr.inputs["src.mp4"] = {"local": "/nonexistent/src.mp4", "kind": "video"}
+        seen = {}
+
+        def fake_deliver(raw, dest, source_path=None, source_fps=None, **kw):
+            seen.update(fps=source_fps, source=source_path)
+            return dest
+
+        real = postprocess.deliver
+        postprocess.deliver = fake_deliver
+        try:
+            mgr._deliver(gen, os.path.join(tempfile.gettempdir(), "raw.mp4"))
+        finally:
+            postprocess.deliver = real
+        # Before the fix this was None, and postprocess then skipped both the
+        # retime and the audio while still writing a file.
+        self.assertEqual(seen.get("fps"), 30.0)
+
+    def _manager(self):
+        mgr = jobs.JobManager.__new__(jobs.JobManager)
+        mgr.lock = threading.RLock()
+        mgr.inputs = {}
+        mgr.batches = []
+        mgr.events = []
+        mgr.notice = lambda *a, **k: None
+        return mgr
 
 
 class DeliveryTests(unittest.TestCase):

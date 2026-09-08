@@ -2032,6 +2032,23 @@ function setMode(mode) {
 function openInStudio(b) {
   setMode(b.mode);
   applyPreset(b.kind === "final" ? "final" : "standard");
+  /* applyPreset clears the departures, which is right when a preset is picked
+     and wrong here: a take made at 1.0 MP or 20 steps came back as the preset's
+     0.4 MP / 12, so "この設定を戻す" quietly returned different settings. The
+     values are in params; put them back after the preset has been applied. */
+  const shot = (b.generations || []).find((g) => g.selected)
+            || (b.generations || []).find((g) => g.status === "done")
+            || (b.generations || [])[0];
+  const pr = paramsOf(shot || {});
+  if (pr.megapixels != null) {
+    state.ov.megapixels = pr.megapixels;
+    $("megapixels").value = String(pr.megapixels);
+  }
+  if (pr.steps != null) {
+    state.ov.steps = pr.steps;
+    $("steps").value = String(pr.steps);
+  }
+  renderPresetEcho();
   $("prompt").value = b.prompt || "";
   if (b.aspect_ratio) $("aspect").value = b.aspect_ratio;
   if (b.duration) $("duration").value = b.duration;
