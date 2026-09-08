@@ -38,6 +38,7 @@ const state = {
   batches: [],
   events: [],
   batch: null,       // current batch shown in RESULTS
+  resultsDismissed: false,  // emptied on purpose; do not restore it behind them
   selected: null,
   busy: false,
   comfyReady: false,
@@ -536,7 +537,10 @@ async function pollStatus() {
     /* A reload used to empty the results panel: state.batch only ever got set
        by submitting, so the finished videos vanished even though they were on
        disk and in this very payload. Adopt the newest batch when we have none. */
-    if (!state.batch && s.batches && s.batches.length) {
+    /* Third instance of the same rule in this file, and the one that bites
+       hardest: the status poll runs every two seconds, so after any generation
+       in this session the × would have undone itself almost immediately. */
+    if (!state.batch && !state.resultsDismissed && s.batches && s.batches.length) {
       state.batch = s.batches[0];
       renderResults(s.batches[0]);
     }
@@ -742,17 +746,41 @@ function renderGpuCard(g) {
     + (card.warning && !running ? `<p class="hint warn">${card.warning}</p>` : "");
 }
 
+let progressFolded = false;   // once folded, a later poll must not reopen it
+
 function renderGpuProgress(start) {
   const el = $("gpu-progress");
+  const wrap = $("gpu-progress-wrap");
   const stages = (start && start.stages) || [];
   const show = stages.some((s) => s.state !== "pending");
-  el.hidden = !show;
-  if (!show) return;
+  wrap.hidden = !show;
+  if (!show) { progressFolded = false; return; }
   const MARK = { pending: "·", active: "▶", done: "✓", failed: "✗" };
   el.innerHTML = stages.map((s) =>
     `<li class="${s.state}"><span class="mark">${MARK[s.state] || "·"}</span>${s.label}`
     + (s.detail ? `<span class="detail">${s.detail}</span>` : "") + "</li>").join("");
+
+  const done = stages.filter((s) => s.state === "done").length;
+  const failed = stages.some((s) => s.state === "failed");
+  const running = stages.some((s) => s.state === "active");
+  setText($("gpu-progress-summary"), failed
+    ? `起動に失敗しました（${done}/${stages.length} 完了）`
+    : running ? `起動中… ${done}/${stages.length}`
+    : `✓ 起動の記録（${done}/${stages.length}）`);
+  /* Open while it is working, because that is the only place the stages are
+     visible; folded once, and it stays folded -- the poll runs every couple of
+     seconds and would otherwise reopen it under the operator's hands. */
+  if (running || failed) {
+    if (!progressFolded) wrap.open = true;
+  } else if (!progressFolded) {
+    wrap.open = false;
+    progressFolded = true;
+  }
 }
+
+$("gpu-progress-wrap").addEventListener("toggle", () => {
+  progressFolded = true;      // whichever way they moved it, it was on purpose
+});
 
 /* An expensive card is never taken automatically. It is shown with its price
    and three ways out, and nothing starts until one of them is pressed. */
@@ -1105,6 +1133,9 @@ function buildResultCard() {
 
 function renderResults(batch) {
   state.batch = batch;
+  /* Anything that puts a batch on screen is a decision to look at one, so the
+     dismissal is spent. */
+  state.resultsDismissed = false;
   const sel = batch.generations.find((g) => g.selected);
   state.selected = sel ? sel.id : null;
   const root = $("results");
@@ -1929,7 +1960,12 @@ async function loadHistory() {
     /* Nothing on screen and nothing in this process's memory (a restarted
        Studio): show the most recent batch from history so the work is still
        there. */
-    if (!state.batch && h.batches.length) {
+    /* Restoring the last batch is for an empty panel nobody emptied -- a
+       reopened tab, a restarted Studio. Emptying it on purpose is not that,
+       and this ran every thirty seconds, so the × put the take back rather
+       than taking it away. The same shape of mistake as the Long Draft panel:
+       a rule written to not lose work, undoing a decision to let it go. */
+    if (!state.batch && !state.resultsDismissed && h.batches.length) {
       const view = historyBatchToView(h.batches[0]);
       if (view.generations.some((g) => g.output_url)) renderResults(view);
     }
@@ -2042,7 +2078,13 @@ function rememberInputs() {
     if (on) v.preset = on.dataset.preset;
     REMEMBER_FIELDS.forEach((id) => {
       const el = $(id);
-      if (el && !el.disabled) v[id] = el.value;
+      if (!el || el.disabled) return;
+      /* A <select> reads as "" until loadConfig fills its options. Saving that
+         as a choice, and then restoring it, emptied the aspect ratio -- which
+         graph.build refuses, so the next generation failed validation after a
+         Pod had already been started. */
+      if (el.tagName === "SELECT" && el.value === "" && el.options.length) return;
+      v[id] = el.value;
     });
     localStorage.setItem("h3_inputs", JSON.stringify(v));
   } catch (e) { /* private window: settings simply do not persist */ }
@@ -2071,6 +2113,10 @@ function recallInputs() {
     if (OVERRIDES.includes(id) && v[id] === "") return;
     const el = $(id);
     if (!el) return;
+    /* Never write a value the control cannot hold: a <select> silently goes
+       blank instead of rejecting it. */
+    if (el.tagName === "SELECT"
+        && ![...el.options].some((o) => o.value === v[id])) return;
     el.value = v[id];
     /* The hints below these fields are driven by events, not by reading the
        DOM, so a restored value that never fired one shows the old hint. */
@@ -2195,7 +2241,9 @@ $("steps").addEventListener("input", (e) => {
 });
 $("seed").addEventListener("input", (e) => {
   const n = parseInt(e.target.value, 10);
-  state.seedFixed = Number.isFinite(n) ? n : null;
+  /* Clamped here as well as refused by graph.build: a spinner that can reach
+     -1 should not be able to spend a Pod start to find that out. */
+  state.seedFixed = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : null;
   const sh = $("seed-hint");
   sh.hidden = state.seedFixed == null;
   setText(sh, "Seed 固定中。この状態で seed だけ変えると、解析なしで別の絵が出ます。");
@@ -2299,6 +2347,7 @@ function renderResultsClear() {
 $("results-clear").addEventListener("click", () => {
   state.batch = null;
   state.selected = null;
+  state.resultsDismissed = true;
   setHtml($("results"), "");
   $("batch-progress").hidden = true;
   $("finish").hidden = true;

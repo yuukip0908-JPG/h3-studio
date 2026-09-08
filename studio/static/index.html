@@ -50,7 +50,13 @@
     <p class="hint warn">Pod は起動していますが ComfyUI が応答していません。GPU は課金中です。</p>
     <button id="btn-comfy-start" class="btn">ComfyUI を起動</button>
   </div>
-  <ol id="gpu-progress" class="gpu-progress" hidden></ol>
+  <!-- Six ticks and their details are 305px of the top of the window. While
+       the sequence runs they are the only thing telling the operator what is
+       happening; once it says READY they are a receipt. So it folds itself. -->
+  <details id="gpu-progress-wrap" class="gpu-progress-wrap" hidden>
+    <summary id="gpu-progress-summary"></summary>
+    <ol id="gpu-progress" class="gpu-progress"></ol>
+  </details>
   <div id="gpu-offer" class="gpu-offer" hidden></div>
 </div>
 
@@ -271,7 +277,7 @@
             <div class="field" id="field-seed">
               <label>Seed</label>
               <div class="with-btn">
-                <input type="number" id="seed" placeholder="毎回ランダム">
+                <input type="number" id="seed" placeholder="毎回ランダム" min="0" step="1">
                 <button id="btn-seed-dice" class="btn btn-ghost" title="ランダムに戻す">🎲</button>
               </div>
             </div>

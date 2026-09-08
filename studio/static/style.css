@@ -587,3 +587,13 @@ body.zoomed{overflow:hidden}
   border-radius:5px;background:transparent;color:var(--faint);
   font-size:13px;line-height:1;cursor:pointer;padding:0}
 .h2-x:hover{color:var(--fg);border-color:var(--accent)}
+
+/* --- the startup receipt folds itself away --- */
+.gpu-progress-wrap{margin:0 0 10px}
+.gpu-progress-wrap > summary{cursor:pointer;font-size:12.5px;color:var(--dim);
+  padding:4px 0;list-style:none;user-select:none}
+.gpu-progress-wrap > summary::-webkit-details-marker{display:none}
+.gpu-progress-wrap > summary::before{content:"▸ ";color:var(--faint)}
+.gpu-progress-wrap[open] > summary::before{content:"▾ "}
+.gpu-progress-wrap > summary:hover{color:var(--fg)}
+.gpu-progress-wrap .gpu-progress{margin:0 0 6px}

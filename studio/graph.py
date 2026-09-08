@@ -489,6 +489,13 @@ def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
                              % (MAX_EXTRA_IDENTITY_IMAGES,
                                 MAX_EXTRA_IDENTITY_IMAGES + 1))
 
+    # RandomNoise declares noise_seed as INT min 0. A negative one travels all
+    # the way to ComfyUI and comes back as an HTTP 400 -- after a Pod has been
+    # started and paid for. The number input had no min attribute, so the
+    # spinner walked below zero on its own.
+    if int(seed) < 0:
+        raise GraphError("seed は 0 以上にしてください（受け取った値: %d）" % int(seed))
+
     if turbo and mode not in TURBO_MODES:
         raise GraphError("turbo is not available for %s (Ref2VA turbo is out of scope)" % mode)
 

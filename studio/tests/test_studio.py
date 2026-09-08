@@ -5804,6 +5804,41 @@ class GettingBackOutTests(unittest.TestCase):
         self.assertIn("histSel === t.dataset.hb ? null : t.dataset.hb", self.code)
         self.assertIn("assetSel === t.dataset.asset ? null : t.dataset.asset", self.code)
 
+    def test_nothing_restores_a_panel_that_was_emptied_on_purpose(self):
+        """Made twice in one session, the same shape both times.
+
+        A rule written so a reload does not lose work -- "if the panel is empty,
+        put the most recent thing back" -- cannot tell an empty panel from one
+        the operator just emptied. It ran on a thirty second timer, so the ×
+        put the take back instead of taking it away. The Long Draft panel had
+        the identical bug an hour earlier.
+
+        Every such restore has to be guarded by the dismissal, so this asserts
+        the guard rather than one instance of it.
+        """
+        # Every site that puts something back into an empty panel. The list
+        # is the point: writing this test found a third one that two manual
+        # checks in the browser had missed, because it only fires once this
+        # session has run a generation.
+        # "&&" is what separates a restore ("empty, so put something back")
+        # from a guard clause ("empty, so there is nothing to draw").
+        sites = [i for i in range(len(self.code))
+                 if self.code.startswith("if (!state.batch &&", i)]
+        self.assertGreaterEqual(len(sites), 2)
+        for i in sites:
+            self.assertIn("!state.resultsDismissed", self.code[i:i + 120])
+        i = self.code.find("const kept = ")
+        self.assertGreater(i, 0)
+        self.assertIn("!state.longDraftDismissed", self.code[i:i + 260])
+
+    def test_a_dismissal_is_spent_by_asking_to_see_something_again(self):
+        """Otherwise the panel stays empty forever and the × becomes the bug."""
+        i = self.code.find("function renderResults(batch)")
+        self.assertGreater(i, 0)
+        self.assertIn("state.resultsDismissed = false;", self.code[i:i + 300])
+        j = self.code.find("renderLongDraftRun(run)")
+        self.assertIn("state.longDraftDismissed = false;", self.code)
+
     def test_the_choices_that_must_stay_chosen_are_left_alone(self):
         """Mode, preset, count, aspect and ref_image_size are radio semantics:
         one is always in force, and releasing one would leave no answer to a
