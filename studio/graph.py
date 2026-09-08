@@ -577,10 +577,17 @@ def expected_cache(mode, prev_params, params):
     elif mode == MODE_MOTION_TRACE:
         # duration is encoder-visible here (it truncates the reference video),
         # and so is ref_image_size (it selects how the identity image is scaled)
+        # extra_images too: each photograph becomes another tensor inside
+        # minimax_ref_items, and the fingerprint hashes every reference row's
+        # bytes. Without this the panel promised a HIT and then spent another
+        # two minutes re-encoding -- the exact thing the badge exists to stop.
         for key in ("image", "source_video", "aspect_ratio", "megapixels",
                     "duration", "ref_image_size"):
             if prev_params.get(key) != params.get(key):
                 return "MISS"
+        if list(prev_params.get("extra_images") or []) != list(
+                params.get("extra_images") or []):
+            return "MISS"
     return "HIT"
 
 

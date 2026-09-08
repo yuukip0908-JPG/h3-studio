@@ -5696,10 +5696,11 @@ class ShelfReadabilityTests(unittest.TestCase):
         for state_name in ("running", "planned", "queued"):
             self.assertIn('"%s"' % state_name, body)
         # A cancelled run must not be in the auto-shown set.
-        head = self.code[i:self.code.find("renderLongDraftRun(pinned", i)]
+        head = self.code[i:self.code.find("renderLongDraftRun(active", i)]
         self.assertNotIn("cancelled", head)
-        # One the operator opened from the shelf still wins.
-        self.assertIn("pinned || active || justDone || null", body)
+        # A run that is going wins; then one the operator opened from the
+        # shelf; then one this page watched finish. Nothing else comes back.
+        self.assertIn("active || pinned || kept || null", body)
 
     def test_the_stylesheet_defines_what_the_markup_asks_for(self):
         css = io.open(
@@ -5707,6 +5708,110 @@ class ShelfReadabilityTests(unittest.TestCase):
                          "static", "style.css"), encoding="utf-8").read()
         for rule in (".h-badge", ".h-new", ".ph.src"):
             self.assertIn(rule, css)
+
+
+class GettingBackOutTests(unittest.TestCase):
+    """The operations that had no way back.
+
+    Every one of these was a door that only opened one way, and the only
+    universal escape was reloading the page -- which, until this session, threw
+    away the mode, preset, length, aspect and prompt as well. That is what made
+    the panel feel like it could not be undone.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cls.js = io.open(os.path.join(root, "static", "app.js"), encoding="utf-8").read()
+        cls.code = re.sub(r"/\*.*?\*/", "", cls.js, flags=re.S)
+        cls.html = io.open(os.path.join(root, "static", "index.html"), encoding="utf-8").read()
+        cls.css = io.open(os.path.join(root, "static", "style.css"), encoding="utf-8").read()
+
+    def test_a_finished_long_draft_does_not_come_back_on_its_own(self):
+        """Measured: 3882px of a run that had finished hours earlier, under the
+        take being looked at, reappearing the moment the GPU went idle."""
+        i = self.code.find("const LD_ACTIVE")
+        self.assertGreater(i, 0)
+        body = self.code[i:i + 900]
+        # The old rule auto-showed any finished run whenever nothing was busy.
+        self.assertNotIn("justDone", body)
+        self.assertIn("longDraftWatched", body)
+        self.assertIn("longDraftDismissed", body)
+
+    def test_dismissing_it_outlasts_the_next_poll(self):
+        """Status polls every couple of seconds; a dismissal the poll undoes is
+        not a dismissal."""
+        self.assertIn("state.longDraftDismissed = true;", self.code)
+        i = self.code.find("const LD_ACTIVE")
+        body = self.code[i:i + 900]
+        self.assertIn("!state.longDraftDismissed", body)
+
+    def test_both_materials_can_be_taken_back_out(self):
+        for el in ("image-clear", "video-clear"):
+            self.assertIn('id="%s"' % el, self.html)
+        self.assertIn("function clearMaterial(", self.code)
+        # Clearing the video has to re-scope the shelf and the Long Draft plan,
+        # which are both derived from it.
+        i = self.code.find("function clearMaterial(")
+        body = self.code[i:i + 1200]
+        self.assertIn("refreshLongDraftPlan()", body)
+        self.assertIn("loadHistory()", body)
+
+    def test_the_take_can_fill_the_window_and_be_put_back(self):
+        """A portrait clip in a landscape card is bounded by the card height:
+        473px tall at 9:16 is 264px wide however wide the panel gets."""
+        self.assertIn('data-act="zoom"', self.code)
+        self.assertIn('key === "Escape"', self.code)
+        self.assertIn("#zoom-host", self.css)
+
+    def test_the_zoom_is_not_offered_for_a_take_that_does_not_exist_yet(self):
+        i = self.code.find('const zoom = card.querySelector')
+        self.assertGreater(i, 0)
+        self.assertIn("zoom.hidden = !g.output_url", self.code[i:i + 200])
+
+    def test_choosing_a_take_can_be_undone(self):
+        """/api/select has taken a boolean all along -- the page only ever sent
+        true, so a star went on and never came off."""
+        i = self.code.find('if (btn.dataset.act === "select")')
+        self.assertGreater(i, 0)
+        body = self.code[i:i + 600]
+        self.assertIn('classList.contains("sel")', body)
+        self.assertIn("selected: !on", body)
+        self.assertNotIn("selected: true", body)
+
+    def test_the_endpoint_actually_accepts_a_release(self):
+        """Asserted separately because the front end toggling against a server
+        that ignores the flag would look right and change nothing."""
+        srv = io.open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "server.py"), encoding="utf-8").read()
+        i = srv.find('if path == "/api/select"')
+        self.assertGreater(i, 0)
+        self.assertIn('bool(data.get("selected", True))', srv[i:i + 300])
+
+    def test_the_preview_panel_can_be_emptied(self):
+        """The other half of "it is in the way once it is done"."""
+        self.assertIn('id="results-clear"', self.html)
+        self.assertIn("function renderResultsClear(", self.code)
+
+    def test_the_preview_cannot_be_emptied_while_something_is_running(self):
+        """It is the only place a running generation is shown."""
+        i = self.code.find("function renderResultsClear(")
+        body = self.code[i:i + 400]
+        self.assertIn("state.busy", body)
+
+    def test_a_second_click_lets_go_of_a_tile(self):
+        """Shelf and material grids: the same click that picks one releases it."""
+        self.assertIn("histSel === t.dataset.hb ? null : t.dataset.hb", self.code)
+        self.assertIn("assetSel === t.dataset.asset ? null : t.dataset.asset", self.code)
+
+    def test_the_choices_that_must_stay_chosen_are_left_alone(self):
+        """Mode, preset, count, aspect and ref_image_size are radio semantics:
+        one is always in force, and releasing one would leave no answer to a
+        question the generation has to have. This is the line between "every
+        selection needs a way out" and breaking the form."""
+        for seg in ("mode-seg", "preset-seg", "var-seg", "refsize-seg"):
+            self.assertIn(seg, self.code)
+            self.assertNotIn("%s === null" % seg, self.code)
 
 
 class IdentityWeightTests(unittest.TestCase):

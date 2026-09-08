@@ -24,6 +24,8 @@ const state = {
   longDraft: false,         // Motion Trace only
   longDraftPlan: null,
   longDraftRun: null,       // the run currently shown
+  longDraftWatched: null,   // a run this page saw going, so it may stay when done
+  longDraftDismissed: false,
   longDraftRuns: [],
   refImageSize: "match",
   draftQuality: "standard",
@@ -384,7 +386,8 @@ const SEG_ICON = { done: "✓", running: "●", queued: "●", pending: "○",
 
 function buildLongDraftShell() {
   const el = document.createElement("div");
-  el.innerHTML = '<h2 class="ld-title"></h2>'
+  el.innerHTML = '<button class="ld-close" data-ld-close title="閉じる">×</button>'
+    + '<h2 class="ld-title"></h2>'
     + '<div class="ld-run-head"></div>'
     + '<div class="ld-segs"></div>'
     + '<div class="ld-preview-wrap" hidden>'
@@ -412,8 +415,14 @@ function buildSegmentCard() {
 function renderLongDraftRun(run) {
   const box = $("longdraft-run");
   if (!box) return;
-  if (!run) { box.hidden = true; box.innerHTML = ""; return; }
+  if (!run) {
+    box.hidden = true;
+    box.innerHTML = "";
+    state.longDraftRun = null;
+    return;
+  }
   state.longDraftRun = run;
+  state.longDraftDismissed = false;
   box.hidden = false;
 
   const shell = ensureChild(box, run.id, buildLongDraftShell);
@@ -546,12 +555,19 @@ async function pollStatus() {
        stays open; otherwise only a run that is genuinely going gets the
        panel, and a finished one only while nothing else is. */
     const LD_ACTIVE = ["running", "planned", "queued", "submitting", "paused"];
-    const pinned = state.longDraftRun
-      && state.longDraftRuns.find((r) => r.id === state.longDraftRun.id);
     const active = state.longDraftRuns.find((r) => LD_ACTIVE.includes(r.status));
-    const justDone = s.gpu.active_jobs > 0
-      ? null : state.longDraftRuns.find((r) => r.status === "done");
-    renderLongDraftRun(pinned || active || justDone || null);
+    if (active) state.longDraftWatched = active.id;
+    /* "Do not lose a finished run on reload" turned into a finished run from
+       hours ago reappearing the moment the GPU went idle -- 3882px of it,
+       under the take the operator was actually looking at, with no way to
+       close it. A finished run is kept on screen only if this page watched it
+       finish; otherwise it lives in the shelf, which is where finished work
+       belongs. Dismissing it sticks. */
+    const kept = state.longDraftWatched && !state.longDraftDismissed
+      ? state.longDraftRuns.find((r) => r.id === state.longDraftWatched) : null;
+    const pinned = state.longDraftRun && !state.longDraftDismissed
+      && state.longDraftRuns.find((r) => r.id === state.longDraftRun.id);
+    renderLongDraftRun(active || pinned || kept || null);
     state.comfyReady = Boolean(s.gpu.comfy_ready);
     renderReadiness();
     state.busy = s.gpu.active_jobs > 0;
@@ -1076,6 +1092,7 @@ function buildResultCard() {
     + '<div class="meta"><span class="who"></span><span class="tagwrap"></span></div>'
     + '<div class="meta"><span class="stage"></span><span class="timing"></span></div>'
     + '<div class="acts">'
+    + '<button class="btn" data-act="zoom" hidden>大きく見る</button>'
     + '<button class="btn" data-act="select"></button>'
     + '<button class="btn" data-act="export">書き出し</button>'
     /* An anchor, not a button: /api/video/<id> already falls back to the
@@ -1160,9 +1177,17 @@ function renderResults(batch) {
           ? JP_SEG[g.status] : (g.progress_text || JP_SEG[g.status] || g.status)));
     setText(card.querySelector(".timing"), genTiming(g, now));
     renderProgress(card.querySelector(".prog"), g, now);
+    renderResultsClear();
+    /* A portrait clip in a landscape card is bounded by the card's height, not
+       its column: 473px tall at 9:16 is 264px wide however much room the panel
+       has sideways. Widening the column does nothing; the video needs the
+       screen. Only offered once there is something to look at. */
+    const zoom = card.querySelector('[data-act="zoom"]');
+    if (zoom) zoom.hidden = !g.output_url;
 
     const pick = card.querySelector('[data-act="select"]');
     setText(pick, g.selected ? "★ 選択中" : "これを選ぶ");
+    pick.title = g.selected ? "クリックで選択を解除します" : "";
     setClass(pick, "btn-primary", g.selected);
     pick.disabled = g.status !== "done";
     card.querySelector('[data-act="export"]').disabled = g.status !== "done";
@@ -1189,9 +1214,13 @@ $("results").addEventListener("click", async (e) => {
   const genId = btn.closest(".card").dataset.gen;
   try {
     if (btn.dataset.act === "select") {
+      /* A toggle, not a one-way door. /api/select has taken a boolean all
+         along; the page only ever sent true, so a star could be put on and
+         never taken off. */
+      const on = btn.closest(".card").classList.contains("sel");
       await api("/api/select", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ generation_id: genId, selected: true }),
+        body: JSON.stringify({ generation_id: genId, selected: !on }),
       });
       const b = await api("/api/batch/" + state.batch.id);
       renderResults(b);
@@ -1379,6 +1408,7 @@ $("video-file").addEventListener("change", async (e) => {
     if (p.frames) bits.push(p.frames + "フレーム");
     if (!r.sent_to_comfyui) bits.push("GPU起動後に自動で転送します");
     $("video-status").textContent = bits.join(" · ");
+    renderMaterialClears();
     renderReadiness();
     $("video-notes").textContent = (p.notes || []).join("\n");
     if (p.ok === false) notice("warn", (p.notes || []).join(" / "));
@@ -1407,6 +1437,7 @@ $("image-file").addEventListener("change", async (e) => {
       `${f.name}（${Math.round(r.bytes / 1024)} KB）` +
       (r.sent_to_comfyui ? "" : " · GPU起動後に自動で転送します");
     renderReadiness();
+    renderMaterialClears();
     const img = $("image-preview");
     img.src = URL.createObjectURL(f);
     img.hidden = false;
@@ -1447,6 +1478,47 @@ $("extra-thumbs").addEventListener("click", (e) => {
   renderExtraImages();
   renderCacheHint();
 });
+
+/* Choosing a photograph or a video was a one-way door: there was no way to
+   put it back, and the only route to a clean slate was reloading the page --
+   which, until this session, also discarded every other setting. */
+function clearMaterial(kind) {
+  if (kind === "image") {
+    state.image = null;
+    state.localPath = null;
+    $("image-preview").hidden = true;
+    $("image-preview").removeAttribute("src");
+    $("image-file").value = "";
+    setText($("image-status"), "");
+  } else {
+    state.sourceVideo = null;
+    state.sourceVideoMeta = null;
+    state.sourceVideoLocal = null;
+    const v = $("video-preview");
+    v.hidden = true;
+    v.removeAttribute("src");
+    v.removeAttribute("poster");
+    v.load();
+    $("video-file").value = "";
+    setText($("video-status"), "");
+    setText($("video-notes"), "");
+    refreshLongDraftPlan();
+  }
+  renderMaterialClears();
+  renderReadiness();
+  renderCacheHint();
+  renderSourceBudget();
+  loadHistory();          // the shelf is scoped to the reference video
+}
+
+function renderMaterialClears() {
+  const i = $("image-clear"), v = $("video-clear");
+  if (i) i.hidden = !state.image;
+  if (v) v.hidden = !state.sourceVideo;
+}
+
+$("image-clear").addEventListener("click", () => clearMaterial("image"));
+$("video-clear").addEventListener("click", () => clearMaterial("video"));
 
 $("extra-images-file").addEventListener("change", async (e) => {
   const files = [...e.target.files];
@@ -1864,6 +1936,15 @@ async function loadHistory() {
   } catch (e) { /* history is non-critical */ }
 }
 
+$("longdraft-run").addEventListener("click", (e) => {
+  if (!e.target.closest("[data-ld-close]")) return;
+  /* Dismissal has to outlast the next poll, which would otherwise put it
+     straight back. Reopening is one click in the shelf. */
+  state.longDraftDismissed = true;
+  state.longDraftWatched = null;
+  renderLongDraftRun(null);
+});
+
 $("history").addEventListener("click", (e) => {
   /* Monotonic: opening the newest clears every badge, opening an older one
      leaves the newer ones marked. */
@@ -1876,6 +1957,8 @@ $("history").addEventListener("click", async (e) => {
   if (ld) {
     try {
       const run = await api("/api/long_draft/" + ld.dataset.longdraft);
+      state.longDraftDismissed = false;
+      state.longDraftWatched = run.id;
       renderLongDraftRun(run);
       notice("info", "履歴からこの長尺Draftを開きました。");
     } catch (err) { notice("error", err.message); }
@@ -1923,6 +2006,7 @@ async function restoreLastInputs() {
     img.hidden = false;
   }
   renderReadiness();
+  renderMaterialClears();
   renderCacheHint();
   renderSourceBudget();
   refreshLongDraftPlan();
@@ -2009,6 +2093,7 @@ let rememberTimer = null;
   catch (e) { notice("error", "設定の読み込みに失敗: " + e.message); }
   recallInputs();
   renderExtraImages();
+  renderMaterialClears();
   restoreLastInputs();
   pollStatus();
   loadHistory();
@@ -2197,6 +2282,59 @@ async function pollPremiere() {
   }
   if (was !== premiereOn) renderDelivery();
 }
+/* Fills the window with the take and nothing else. Escape or a click on the
+   backdrop puts it back -- the complaint that prompted this was not only that
+   the video was small but that things in this panel were hard to undo. */
+/* Emptying the panel. A finished take stayed in the largest area on the
+   screen with nothing to dismiss it, which is the other half of "it is in the
+   way once it is done". Never offered while something is running: the panel is
+   the only place that shows it. */
+function renderResultsClear() {
+  const b = $("results-clear");
+  if (!b) return;
+  b.hidden = !state.batch || state.busy
+    || !(state.batch.generations || []).some((g) => g.status === "done");
+}
+
+$("results-clear").addEventListener("click", () => {
+  state.batch = null;
+  state.selected = null;
+  setHtml($("results"), "");
+  $("batch-progress").hidden = true;
+  $("finish").hidden = true;
+  renderResultsClear();
+});
+
+function setZoom(on) {
+  document.body.classList.toggle("zoomed", on);
+  if (!on) {
+    const host = $("zoom-host");
+    if (host) host.remove();
+    return;
+  }
+}
+
+$("results").addEventListener("click", (e) => {
+  const b = e.target.closest('[data-act="zoom"]');
+  if (!b) return;
+  const card = b.closest(".card");
+  const src = card && card.querySelector("video") && card.querySelector("video").src;
+  if (!src) return;
+  const host = document.createElement("div");
+  host.id = "zoom-host";
+  host.innerHTML = `<video src="${esc(src)}" controls autoplay loop playsinline></video>`
+    + '<button class="zoom-x" title="閉じる（Esc）">×</button>';
+  host.addEventListener("click", (ev) => {
+    if (ev.target === host || ev.target.closest(".zoom-x")) setZoom(false);
+  });
+  document.body.appendChild(host);
+  setZoom(true);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && document.body.classList.contains("zoomed")) setZoom(false);
+});
+
 $("delivery-body").addEventListener("click", async (e) => {
   const send = e.target.closest("[data-premiere]");
   if (send) {
@@ -2311,7 +2449,9 @@ $("hist-states").addEventListener("click", (e) => {
 
 $("hist-grid").addEventListener("click", (e) => {
   const t = e.target.closest("[data-hb]"); if (!t) return;
-  histSel = t.dataset.hb;
+  /* Clicking the same tile again lets go of it. Every selection in this file
+     should have a way back that is not a page reload. */
+  histSel = histSel === t.dataset.hb ? null : t.dataset.hb;
   renderHist();
   renderHistDetail(histBatches.find((b) => b.id === histSel));
 });
@@ -2495,7 +2635,7 @@ $("asset-kinds").addEventListener("click", (e) => {
 
 $("asset-grid").addEventListener("click", (e) => {
   const t = e.target.closest("[data-asset]"); if (!t) return;
-  assetSel = t.dataset.asset;
+  assetSel = assetSel === t.dataset.asset ? null : t.dataset.asset;
   renderAssets();
   const a = assetIndex().find((x) => x.name === assetSel);
   if (!a) return;

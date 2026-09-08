@@ -120,7 +120,10 @@
 
         <div class="field" id="field-image">
           <label id="image-label">元画像</label>
-          <img id="image-preview" alt="" hidden>
+          <div class="mat">
+            <img id="image-preview" alt="" hidden>
+            <button class="mat-x" id="image-clear" title="外す" hidden>×</button>
+          </div>
           <input type="file" id="image-file" accept="image/*">
           <div id="image-status" class="hint"></div>
         </div>
@@ -140,7 +143,10 @@
 
         <div class="field" id="field-video">
           <label>元動画 <span class="dim">動き・テンポ・カメラを借りる</span></label>
-          <video id="video-preview" controls preload="metadata" hidden></video>
+          <div class="mat">
+            <video id="video-preview" controls preload="metadata" hidden></video>
+            <button class="mat-x" id="video-clear" title="外す" hidden>×</button>
+          </div>
           <input type="file" id="video-file" accept="video/mp4,video/quicktime,video/*">
           <div id="video-status" class="hint"></div>
           <div id="video-notes" class="hint warn"></div>
@@ -168,7 +174,9 @@
 
     <!-- ── the take ────────────────────────────────────── -->
     <section class="panel col" id="panel-results">
-      <h2>プレビュー</h2>
+      <h2>プレビュー
+        <button id="results-clear" class="h2-x" title="プレビューを空にする" hidden>×</button>
+      </h2>
       <div class="pane-body">
         <p class="hint" id="batch-progress" hidden></p>
         <div id="results" class="grid"></div>
