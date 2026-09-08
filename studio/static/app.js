@@ -17,6 +17,7 @@ const state = {
   variations: 1,
   image: null,
   localPath: null,
+  extraImages: [],          // more photographs of the same person (Motion Trace)
   sourceVideo: null,
   sourceVideoMeta: null,
   sourceVideoLocal: null,   // the file on this Mac; Long Draft cuts from it
@@ -538,11 +539,19 @@ async function pollStatus() {
     /* Same rule as the batch panel: a reload must not lose a Long Draft that is
        running or finished. The run is in this payload either way. */
     state.longDraftRuns = s.long_drafts || [];
-    if (state.longDraftRuns.length) {
-      const shown = state.longDraftRun
-        && state.longDraftRuns.find((r) => r.id === state.longDraftRun.id);
-      renderLongDraftRun(shown || state.longDraftRuns[0]);
-    }
+    /* Showing the most recent run whatever its state put a cancelled one on
+       screen labelled "生成中", with live cancel buttons, above a single take
+       that was the thing actually running -- three phantom segments in the
+       largest panel on the page. A run the operator opened from the shelf
+       stays open; otherwise only a run that is genuinely going gets the
+       panel, and a finished one only while nothing else is. */
+    const LD_ACTIVE = ["running", "planned", "queued", "submitting", "paused"];
+    const pinned = state.longDraftRun
+      && state.longDraftRuns.find((r) => r.id === state.longDraftRun.id);
+    const active = state.longDraftRuns.find((r) => LD_ACTIVE.includes(r.status));
+    const justDone = s.gpu.active_jobs > 0
+      ? null : state.longDraftRuns.find((r) => r.status === "done");
+    renderLongDraftRun(pinned || active || justDone || null);
     state.comfyReady = Boolean(s.gpu.comfy_ready);
     renderReadiness();
     state.busy = s.gpu.active_jobs > 0;
@@ -856,6 +865,68 @@ function genRemaining(g, now) {
   return null;
 }
 
+/* What the wait looks like.
+
+   The numbers were all here already -- percentage, remaining, step count,
+   which phase, how long the finished phases took -- rendered at 12px in the
+   corner of the panel while two buttons nobody can press took the top of it.
+   The figure checked every few minutes should be the largest thing on screen.
+
+   Nothing new is computed: every value comes from the same helper the rail
+   already used, so there is one answer per question rather than two. */
+function renderProgress(box, g, now) {
+  if (!box) return;
+  if (g.status !== "running" && g.status !== "queued" && g.status !== "submitting") {
+    box.hidden = true;
+    setHtml(box, "");
+    return;
+  }
+  box.hidden = false;
+  const vague = genIndeterminate(g);
+  const left = genRemaining(g, now);
+  const s = g.sampler || {};
+  /* No percentage during the encode: ComfyUI sends no progress at all there,
+     and a bar driven by elapsed-against-estimate is a guess in a bar's
+     clothing. Say what it is doing instead of inventing a number. */
+  const hero = vague
+    ? `<span class="p-state">${esc(genStateText(g))}</span>`
+    : `<span class="p-pct">${Math.round(genProgress(g, now) * 100)}<i>%</i></span>`;
+  const eta = left != null && left > 3
+    ? `<span class="p-left">残り約 ${esc(fmtDuration(left))}</span>` : "";
+  const sub = vague
+    ? (g.started_at ? `${fmtDuration(now / 1000 - g.started_at)} 経過` : "")
+    : `${esc(g.phase_label || "Sampling")} ${s.value | 0} / ${s.max | 0}`
+      + (g.started_at ? ` · ${fmtDuration(now / 1000 - g.started_at)} 経過` : "");
+
+  const done = g.phase_seconds || {};
+  /* The server sends these so a rename cannot leave the checklist naming a
+     stage that no longer exists. The literal list is only a fallback for a
+     Studio that has not been restarted since the field was added -- config
+     wins whenever it is there. Mirrors jobs.PHASE_ORDER / PHASE_LABELS. */
+  const order = ((state.cfg && state.cfg.phases) || []).length ? state.cfg.phases
+    : [{ key: "transfer", label: "素材転送" }, { key: "encode", label: "Encoding" },
+       { key: "sampling", label: "Sampling" }, { key: "decode", label: "VAE Decode" },
+       { key: "save", label: "Save" }];
+  const at = order.findIndex((p) => p.key === g.phase);
+  const steps = order.map((p, i) => {
+    /* A phase counts as finished when it has recorded seconds, or when the run
+       has moved past it -- a phase can be skipped entirely (a cache HIT does
+       no encode) and would otherwise sit unticked for the whole run. */
+    const secs = done[p.key];
+    const past = at >= 0 && i < at;
+    const cls = p.key === g.phase ? "now" : (secs != null || past) ? "ok" : "";
+    const mark = cls === "now" ? "◐" : cls === "ok" ? "✓" : "○";
+    const val = p.key === g.phase && !vague && s.max
+      ? `${s.value | 0}/${s.max | 0}`
+      : secs != null ? fmtDuration(secs) : "";
+    return `<li class="${cls}"><span class="p-mark">${mark}</span>`
+      + `<span class="p-name">${esc(p.label)}</span>`
+      + `<b>${esc(val)}</b></li>`;
+  }).join("");
+  setHtml(box, `<div class="p-hero">${hero}${eta}</div>`
+    + `<div class="p-sub">${sub}</div><ol class="p-steps">${steps}</ol>`);
+}
+
 function genTiming(g, now) {
   /* `seconds` on a live generation; `generation_seconds` on a history row --
      the same measurement under two names, and the rail was blank for one. */
@@ -1001,6 +1072,7 @@ function buildResultCard() {
   card.className = "card";
   card.innerHTML = '<div class="vid"></div>'
     + '<div class="bar-progress"><i></i></div>'
+    + '<div class="prog" hidden></div>'
     + '<div class="meta"><span class="who"></span><span class="tagwrap"></span></div>'
     + '<div class="meta"><span class="stage"></span><span class="timing"></span></div>'
     + '<div class="acts">'
@@ -1040,9 +1112,18 @@ function renderResults(batch) {
       ensureVideo(slot, g.output_url);
     } else {
       ensureVideo(slot, null);
-      setHtml(slot, '<div class="ph">' + (g.status === "error"
+      /* A generation takes eighteen minutes, and for all of them the largest
+         area on the screen was a black rectangle with a word in it. The
+         material being traced is the one picture that is certainly available
+         and certainly relevant, so it waits there instead. */
+      const src = g.status === "error" ? null : sourcePoster(batch);
+      const body = g.status === "error"
         ? "エラー<br>" + esc(g.error || "")
-        : esc(JP_SEG[g.status] || g.progress_text || g.status)) + "</div>");
+        : esc(JP_SEG[g.status] || g.progress_text || g.status);
+      setHtml(slot, src
+        ? `<div class="ph src" style="background-image:url('${src}')">
+             <span class="ph-label">${body}</span></div>`
+        : '<div class="ph">' + body + "</div>");
     }
 
     const bar = card.querySelector(".bar-progress");
@@ -1078,6 +1159,7 @@ function renderResults(batch) {
         (g.status === "queued" || g.status === "submitting"
           ? JP_SEG[g.status] : (g.progress_text || JP_SEG[g.status] || g.status)));
     setText(card.querySelector(".timing"), genTiming(g, now));
+    renderProgress(card.querySelector(".prog"), g, now);
 
     const pick = card.querySelector('[data-act="select"]');
     setText(pick, g.selected ? "★ 選択中" : "これを選ぶ");
@@ -1130,6 +1212,7 @@ $("mode-seg").addEventListener("click", (e) => {
   [...$("mode-seg").children].forEach((c) => c.classList.toggle("on", c === b));
   renderModeHints();
   maybeSuggestTags();
+  renderExtraImages();
 });
 
 $("draftq-seg").addEventListener("click", (e) => {
@@ -1334,6 +1417,62 @@ $("image-file").addEventListener("change", async (e) => {
   }
 });
 
+/* Additional photographs of the same person.
+
+   The identity image enters the node as img[:1] -- one frame -- while the
+   reference video enters as one frame every half second. Measured on a real
+   run: 1 against 21, and the output kept the video subject's face and took
+   only the background from the photograph. Reference Strength cannot fix it
+   (it noises both references together) and shortening the clip costs the
+   clip, so more photographs is the only lever that leaves the brief intact. */
+const MAX_EXTRA_IMAGES = 8;
+
+function renderExtraImages() {
+  const wrap = $("field-extra-images");
+  if (wrap) wrap.hidden = state.mode !== "motion_trace";
+  const box = $("extra-thumbs");
+  if (!box) return;
+  setHtml(box, (state.extraImages || []).map((x, i) =>
+    `<span class="thumb"><img src="/api/input/${encodeURIComponent(x)}" alt="">`
+    + `<button class="thumb-x" data-drop="${i}" title="外す">×</button></span>`).join(""));
+  const n = (state.extraImages || []).length;
+  setText($("extra-images-status"), n
+    ? `${n} 枚（人物 ${n + 1} : 動画の見え方が変わります）` : "");
+}
+
+$("extra-thumbs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-drop]");
+  if (!b) return;
+  state.extraImages.splice(Number(b.dataset.drop), 1);
+  renderExtraImages();
+  renderCacheHint();
+});
+
+$("extra-images-file").addEventListener("change", async (e) => {
+  const files = [...e.target.files];
+  e.target.value = "";
+  if (!files.length) return;
+  const room = MAX_EXTRA_IMAGES - (state.extraImages || []).length;
+  if (room <= 0) {
+    notice("warn", `追加写真は ${MAX_EXTRA_IMAGES} 枚までです。`);
+    return;
+  }
+  setText($("extra-images-status"), "アップロード中…");
+  for (const f of files.slice(0, room)) {
+    try {
+      const fd = new FormData();
+      fd.append("image", f, f.name);
+      const r = await api("/api/upload", { method: "POST", body: fd });
+      state.extraImages.push(r.image);
+    } catch (err) { notice("error", `${f.name}: ${err.message}`); }
+  }
+  if (files.length > room) {
+    notice("warn", `${MAX_EXTRA_IMAGES} 枚を超えたぶんは読み込んでいません。`);
+  }
+  renderExtraImages();
+  renderCacheHint();
+});
+
 $("btn-generate").addEventListener("click", async () => {
   /* Long Draft is a different submission entirely: one parent run of N
      sequential segments, not N variations of one clip. */
@@ -1362,6 +1501,9 @@ $("btn-generate").addEventListener("click", async () => {
     payload.source_video_meta = state.sourceVideoMeta;
   }
   if (inputs.indexOf("ref_image_size") >= 0) payload.ref_image_size = state.refImageSize;
+  if (state.mode === "motion_trace" && (state.extraImages || []).length) {
+    payload.extra_images = state.extraImages.slice(0, MAX_EXTRA_IMAGES);
+  }
   /* Turbo only applies to a Draft, and only in the FL2VA modes. Final is never
      Turbo -- the server enforces that too. */
   const turboModes = (state.cfg.draft_quality || {}).turbo_modes || [];
@@ -1572,10 +1714,69 @@ $("auto-stop").addEventListener("change", async (e) => {
    what makes a finished clip survive a Studio restart, not just a reload. */
 /* /api/poster 404s for anything made before posters existed, so the tile falls
    back to a label rather than a broken image icon. */
-function thumb(genId) {
-  if (!genId) return '<div class="h-thumb none">NO PREVIEW</div>';
+function thumb(genId, why) {
+  /* "NO PREVIEW" on a cancelled attempt and on a finished take that simply
+     predates posters looked identical, so a shelf of abandoned runs read the
+     same as a shelf of work. Say which it is. */
+  const label = why || "映像なし";
+  if (!genId) return `<div class="h-thumb none">${esc(label)}</div>`;
   return `<img class="h-thumb" loading="lazy" alt="" src="/api/poster/${genId}"
-    onerror="this.outerHTML='&lt;div class=\'h-thumb none\'&gt;NO PREVIEW&lt;/div&gt;'">`;
+    onerror="this.outerHTML='&lt;div class=\'h-thumb none\'&gt;${esc(label)}&lt;/div&gt;'">`;
+}
+
+/* When the shelf was last looked at, so a take finished since then can be
+   marked. Kept per browser: it is a reading aid, not project state. */
+function shelfSeen() {
+  try {
+    const v = localStorage.getItem("h3_shelf_seen");
+    if (v !== null) return Number(v) || 0;
+    /* First run marks everything already made as seen. Opening the Studio and
+       finding a year of work flagged "new" tells the operator nothing; the
+       badge is only worth having if it means "since you last looked". */
+    const now = Date.now();
+    localStorage.setItem("h3_shelf_seen", String(now));
+    return now;
+  } catch (e) { return Date.now(); }
+}
+function markShelfSeen(t) {
+  try {
+    const cur = shelfSeen();
+    if (t > cur) localStorage.setItem("h3_shelf_seen", String(t));
+  } catch (e) { /* private window: badges simply stay on */ }
+}
+/* History stores these as Unix seconds, not as a date string, and Date.parse
+   of a number is NaN -- which silently made every take look equally old and
+   the badge never appear. */
+function toMs(raw) {
+  if (typeof raw === "number") return raw * 1000;
+  return raw ? (Date.parse(raw) || 0) : 0;
+}
+function finishedAt(b) {
+  let t = 0;
+  (b.generations || []).forEach((g) => {
+    if (g.status !== "done") return;
+    const v = toMs(g.finished_at || g.created_at);
+    if (v > t) t = v;
+  });
+  return t;
+}
+
+/* The still that stands for what is being made: the photograph for Image
+   Trace, a frame of the reference for Motion Trace, and nothing for Prompt
+   Cinema, which genuinely has no source. Falls back to what the material
+   panel currently holds, because a live batch carries less than a history
+   row does. */
+function sourcePoster(batch) {
+  const b = batch || {};
+  /* A running batch carries what it was asked for under meta; a history row
+     carries the same facts as columns. Read both before giving up and
+     showing a black rectangle. */
+  const m = b.meta || {};
+  const img = b.image || m.image || state.image;
+  if (img) return "/api/input/" + encodeURIComponent(img);
+  const vid = b.source_video || m.source_video || state.sourceVideo;
+  if (vid) return "/api/input/" + encodeURIComponent(vid) + "?poster=1";
+  return null;
 }
 
 function historyBatchToView(b) {
@@ -1603,8 +1804,14 @@ async function loadHistory() {
       const segs = d.segments || [];
       const done = segs.filter((x) => x.status === "done").length;
       const shot = segs.find((x) => x.status === "done" && x.generation_id);
-      return `<div class="h-item h-ld" data-longdraft="${d.id}" title="${esc(d.prompt || "")}">
-        ${thumb(shot && shot.generation_id)}
+      /* A Long Draft is the longest thing this program makes, so it is the
+         one most likely to have finished while nobody was watching. */
+      const ldFin = done ? toMs(d.finished_at || d.created_at) : 0;
+      const ldNew = done > 0 && ldFin > shelfSeen();
+      return `<div class="h-item h-ld${ldNew ? " h-new" : ""}" data-longdraft="${d.id}"
+        data-finished="${ldFin}" title="${esc(d.prompt || "")}">
+        ${ldNew ? '<span class="h-badge">新着</span>' : ""}
+        ${thumb(shot && shot.generation_id, done ? "映像なし" : "中止した")}
         <div class="h-meta"><b>長尺 · ${JP_MODE[d.mode] || d.mode}</b>
         <span class="h-sub">${(d.source_duration || 0).toFixed(1)}秒 · ${done}/${segs.length} 本</span></div></div>`;
     }).join("");
@@ -1625,11 +1832,21 @@ async function loadHistory() {
       const shot = sel || b.generations.find((g) => g.status === "done");
       /* A batch where everything errored rendered "0/4本" -- identical to one
          still queued. The rail says which, without reading the numbers. */
-      const st = b.generations.some((g) => ["running", "queued", "submitting"].includes(g.status))
+      const running = b.generations.some((g) => ["running", "queued", "submitting"].includes(g.status));
+      const st = running
         ? "h-run" : b.generations.some((g) => g.status === "error")
         ? "h-err" : done === 0 ? "h-cancelled" : "";
-      return `<div class="h-item ${st}" data-batch="${b.id}" title="${esc(b.prompt || "")}">
-        ${thumb(shot && shot.id)}
+      /* The thing the operator came back to look at is the one that finished
+         while they were away, and it used to sit in the row looking exactly
+         like the thirty before it. */
+      const fin = finishedAt(b);
+      const isNew = done > 0 && fin > shelfSeen();
+      const why = running ? "生成中" : b.generations.some((g) => g.status === "error")
+        ? "失敗" : done === 0 ? "中止した" : "映像なし";
+      return `<div class="h-item ${st}${isNew ? " h-new" : ""}" data-batch="${b.id}"
+        data-finished="${fin}" title="${esc(b.prompt || "")}">
+        ${isNew ? '<span class="h-badge">新着</span>' : ""}
+        ${thumb(shot && shot.id, why)}
         <div class="h-meta"><b>${sel ? "★ " : ""}${JP_MODE[b.mode] || b.mode}</b>
         <span class="h-sub">${JP_KIND[b.kind] || b.kind} · ${done}/${b.generations.length}本${
           b.duration ? " · " + b.duration + "秒" : ""}</span></div></div>`;
@@ -1646,6 +1863,13 @@ async function loadHistory() {
     }
   } catch (e) { /* history is non-critical */ }
 }
+
+$("history").addEventListener("click", (e) => {
+  /* Monotonic: opening the newest clears every badge, opening an older one
+     leaves the newer ones marked. */
+  const t = e.target.closest("[data-finished]");
+  if (t) markShelfSeen(Number(t.dataset.finished || 0));
+}, true);
 
 $("history").addEventListener("click", async (e) => {
   const ld = e.target.closest("[data-longdraft]");
@@ -1715,9 +1939,76 @@ function setDrawer(open) { if (open) go("gpu"); }
 $("btn-drawer").addEventListener("click", () => go("gpu"));
 $("btn-drawer-close").addEventListener("click", () => go("studio"));
 
+/* ---------------------------------------------------------------- settings
+   A reload used to bring the material back and nothing else, so the mode, the
+   preset, the length, the aspect and the prompt all reverted to defaults --
+   and the operator, who had reloaded because they were told to, silently lost
+   a 10 second 9:16 1MP setup and a written prompt. Kept in this browser
+   because it is what this browser was last showing, not project state. */
+const REMEMBER_FIELDS = ["prompt", "duration", "aspect", "refstrength", "steps",
+                         "megapixels", "seed",
+                         "mtp-person", "mtp-clothing", "mtp-background",
+                         "mtp-props", "mtp-extra"];
+
+function rememberInputs() {
+  try {
+    const v = { mode: state.mode, variations: state.variations,
+                refImageSize: state.refImageSize };
+    const on = document.querySelector("#preset-seg button.on");
+    if (on) v.preset = on.dataset.preset;
+    REMEMBER_FIELDS.forEach((id) => {
+      const el = $(id);
+      if (el && !el.disabled) v[id] = el.value;
+    });
+    localStorage.setItem("h3_inputs", JSON.stringify(v));
+  } catch (e) { /* private window: settings simply do not persist */ }
+}
+
+function recallInputs() {
+  let v;
+  try { v = JSON.parse(localStorage.getItem("h3_inputs") || "null"); }
+  catch (e) { return; }
+  if (!v) return;
+  /* Replayed as clicks on the real buttons rather than by assigning to state,
+     so every side effect the handlers have -- hints, the preset echo, the
+     cache estimate -- happens exactly as it does for a person. */
+  const click = (sel) => { const b = document.querySelector(sel); if (b) b.click(); };
+  if (v.mode) click(`#mode-seg button[data-mode="${v.mode}"]`);
+  if (v.preset && typeof applyPreset === "function") applyPreset(v.preset);
+  if (v.variations) click(`#var-seg button[data-var="${v.variations}"]`);
+  if (v.refImageSize) state.refImageSize = v.refImageSize;
+  /* Empty in one of these means "no override, use the preset", and the preset
+     has just been applied. Writing the empty value back and firing change
+     would clear what the preset set -- a restored 高解像度 that silently
+     generated at 0.4 MP. */
+  const OVERRIDES = ["steps", "megapixels", "seed"];
+  REMEMBER_FIELDS.forEach((id) => {
+    if (v[id] === undefined) return;
+    if (OVERRIDES.includes(id) && v[id] === "") return;
+    const el = $(id);
+    if (!el) return;
+    el.value = v[id];
+    /* The hints below these fields are driven by events, not by reading the
+       DOM, so a restored value that never fired one shows the old hint. */
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  });
+}
+
+let rememberTimer = null;
+["click", "change", "input"].forEach((ev) =>
+  document.addEventListener(ev, () => {
+    clearTimeout(rememberTimer);
+    rememberTimer = setTimeout(rememberInputs, 400);
+  }));
+
 (async function init() {
   try { await loadConfig(); maybeSuggestTags(); renderDurationHint(); }
   catch (e) { notice("error", "設定の読み込みに失敗: " + e.message); }
+  recallInputs();
+  renderExtraImages();
   restoreLastInputs();
   pollStatus();
   loadHistory();
@@ -2186,7 +2477,7 @@ function renderAssets() {
     const d = new Date(a.last * 1000);
     return `<div class="tile ${assetSel === a.name ? "on" : ""}" data-asset="${esc(a.name)}">
       <img src="${url}" alt="" loading="lazy"
-        onerror="this.outerHTML='&lt;div class=\\'h-thumb none\\'&gt;NO PREVIEW&lt;/div&gt;'">
+        onerror="this.outerHTML='&lt;div class=\\'h-thumb none\\'&gt;読み込めません&lt;/div&gt;'">
       <div class="t-meta"><b>${esc(a.name)}</b>
         <span>${a.kind === "video" ? "参照動画" : "人物画像"} · ${a.uses} 回使用</span>
         <span>${d.getMonth() + 1}/${d.getDate()} 最終使用</span>

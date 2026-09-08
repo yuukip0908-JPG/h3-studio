@@ -37,7 +37,11 @@ RUNPOD_API_BASE = os.environ.get("RUNPOD_API_BASE", "https://rest.runpod.io/v1")
 # Cost guard defaults. AUTO_STOP_MINUTES == 0 means OFF (safe default: the
 # operator opts in). The guard only ever stops the Pod, never terminates it,
 # and never touches the network volume.
-DEFAULT_AUTO_STOP_MINUTES = int(os.environ.get("H3_AUTO_STOP_MINUTES", "0"))
+# Was 0 -- deliberately, so nothing was ever applied silently. Changed at
+# the operator's request after a session where the Pod ran unguarded: an
+# opt-in guard that nobody opts into is not a guard. Still overridable,
+# and it never stops a Pod while a job is running.
+DEFAULT_AUTO_STOP_MINUTES = int(os.environ.get("H3_AUTO_STOP_MINUTES", "30"))
 AUTO_STOP_CHOICES = [0, 20, 30, 60]
 AUTO_STOP_WARN_FRACTION = 0.75  # warn at 75% of the idle budget
 RECOMMENDED_AUTO_STOP_MINUTES = 30   # shown as a suggestion; never applied silently

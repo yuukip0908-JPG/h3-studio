@@ -26,8 +26,10 @@ Run:  python3 -m unittest discover -s studio/tests -t . -v
 """
 
 import hashlib
+import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -39,10 +41,17 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from studio import (comfy_client, config, graph, history, jobs,  # noqa: E402
-                    longdraft, mediaprobe, postprocess, premiere, runpod_ctl,
-                    startup)
+from studio import (comfy_client, config, deadman, graph, history,  # noqa: E402
+                    jobs, longdraft, mediaprobe, postprocess, premiere,
+                    runpod_ctl, startup)
 from studio.tests import mock_comfy  # noqa: E402
+
+# The dead-man switch is a script, not a package module: it is meant to be run
+# by launchd without importing the Studio's server.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "scripts"))
+import gpu_deadman  # noqa: E402
 
 
 def wait_until(pred, timeout=25.0, interval=0.15):
@@ -2294,10 +2303,32 @@ class CostGuardTests(unittest.TestCase):
         guard.stop_thread()
         self.assertEqual(stopped, [])
 
-    def test_guard_is_off_by_default(self):
+    def test_guard_is_on_by_default_at_the_recommended_value(self):
+        """This asserted OFF, deliberately: nothing was to be applied silently.
+
+        Changed at the operator's request after a session where the Pod ran
+        unguarded for hours -- an opt-in guard that nobody opts into is not a
+        guard. What has not changed is that it never stops a Pod while a job is
+        running, which is what makes a default safe to have.
+        """
         from studio import runpod_ctl
         guard = runpod_ctl.CostGuard(lambda: False, lambda s: None, lambda: None)
-        self.assertFalse(guard.status()["enabled"])
+        st = guard.status()
+        self.assertTrue(st["enabled"])
+        self.assertEqual(st["idle_minutes"], config.RECOMMENDED_AUTO_STOP_MINUTES)
+        self.assertIn(st["idle_minutes"], config.AUTO_STOP_CHOICES)
+
+    def test_a_busy_studio_is_never_stopped_by_the_default(self):
+        """The default only became safe to turn on because of this."""
+        from studio import runpod_ctl
+        stopped = []
+        guard = runpod_ctl.CostGuard(lambda: True, lambda s: None,
+                                     lambda: stopped.append(1), interval=0.05)
+        guard.last_activity = time.time() - 10 * 3600
+        guard.start()
+        time.sleep(0.3)
+        guard.stop_thread()
+        self.assertEqual(stopped, [])
 
 
 class WatchdogTests(unittest.TestCase):
@@ -5591,6 +5622,336 @@ class FrameExactCutTests(unittest.TestCase):
             longdraft._run_ffmpeg, longdraft.describe_segment_file = orig_run, orig_desc
             shutil.rmtree(tmp, ignore_errors=True)
 
+
+
+class ShelfReadabilityTests(unittest.TestCase):
+    """The shelf as a thing that is looked at.
+
+    Two complaints, both about the same row of tiles: a finished take could
+    not be told apart from an abandoned one, and there was no sign of which
+    tile was the one that had just appeared. Both were about the code that
+    builds those tiles, so the assertions here read the JavaScript -- there is
+    no browser in this suite, and the alternative is trusting that the file
+    still says what it said.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = io.open(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "static", "app.js"), encoding="utf-8").read()
+        # Comments explain what a label used to say, so asserting on the file
+        # as written would fail on its own explanation.
+        cls.code = re.sub(r"/\*.*?\*/", "", cls.js, flags=re.S)
+
+    def test_an_empty_tile_says_why_it_is_empty(self):
+        """"NO PREVIEW" on a cancelled run and on a finished one read alike."""
+        self.assertNotIn("NO PREVIEW", self.code)
+        for reason in ("中止した", "生成中", "失敗"):
+            self.assertIn(reason, self.code)
+
+    def test_a_timestamp_in_seconds_is_not_parsed_as_a_date(self):
+        """History stores Unix seconds; Date.parse of a number is NaN, and the
+        badge silently never appeared."""
+        self.assertIn("function toMs(", self.code)
+        self.assertIn('if (typeof raw === "number") return raw * 1000;', self.code)
+        # The bug was Date.parse on a number; the guard has to come first.
+        i = self.code.find("function toMs(")
+        body = self.code[i:i + 200]
+        self.assertLess(body.find("typeof raw"), body.find("Date.parse"))
+
+    def test_the_first_run_marks_everything_as_already_seen(self):
+        """A year of work flagged "new" on first open says nothing."""
+        i = self.js.find("function shelfSeen(")
+        self.assertGreater(i, 0)
+        body = self.js[i:i + 700]
+        self.assertIn("localStorage.setItem", body)
+        self.assertIn("Date.now()", body)
+
+    def test_both_kinds_of_row_can_carry_the_badge(self):
+        """A Long Draft is the likeliest to have finished unwatched, and was
+        the one row the badge was not wired into."""
+        self.assertEqual(self.js.count('class="h-badge">新着'), 2)
+        self.assertIn("h-ld${ldNew", self.js)
+
+    def test_the_wait_shows_the_material_rather_than_a_black_rectangle(self):
+        self.assertIn("function sourcePoster(", self.js)
+        i = self.js.find("function sourcePoster(")
+        body = self.js[i:i + 700]
+        # A running batch carries it under meta; a history row as a column.
+        self.assertIn("b.image || m.image", body)
+        self.assertIn("b.source_video || m.source_video", body)
+
+    def test_a_finished_long_draft_does_not_pose_as_a_running_one(self):
+        """Three phantom segments, labelled 生成中 with live cancel buttons, sat
+        in the largest panel on the page above the single take that was
+        actually running -- because the panel showed the most recent run
+        whatever its state, and the most recent had been cancelled."""
+        i = self.code.find("state.longDraftRuns = s.long_drafts")
+        self.assertGreater(i, 0)
+        body = self.code[i:i + 900]
+        # The old line picked [0] unconditionally.
+        self.assertNotIn("state.longDraftRuns[0]", body)
+        self.assertIn("LD_ACTIVE", body)
+        for state_name in ("running", "planned", "queued"):
+            self.assertIn('"%s"' % state_name, body)
+        # A cancelled run must not be in the auto-shown set.
+        head = self.code[i:self.code.find("renderLongDraftRun(pinned", i)]
+        self.assertNotIn("cancelled", head)
+        # One the operator opened from the shelf still wins.
+        self.assertIn("pinned || active || justDone || null", body)
+
+    def test_the_stylesheet_defines_what_the_markup_asks_for(self):
+        css = io.open(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "static", "style.css"), encoding="utf-8").read()
+        for rule in (".h-badge", ".h-new", ".ph.src"):
+            self.assertIn(rule, css)
+
+
+class IdentityWeightTests(unittest.TestCase):
+    """Getting the photograph's face into a Motion Trace.
+
+    Measured on a real ten second run: the output kept the reference video
+    subject's face, hair and body and took only the background from the
+    photograph. The cause is in the node, not in a setting -- the identity
+    image enters as img[:1], one frame, while the reference video enters as
+    one frame every half second, so a ten second clip carries 21 frames of the
+    wrong face against 1 of the right one.
+
+    Reference Strength cannot correct it: its blend is
+    r = aug * r + (1 - aug) * noise over every reference row, so lowering it
+    loosens the photograph and the video together. Shortening the clip works
+    and costs the clip. The node takes nine reference images; using them is
+    the only lever that leaves both the motion and the length intact.
+    """
+
+    def test_extra_photographs_become_their_own_reference_inputs(self):
+        p, params = graph.build("motion_trace", "x", 1, image="a.png",
+                                source_video="v.mp4",
+                                extra_images=["b.png", "c.png"])
+        cached = [k for k, v in p.items()
+                  if v.get("class_type") == "MiniMaxH3CLIPCachedRef2VA"][0]
+        refs = {k: v for k, v in p[cached]["inputs"].items()
+                if k.startswith("ref_image_") and k != "ref_image_size"}
+        self.assertEqual(sorted(refs), ["ref_image_0", "ref_image_1", "ref_image_2"])
+        # Each one is a real loader, not a repeated reference to the first.
+        loaders = {refs[k][0] for k in refs}
+        self.assertEqual(len(loaders), 3)
+        for node_id in loaders:
+            self.assertEqual(p[node_id]["class_type"], "LoadImage")
+        self.assertEqual(
+            [p[refs["ref_image_1"][0]]["inputs"]["image"],
+             p[refs["ref_image_2"][0]]["inputs"]["image"]], ["b.png", "c.png"])
+        self.assertEqual(params["extra_images"], ["b.png", "c.png"])
+
+    def test_none_of_this_touches_a_run_without_extra_photographs(self):
+        """The default path has to be byte-identical, or every cached run misses."""
+        a, _ = graph.build("motion_trace", "x", 1, image="a.png", source_video="v.mp4")
+        b, _ = graph.build("motion_trace", "x", 1, image="a.png", source_video="v.mp4",
+                           extra_images=[])
+        self.assertEqual(json.dumps(a, sort_keys=True), json.dumps(b, sort_keys=True))
+        self.assertNotIn("mt_identity_1", a)
+
+    def test_the_node_limit_is_not_exceeded(self):
+        """Autogrow declares ref_image_ 0..8; a tenth would be dropped silently
+        by ComfyUI rather than rejected."""
+        self.assertEqual(graph.MAX_EXTRA_IDENTITY_IMAGES, 8)
+        with self.assertRaises(graph.GraphError):
+            graph.build("motion_trace", "x", 1, image="a.png", source_video="v.mp4",
+                        extra_images=["%d.png" % i for i in range(9)])
+
+    def test_other_modes_are_untouched(self):
+        """Image Trace has one keyframe by definition and T2V has none."""
+        p, _ = graph.build("image_trace", "x", 1, image="a.png",
+                           extra_images=["b.png"])
+        self.assertNotIn("mt_identity_1", p)
+
+    def test_adding_a_photograph_is_not_deduplicated_as_the_same_request(self):
+        """submit_batch answers a repeat within seconds with the existing batch.
+        Photographs had to enter that signature or the second attempt would
+        return the first attempt's result."""
+        src = io.open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "jobs.py"), encoding="utf-8").read()
+        i = src.find("signature = self._submit_signature(")
+        self.assertGreater(i, 0)
+        self.assertIn("extra_images=tuple(extra_images or ())", src[i:i + 900])
+
+
+class WaitReadabilityTests(unittest.TestCase):
+    """The panel a person stares at for fifty minutes.
+
+    Every number was already being sent; it was rendered at 12px in a corner
+    under two buttons that cannot be pressed while a run is going. Nothing here
+    computes a new figure -- these tests exist to keep it that way, because the
+    tempting fix for "the bar does not move during the encode" is to invent a
+    percentage out of elapsed time.
+    """
+
+    def test_the_phase_list_is_sent_rather_than_repeated_in_the_page(self):
+        """A rename in jobs.py must not leave the checklist naming a stage that
+        no longer exists."""
+        self.assertEqual(sorted(jobs.PHASE_ORDER), sorted(jobs.PHASE_LABELS))
+        # Asserted on the source rather than over HTTP: this is about where
+        # the list comes from, and standing up a server to learn that would
+        # test the server instead.
+        srv = io.open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "server.py"), encoding="utf-8").read()
+        self.assertIn("jobs.PHASE_LABELS[k]", srv)
+        self.assertIn("jobs.PHASE_ORDER", srv)
+
+    def test_every_node_in_every_template_lands_in_a_known_phase(self):
+        """A node mapped to a phase that is not in the order would tick nothing."""
+        for phase in jobs._NODE_PHASE.values():
+            self.assertIn(phase, jobs.PHASE_ORDER)
+
+    def test_no_percentage_is_drawn_while_there_is_nothing_to_count(self):
+        """ComfyUI sends no progress during the Qwen3-VL encode -- 75-90s on a
+        MISS. A bar driven by elapsed-against-estimate is a guess wearing a
+        progress bar's clothes, and this panel makes it big."""
+        js = io.open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "static", "app.js"), encoding="utf-8").read()
+        code = re.sub(r"/\*.*?\*/", "", js, flags=re.S)
+        i = code.find("function renderProgress(")
+        self.assertGreater(i, 0)
+        body = code[i:i + 2600]
+        self.assertIn("genIndeterminate(g)", body)
+        # The percentage sits on the far side of that check.
+        self.assertLess(body.find("genIndeterminate(g)"), body.find("p-pct"))
+        # And it reuses the shared helpers rather than doing its own sums.
+        for helper in ("genRemaining(g, now)", "genProgress(g, now)", "fmtDuration("):
+            self.assertIn(helper, body)
+
+    def test_a_skipped_phase_still_counts_as_passed(self):
+        """A cache HIT does no encode at all, and that phase would otherwise
+        sit unticked for the whole run."""
+        js = io.open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "static", "app.js"), encoding="utf-8").read()
+        code = re.sub(r"/\*.*?\*/", "", js, flags=re.S)
+        i = code.find("function renderProgress(")
+        body = code[i:i + 2600]
+        self.assertIn("const past = at >= 0 && i < at;", body)
+        self.assertIn("secs != null || past", body)
+
+
+class DeadManSwitchTests(unittest.TestCase):
+    """The guard that outlives the Studio.
+
+    The in-process idle watchdog cannot act once the process is gone, which is
+    the case that bills all night. What matters here is not that it stops a Pod
+    but that it refuses to in the three situations where stopping would be
+    wrong: no Studio has ever run, the Studio is alive, or the Studio was shut
+    down deliberately and a Pod is somebody else's business.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="h3-deadman-")
+        self.path = os.path.join(self.tmp, "studio_heartbeat.json")
+
+    def tearDown(self):
+        deadman.stop_beating()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _decide(self, beat, age_seconds=0.0, idle=20.0, busy=90.0):
+        now = time.time()
+        if beat is not None:
+            beat = dict(beat, t=now - age_seconds)
+        return gpu_deadman.decide(beat, now, idle, busy)
+
+    def test_no_pulse_at_all_means_do_nothing(self):
+        """A Pod the operator started by hand is not this program's business."""
+        stop, why = self._decide(None)
+        self.assertFalse(stop)
+        self.assertIn("no heartbeat", why)
+
+    def test_a_deliberate_shutdown_removes_the_pulse(self):
+        deadman.write_heartbeat(pod_id="p1", busy=False, path=self.path)
+        self.assertIsNotNone(deadman.read_heartbeat(self.path))
+        deadman.clear(self.path)
+        self.assertIsNone(deadman.read_heartbeat(self.path))
+        # Which then reads as "nothing to do", not as a crash.
+        self.assertFalse(self._decide(deadman.read_heartbeat(self.path))[0])
+
+    def test_a_living_studio_is_left_alone(self):
+        self.assertFalse(self._decide({"busy": False}, age_seconds=60)[0])
+        self.assertFalse(self._decide({"busy": True}, age_seconds=60)[0])
+
+    def test_a_studio_that_died_idle_is_stopped(self):
+        self.assertFalse(self._decide({"busy": False}, age_seconds=19 * 60)[0])
+        self.assertTrue(self._decide({"busy": False}, age_seconds=21 * 60)[0])
+
+    def test_a_studio_that_died_mid_generation_is_given_longer(self):
+        """The Pod may still be sampling, and that time is paid for either way."""
+        self.assertFalse(self._decide({"busy": True}, age_seconds=30 * 60)[0])
+        self.assertTrue(self._decide({"busy": True}, age_seconds=91 * 60)[0])
+
+    def test_a_broken_pulse_is_not_read_as_an_old_one(self):
+        for junk in ("", "{", "[]", '{"t": "soon"}', '{"busy": true}'):
+            with open(self.path, "w") as f:
+                f.write(junk)
+            self.assertIsNone(deadman.read_heartbeat(self.path))
+
+    def test_an_unreadable_busy_state_counts_as_busy(self):
+        """Unknown must never be the answer that stops a Pod."""
+        def boom():
+            raise RuntimeError("no")
+        self.assertTrue(deadman._call(boom))
+
+    def test_the_pulse_carries_what_the_switch_needs(self):
+        deadman.write_heartbeat(pod_id="pod9", busy=True, path=self.path)
+        beat = deadman.read_heartbeat(self.path)
+        self.assertEqual(beat["pod_id"], "pod9")
+        self.assertTrue(beat["busy"])
+        self.assertEqual(beat["pid"], os.getpid())
+
+    def test_the_switch_never_deletes_and_never_touches_the_volume(self):
+        src = io.open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "scripts", "gpu_deadman.py"), encoding="utf-8").read()
+        code = re.sub(r'""".*?"""', "", src, flags=re.S)
+        for forbidden in ("delete_pod", "networkvolume", "terminate"):
+            self.assertNotIn(forbidden, code.lower())
+        self.assertIn("runpod_ctl.stop(", code)
+
+
+class SettingsMemoryTests(unittest.TestCase):
+    """A reload used to bring the material back and nothing else."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = io.open(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "static", "app.js"), encoding="utf-8").read()
+        cls.code = re.sub(r"/\*.*?\*/", "", cls.js, flags=re.S)
+
+    def test_the_settings_that_change_the_output_are_remembered(self):
+        for field in ("prompt", "duration", "aspect", "refstrength"):
+            self.assertIn('"%s"' % field, self.code)
+        self.assertIn("REMEMBER_FIELDS", self.code)
+        self.assertIn("h3_inputs", self.code)
+
+    def test_restoring_replays_clicks_rather_than_assigning_state(self):
+        """So the hints, the preset echo and the cache estimate all update."""
+        i = self.code.find("function recallInputs(")
+        self.assertGreater(i, 0)
+        body = self.code[i:i + 1400]
+        self.assertIn("#mode-seg button[data-mode=", body)
+        self.assertIn("applyPreset(v.preset)", body)
+
+    def test_an_empty_override_does_not_wipe_the_preset(self):
+        """megapixels="" means "use the preset"; writing it back and firing
+        change turned a restored 高解像度 into a silent 0.4 MP run."""
+        i = self.code.find("function recallInputs(")
+        body = self.code[i:i + 1400]
+        self.assertIn("OVERRIDES", body)
+        self.assertIn('v[id] === ""', body)
+
+    def test_the_studio_starts_the_pulse_and_clears_it_on_the_way_out(self):
+        srv = io.open(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "server.py"), encoding="utf-8").read()
+        self.assertIn("deadman.start(", srv)
+        self.assertIn("deadman.clear()", srv)
 
 
 class PremiereBridgeTests(unittest.TestCase):

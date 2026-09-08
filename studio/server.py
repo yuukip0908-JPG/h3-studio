@@ -22,9 +22,9 @@ if __package__ in (None, ""):  # allow `python3 studio/server.py`
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "studio"
 
-from . import (comfy_client, config, gpu_plan, graph, history, jobs,  # noqa: E402
-               longdraft, mediaprobe, postprocess, preflight, premiere, runpod_ctl,
-               startup)
+from . import (comfy_client, config, deadman, gpu_plan, graph, history,  # noqa: E402
+               jobs, longdraft, mediaprobe, postprocess, preflight, premiere,
+               runpod_ctl, startup)
 
 STARTED_AT = time.time()
 MANAGER = None
@@ -606,6 +606,12 @@ class Handler(BaseHTTPRequestHandler):
                     "presets": {"%s/%s" % k: v for k, v in graph.PRESETS.items()},
                     "experimental_presets": graph.EXPERIMENTAL_PRESETS,
                     "variation_choices": [1, 4, 8],
+                    # The phases a run passes through, in order, with the names
+                    # the operator sees. Sent rather than repeated in the front
+                    # end so a rename here cannot leave the checklist labelling
+                    # a stage that no longer exists.
+                    "phases": [{"key": k, "label": jobs.PHASE_LABELS[k]}
+                               for k in jobs.PHASE_ORDER],
                     "auto_stop_choices": config.AUTO_STOP_CHOICES,
                     "auto_stop_recommended": config.RECOMMENDED_AUTO_STOP_MINUTES,
                     "reference_strength": {
@@ -869,6 +875,10 @@ class Handler(BaseHTTPRequestHandler):
             source_video=data.get("source_video"),
             source_video_meta=data.get("source_video_meta"),
             ref_image_size=data.get("ref_image_size", "match"),
+            # More photographs of the same person. Qwen sees one frame of the
+            # identity image against one every half second of the reference
+            # video, so a ten second clip outvotes the photograph 21 to 1.
+            extra_images=[x for x in (data.get("extra_images") or []) if x],
             turbo=bool(data.get("turbo")),
             strict_turbo=bool(data.get("strict_turbo")),
             quality_overrides=data.get("quality_overrides"),
@@ -1254,6 +1264,13 @@ def build_app(comfy=None):
     # not in the browser: closing the tab must not mean it never happens.
     premiere.start_watcher()
 
+    # A pulse on disk. The cost guard above dies with this process, which is
+    # useless in the one case that bills all night -- the Studio crashing, or
+    # the Mac sleeping and not coming back. scripts/gpu_deadman.py watches this
+    # file from outside and stops the Pod once it goes cold.
+    deadman.start(is_busy=lambda: MANAGER.is_busy() or MANAGER.has_active_long_draft(),
+                  pod_id=config.pod_id)
+
     global STARTER
     STARTER = _build_starter()
     return MANAGER, GUARD
@@ -1265,6 +1282,7 @@ def main():
     url = "http://%s:%d/" % (config.STUDIO_HOST, config.STUDIO_PORT)
     print("H3 Studio on %s  (ComfyUI: %s)" % (url, MANAGER.client.base))
     print("auto-stop: %s" % ("OFF" if not GUARD.idle_minutes else "%d min" % GUARD.idle_minutes))
+    print("dead-man switch: pulse at %s" % deadman.heartbeat_path())
     rec = gpu_plan.recommended()
     if rec:
         print("recommended GPU: %s  $%.2f/hr (30min ~$%.2f)"
@@ -1279,6 +1297,12 @@ def main():
     finally:
         MANAGER.shutdown()
         GUARD.stop_thread()
+        # Removing the pulse is what separates "the operator stopped this" from
+        # "this died". Without it, a Pod started later by hand -- from the
+        # RunPod console, with no Studio involved -- would be stopped by the
+        # dead-man switch reading a pulse that went cold weeks ago.
+        deadman.stop_beating()
+        deadman.clear()
         httpd.server_close()
 
 

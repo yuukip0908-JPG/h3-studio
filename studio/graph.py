@@ -430,9 +430,39 @@ def preset_for(mode, quality):
     raise GraphError("unknown preset %s/%s" % (mode, quality))
 
 
+# MiniMaxH3ReferenceToVideo takes ref_image_ 0..8 (Autogrow min=0, max=9), so
+# eight can be added to the one the template already wires.
+MAX_EXTRA_IDENTITY_IMAGES = 8
+
+
+def _add_identity_images(p, cached, extra_images):
+    """Wire additional photographs of the same person into ref_image_1..N.
+
+    Qwen sees one frame of the identity photograph (the node takes img[:1])
+    against one frame every half second of the reference video -- 21 of them
+    for a ten second clip. Measured on a real run: the output kept the video
+    subject's face and hair and took only the background from the photograph,
+    which is what a 1:21 ratio of identity evidence looks like.
+
+    Reference Strength cannot correct it. Its blend is
+    ``r = aug * r + (1 - aug) * noise`` over *all* reference rows, so lowering
+    it loosens the photograph and the video together.
+
+    Shortening the clip changes the ratio and costs the clip. Adding
+    photographs changes the ratio and costs nothing but VRAM, which is why the
+    node accepts nine of them.
+    """
+    for i, name in enumerate(extra_images or (), start=1):
+        if not name:
+            continue
+        node_id = "mt_identity_%d" % i
+        p[node_id] = {"class_type": "LoadImage", "inputs": {"image": name}}
+        p[cached]["inputs"]["ref_image_%d" % i] = [node_id, 0]
+
+
 def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
           aspect_ratio=ASPECT_RATIOS[0], image=None, source_video=None,
-          reference_strength=None, ref_image_size="match", turbo=False,
+          extra_images=None, reference_strength=None, ref_image_size="match", turbo=False,
           turbo_lora=None, turbo_strength=TURBO_LORA_STRENGTH,
           filename_prefix="video/H3Studio", overrides=None):
     """Return (api_prompt, resolved_params) for one generation."""
@@ -453,6 +483,11 @@ def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
             raise GraphError("motion_trace requires a source video")
         if ref_image_size not in ("match", "max"):
             raise GraphError("ref_image_size must be 'match' or 'max'")
+        if extra_images and len(extra_images) > MAX_EXTRA_IDENTITY_IMAGES:
+            raise GraphError("at most %d extra identity images (the node takes "
+                             "%d references in total)"
+                             % (MAX_EXTRA_IDENTITY_IMAGES,
+                                MAX_EXTRA_IDENTITY_IMAGES + 1))
 
     if turbo and mode not in TURBO_MODES:
         raise GraphError("turbo is not available for %s (Ref2VA turbo is out of scope)" % mode)
@@ -499,6 +534,7 @@ def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
     if mode == MODE_MOTION_TRACE:
         p[one_id(p, "LoadVideo")]["inputs"]["file"] = source_video
         p[cached]["inputs"]["ref_image_size"] = ref_image_size
+        _add_identity_images(p, cached, extra_images)
 
     strength = None
     if mode in (MODE_IMAGE_TRACE, MODE_MOTION_TRACE) and reference_strength is not None:
@@ -516,6 +552,7 @@ def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
         "turbo_strength": float(turbo_strength) if turbo else None,
         "sampler": preset["sampler"], "scheduler": preset["scheduler"],
         "image": image, "source_video": source_video,
+        "extra_images": list(extra_images) if extra_images else None,
         "reference_strength": strength,
         "ref_image_size": ref_image_size if mode == MODE_MOTION_TRACE else None,
         "filename_prefix": filename_prefix,

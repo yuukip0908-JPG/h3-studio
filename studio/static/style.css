@@ -488,3 +488,68 @@ input[type=file]{font-size:12px;color:var(--dim)}
 /* Three numbers in a 212px column: the shared 60px minimum wrapped the last
    one onto a line that the panel then clipped, so 生成本数 offered 1 and 4. */
 #var-seg button{min-width:0;padding:8px 4px}
+
+/* --- the shelf says which tiles are new, and why the empty ones are empty --- */
+#history .h-item{position:relative}
+#history .h-new{border-color:var(--accent)}
+#history .h-badge{position:absolute;top:4px;left:4px;z-index:2;
+  background:var(--accent);color:#0A0C10;font-size:9px;font-weight:700;
+  letter-spacing:.04em;padding:1px 5px;border-radius:3px}
+
+/* --- the wait shows the material, not a black rectangle ---
+
+   .ph had a height and no width. A <video> brings its own intrinsic width, so
+   nobody noticed; the placeholder, as a flex item in a centring container,
+   collapsed to the width of the word inside it -- measured at 56px against a
+   473px column. Which made "show the material" show a 56px stripe.
+
+   contain rather than cover, because the placeholder should occupy the shape
+   the finished video will occupy (.card video is object-fit:contain), so the
+   frame does not jump when the wait ends. */
+.card .ph{width:100%}
+.grid.solo .card .ph{width:100%;flex:1 1 auto;align-self:stretch}
+.card .ph.src{position:relative;background-size:contain;background-repeat:no-repeat;
+  background-position:center}
+.card .ph.src::after{content:"";position:absolute;inset:0;background:rgba(6,8,12,.45)}
+.card .ph.src .ph-label{position:relative;z-index:1;text-align:center;
+  padding:4px 10px;border-radius:4px;background:rgba(6,8,12,.55);
+  text-shadow:0 1px 3px rgba(0,0,0,.9)}
+
+/* --- the wait, read at a glance ---
+   Every number here was already on the panel, at 12px in a corner, under two
+   buttons that cannot be pressed while it runs. */
+.card .prog{grid-column:2;grid-row:2;padding:4px 16px 0;align-self:start}
+.card .p-hero{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.card .p-pct{font-size:34px;line-height:1;font-weight:650;color:var(--fg);
+  font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.card .p-pct i{font-size:17px;font-style:normal;color:var(--dim);margin-left:2px}
+/* No percentage during the encode, so the phase name takes the same slot. */
+.card .p-state{font-size:19px;line-height:1.15;font-weight:600;color:var(--fg)}
+.card .p-left{font-size:15px;color:var(--fg);font-variant-numeric:tabular-nums}
+.card .p-sub{margin-top:5px;font-size:11.5px;color:var(--dim);
+  font-variant-numeric:tabular-nums}
+.card .p-steps{list-style:none;margin:11px 0 0;padding:0;display:grid;gap:3px}
+.card .p-steps li{display:grid;grid-template-columns:15px 1fr auto;gap:7px;
+  align-items:baseline;font-size:11.5px;color:var(--faint);
+  font-variant-numeric:tabular-nums}
+.card .p-steps li.ok{color:var(--dim)}
+.card .p-steps li.ok .p-mark{color:var(--hit)}
+.card .p-steps li.now{color:var(--fg)}
+.card .p-steps li.now .p-mark{color:var(--accent)}
+.card .p-steps li.now .p-name{font-weight:600}
+.card .p-steps b{font-weight:500;color:inherit;opacity:.85}
+/* While it runs the checklist owns the right column; the two meta rows and the
+   dead buttons step aside rather than competing for the top of the panel. */
+.grid.solo .card .prog:not([hidden]) ~ .meta{display:none}
+.card .prog:not([hidden]) ~ .acts{opacity:.5}
+
+/* --- more photographs of the same person (Motion Trace) --- */
+#extra-thumbs{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px}
+#extra-thumbs:empty{margin:0}
+#extra-thumbs .thumb{position:relative;width:52px;height:52px;border-radius:5px;
+  overflow:hidden;border:1px solid var(--line);background:#05070A}
+#extra-thumbs .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+#extra-thumbs .thumb-x{position:absolute;top:0;right:0;width:16px;height:16px;
+  border:0;border-radius:0 0 0 5px;background:rgba(6,8,12,.8);color:var(--fg);
+  font-size:11px;line-height:16px;cursor:pointer;padding:0}
+#extra-thumbs .thumb-x:hover{background:var(--stop)}

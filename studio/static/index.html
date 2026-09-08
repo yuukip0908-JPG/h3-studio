@@ -125,6 +125,19 @@
           <div id="image-status" class="hint"></div>
         </div>
 
+        <!-- Qwen sees one frame of the identity photograph against one every
+             half second of the reference video: 21 to 1 on a ten second clip,
+             which is why a Motion Trace keeps the video subject's face. The
+             node accepts nine reference images; this is the other eight. -->
+        <div class="field" id="field-extra-images" hidden>
+          <label>同じ人物の追加写真（任意・最大8枚）</label>
+          <div id="extra-thumbs" class="thumbs"></div>
+          <input type="file" id="extra-images-file" accept="image/*" multiple>
+          <div id="extra-images-status" class="hint"></div>
+          <p class="hint">顔が参照動画の人のままになるときに足します。角度や表情の違う
+            写真ほど効きます。尺も動きも変えずに済む唯一の手です。</p>
+        </div>
+
         <div class="field" id="field-video">
           <label>元動画 <span class="dim">動き・テンポ・カメラを借りる</span></label>
           <video id="video-preview" controls preload="metadata" hidden></video>

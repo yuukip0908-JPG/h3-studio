@@ -1087,6 +1087,7 @@ class JobManager:
                      aspect_ratio, image=None, image_source=None, reference_strength=None,
                      seeds=None, parent_generation=None, kind=None,
                      source_video=None, source_video_meta=None, ref_image_size="match",
+                     extra_images=None,
                      turbo=False, quality_overrides=None, strict_turbo=False,
                      long_draft_id=None, segment_index=None):
         kind = kind or ("final" if quality != "draft" else "draft")
@@ -1098,6 +1099,9 @@ class JobManager:
             mode=mode, prompt=prompt_text, quality=quality, variations=variations,
             duration=duration, aspect_ratio=aspect_ratio, image=image,
             source_video=source_video, reference_strength=reference_strength,
+            # Without this, adding a photograph within the dedup window looks
+            # like the same request and answers with the previous batch.
+            extra_images=tuple(extra_images or ()),
             ref_image_size=ref_image_size, turbo=turbo, kind=kind,
             parent_generation=parent_generation, seeds=list(seeds) if seeds else None,
             long_draft_id=long_draft_id, segment_index=segment_index,
@@ -1142,6 +1146,7 @@ class JobManager:
                 mode, prompt_text, seed, quality=quality, duration=duration,
                 aspect_ratio=aspect_ratio, image=image, source_video=source_video,
                 reference_strength=reference_strength, ref_image_size=ref_image_size,
+                extra_images=extra_images,
                 turbo=turbo, overrides=quality_overrides,
                 filename_prefix="video/H3Studio_%s_%d" % (batch_id, idx))
             if graph.REF_STRENGTH_ID in api_prompt and self.reference_node_available() is False:
@@ -2168,6 +2173,11 @@ _NODE_PHASE = {
     "VAEDecode": "decode", "VAEDecodeAudio": "decode",
     "CreateVideo": "save", "SaveVideo": "save",
 }
+
+# The order a run passes through them. Kept beside the labels because the UI
+# draws a checklist from it: without an order, "which stages are still to come"
+# has no answer, and a set has no order.
+PHASE_ORDER = ["transfer", "encode", "sampling", "decode", "save"]
 
 PHASE_LABELS = {
     "transfer": "素材転送", "encode": "Encoding", "sampling": "Sampling",
