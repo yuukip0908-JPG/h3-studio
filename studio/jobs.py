@@ -859,9 +859,14 @@ class JobManager:
             with open(self._last_inputs_path(), encoding="utf-8") as f:
                 state = json.load(f)
         except (OSError, ValueError):
-            return {}
+            state = {}
         if not isinstance(state, dict):
-            return {}
+            state = {}
+        if not state:
+            # No record yet, or it was lost. History already knows what the last
+            # batch was made from, so the operator does not have to re-pick just
+            # because this file is younger than their work.
+            state = self._inputs_from_history()
         if not verify:
             return state
         out = {}
@@ -874,6 +879,34 @@ class JobManager:
             except Exception:  # noqa: BLE001 - a stale entry is not an error
                 continue
             out[kind] = dict(rec, name=name)
+        return out
+
+    def _inputs_from_history(self, look_back=12):
+        """The newest batch that named a source video, and its photograph."""
+        out = {}
+        try:
+            rows = history.list_batches(limit=look_back)
+        except Exception:  # noqa: BLE001 - a convenience, never a failure
+            return out
+        for row in rows:
+            video, image = row.get("source_video"), row.get("image")
+            if video and "video" not in out:
+                local = os.path.join(config.UPLOAD_DIR, os.path.basename(video))
+                if os.path.exists(local):
+                    meta = row.get("source_video_meta")
+                    if isinstance(meta, str):
+                        try:
+                            meta = json.loads(meta)
+                        except ValueError:
+                            meta = None
+                    out["video"] = {"name": video, "local": local, "meta": meta}
+            if image and "image" not in out:
+                local = row.get("image_source") or os.path.join(
+                    config.UPLOAD_DIR, os.path.basename(image))
+                if local and os.path.exists(local):
+                    out["image"] = {"name": image, "local": local, "meta": None}
+            if len(out) == 2:
+                break
         return out
 
     def upload_source_image(self, local_path):

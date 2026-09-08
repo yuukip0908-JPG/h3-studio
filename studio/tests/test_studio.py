@@ -5689,26 +5689,25 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(postprocess.delivery_path(raw).endswith("_delivered.mp4"))
 
 
-class LastInputsTests(unittest.TestCase):
+class LastInputsTests(StudioTestCase):
     """One source video, a series of different photographs against it.
 
     Before this the uploads directory held six byte-identical copies of one
     photograph and five of one video: every session re-picked both, because
     there was nowhere for "the thing I am working on" to live between loads.
+
+    Inherits StudioTestCase for its isolation -- last_inputs() falls back to
+    history, and a test that read the operator's real database would both lie
+    and touch their data.
     """
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="h3-inputs-")
-        self._saved = config.STUDIO_DATA_DIR
-        config.STUDIO_DATA_DIR = self.tmp
-        self.m = jobs.JobManager(comfy=comfy_client.ComfyClient("http://127.0.0.1:1"))
-
-    def tearDown(self):
-        config.STUDIO_DATA_DIR = self._saved
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        super().setUp()
+        self.m = self.make_manager()
 
     def _file(self, name):
-        path = os.path.join(self.tmp, name)
+        os.makedirs(config.UPLOAD_DIR, exist_ok=True)
+        path = os.path.join(config.UPLOAD_DIR, name)
         with open(path, "wb") as f:
             f.write(b"x" * 32)
         return path
@@ -5738,9 +5737,32 @@ class LastInputsTests(unittest.TestCase):
         self.assertIn("v.mp4", self.m.inputs)
         self.assertEqual(self.m.inputs["v.mp4"]["local"], vid)
 
+    def test_history_answers_when_there_is_no_record_yet(self):
+        """The feature is younger than the operator's work.
+
+        Making them re-pick once, only because this file did not exist when
+        they made their last batch, is the exact friction being removed.
+        """
+        vid, img = self._file("hist.mp4"), self._file("hist.png")
+        history.create_batch("b_hist", kind="draft", mode=graph.MODE_MOTION_TRACE,
+                             prompt="p", source_video="hist.mp4",
+                             source_video_meta={"fps": 30.0},
+                             image="hist.png", image_source=img)
+        got = self.m.last_inputs()
+        self.assertEqual(got["video"]["name"], "hist.mp4")
+        self.assertEqual(got["video"]["meta"]["fps"], 30.0)
+        self.assertEqual(got["image"]["local"], img)
+
+    def test_a_remembered_record_wins_over_history(self):
+        history.create_batch("b_old", kind="draft", mode=graph.MODE_MOTION_TRACE,
+                             prompt="p", source_video="older.mp4")
+        vid = self._file("newer.mp4")
+        self.m.remember_input("video", "newer.mp4", vid)
+        self.assertEqual(self.m.last_inputs()["video"]["name"], "newer.mp4")
+
     def test_a_missing_or_corrupt_record_is_not_an_error(self):
         self.assertEqual(self.m.last_inputs(), {})
-        with open(os.path.join(self.tmp, jobs.JobManager.LAST_INPUTS), "w") as f:
+        with open(os.path.join(config.STUDIO_DATA_DIR, jobs.JobManager.LAST_INPUTS), "w") as f:
             f.write("not json")
         self.assertEqual(self.m.last_inputs(), {})
 
