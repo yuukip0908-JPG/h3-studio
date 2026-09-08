@@ -92,12 +92,49 @@ TEMPLATE_FRAME_EXPRESSION = \
 
 # --------------------------------------------------------------------------
 # planning
-def plan_segments(source_duration, segment_seconds=SEGMENT_SECONDS_DEFAULT):
+def cut_seconds(duration_seconds, source_fps):
+    """How much SOURCE one segment really consumes.
+
+    MiniMaxH3ReferenceToVideo reads frames[:frame_count] -- a count of frames,
+    not a span of time. A 6.0 s nominal segment is 158 frames, and 158 frames
+    of a 30 fps source is 5.267 s, not 6.0 s. Advancing the next segment by
+    6.0 s therefore skipped 0.733 s of the source at every boundary: measured
+    on results/studio/long_draft/ld_22a5ae75be, whose three cuts hold
+    180/180/186 frames while the three outputs hold 158/158/158.
+    """
+    return frame_count(duration_seconds) / float(source_fps)
+
+
+def _largest_fitting_duration(available, segment_seconds, source_fps):
+    """The longest tail segment whose FRAMES fit in the source that is left.
+
+    Searched on the 1/24 s grid so frame_count() lands on the template's
+    17k+5 lattice, and floored at H3's reference minimum: a cut shorter than
+    that is a reference clip H3 may refuse, which is worse than not covering
+    the last second.
+    """
+    steps = int(round(float(segment_seconds) * 24))
+    for n in range(steps, 0, -1):
+        d = round(n / 24.0, 3)
+        cut = cut_seconds(d, source_fps)
+        if cut <= available + _EPS and cut + _EPS >= MIN_SEGMENT_SECONDS:
+            return d
+    return None
+
+
+def plan_segments(source_duration, segment_seconds=SEGMENT_SECONDS_DEFAULT, source_fps=None):
     """Split [0, source_duration) into segments, honouring H3's own floor.
 
-    Returns a list of {index, start, end, duration, frames}. The last segment
-    absorbs a remainder that is too short to stand on its own, so no segment is
-    ever shorter than MIN_SEGMENT_SECONDS unless the whole source is.
+    Returns a list of {index, start, end, duration, frames, cut_seconds}.
+
+    `duration` is the nominal length the operator asked for. It is what the
+    graph receives as `length` and it is part of the cache fingerprint
+    (graph.expected_cache), so it is NOT re-derived from the frame maths --
+    doing that would silently shorten every segment and MISS every entry.
+    What the frames change is where the NEXT segment starts.
+
+    With source_fps unknown the old seconds-based advance is kept, because
+    guessing the frame rate would move every cut. plan_notes() says so.
     """
     try:
         total = round(float(source_duration), 3)
@@ -112,36 +149,79 @@ def plan_segments(source_duration, segment_seconds=SEGMENT_SECONDS_DEFAULT):
     if seg > MAX_SEGMENT_SECONDS:
         raise LongDraftError("segment length must be at most %g s" % MAX_SEGMENT_SECONDS)
 
-    bounds = []
-    n_full = int((total + _EPS) // seg)
-    remainder = round(total - n_full * seg, 3)
-    for i in range(n_full):
-        bounds.append([round(i * seg, 3), round((i + 1) * seg, 3)])
-    if remainder > _EPS:
-        if remainder + _EPS >= MIN_SEGMENT_SECONDS or not bounds:
-            bounds.append([round(n_full * seg, 3), total])
-        else:
-            # Too short to be a reference clip on its own -- give it to the
-            # segment before it rather than asking H3 to reject it.
-            bounds[-1][1] = total
-    if not bounds:
-        bounds = [[0.0, total]]
-    if len(bounds) > MAX_SEGMENTS:
+    fps = None
+    try:
+        fps = float(source_fps) if source_fps else None
+    except (TypeError, ValueError):
+        fps = None
+    if fps is not None and fps <= 0:
+        fps = None
+
+    planned = []          # (start, nominal duration)
+    if fps is None:
+        # Unchanged behaviour: advance by the nominal length.
+        n_full = int((total + _EPS) // seg)
+        remainder = round(total - n_full * seg, 3)
+        bounds = [[round(i * seg, 3), round((i + 1) * seg, 3)] for i in range(n_full)]
+        if remainder > _EPS:
+            if remainder + _EPS >= MIN_SEGMENT_SECONDS or not bounds:
+                bounds.append([round(n_full * seg, 3), total])
+            else:
+                # Too short to be a reference clip on its own -- give it to the
+                # segment before it rather than asking H3 to reject it.
+                bounds[-1][1] = total
+        if not bounds:
+            bounds = [[0.0, total]]
+        planned = [(b[0], round(b[1] - b[0], 3)) for b in bounds]
+    else:
+        pos = 0.0
+        while total - pos > _EPS:
+            available = total - pos
+            duration = seg if cut_seconds(seg, fps) <= available + _EPS else \
+                _largest_fitting_duration(available, seg, fps)
+            if duration is None:
+                break          # what is left cannot be a legal reference clip
+            planned.append((round(pos, 3), duration))
+            pos += cut_seconds(duration, fps)
+            if len(planned) > MAX_SEGMENTS:
+                break
+        if not planned:
+            planned = [(0.0, min(seg, total))]
+
+    if len(planned) > MAX_SEGMENTS:
         raise LongDraftError("%d segments exceeds the %d-segment limit; use a longer "
                              "segment length or a shorter source"
-                             % (len(bounds), MAX_SEGMENTS))
+                             % (len(planned), MAX_SEGMENTS))
 
     out = []
-    for i, (start, end) in enumerate(bounds):
-        duration = round(end - start, 3)
-        out.append({"index": i, "start": start, "end": end, "duration": duration,
-                    "frames": frame_count(duration)})
+    for i, (start, duration) in enumerate(planned):
+        frames = frame_count(duration)
+        consumed = round(cut_seconds(duration, fps), 3) if fps else duration
+        out.append({"index": i, "start": start,
+                    "end": round(min(total, start + consumed), 3),
+                    "duration": duration, "frames": frames,
+                    "cut_seconds": consumed})
     return out
 
 
-def plan_notes(segments, source_duration, segment_seconds=SEGMENT_SECONDS_DEFAULT):
+def plan_notes(segments, source_duration, segment_seconds=SEGMENT_SECONDS_DEFAULT,
+               source_fps=None):
     """Advisory notes about a plan. Never blocks; the UI shows them."""
     notes = []
+    if not source_fps:
+        notes.append("元動画のフレームレートが読めないため、切り出しは秒で行います。"
+                     "H3 はフレーム数で読むので、境界が最大で1秒ほどずれることがあります。")
+    elif segments:
+        covered = segments[-1]["end"]
+        left = round((source_duration or 0) - covered, 2)
+        if left > 0.05:
+            notes.append("元動画の末尾 %.1f 秒は使いません。%g 秒より短い参照動画は H3 が受け付けないためです。"
+                         % (left, MIN_SEGMENT_SECONDS))
+        if abs(source_fps - 24.0) > 1.0:
+            notes.append("元動画は %.1f fps ですが H3 は 24 fps として読むため、"
+                         "1 segment（名目 %g 秒 / %d フレーム）が使う元動画は %.1f 秒です。"
+                         % (source_fps, segments[0]["duration"], segments[0]["frames"],
+                            segments[0]["cut_seconds"]))
     if len(segments) < 2:
         notes.append("この動画は1 segmentにしかならないので、長尺Draftにする利点はありません。")
     short = [s for s in segments if s["duration"] + _EPS < MIN_SEGMENT_SECONDS]
@@ -272,8 +352,13 @@ def _run_ffmpeg(args, timeout=600):
     return proc
 
 
-def cut_segment(source_path, dest_path, start, duration):
-    """Cut [start, start+duration) out of source_path, re-encoding.
+def cut_segment(source_path, dest_path, start, duration, frames=None):
+    """Cut source_path from `start`, re-encoding.
+
+    When `frames` is given the cut is exactly that many frames -- the number
+    MiniMaxH3ReferenceToVideo will read. Cutting by seconds instead handed the
+    node 180 frames when it wanted 158 and threw the other 22 away, which is
+    the same 0.733 s the plan then skipped.
 
     Input seeking (-ss before -i) with a re-encode gives a frame-accurate start.
     Stream copy would snap the cut to the previous keyframe, which would move a
@@ -288,10 +373,11 @@ def cut_segment(source_path, dest_path, start, duration):
     if not os.path.exists(source_path):
         raise LongDraftError("source video not found: %s" % source_path)
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    length = (["-frames:v", str(int(frames))] if frames
+              else ["-t", "%.3f" % float(duration)])
     _run_ffmpeg(["-nostdin", "-y", "-loglevel", "error",
-                 "-ss", "%.3f" % float(start), "-i", source_path,
-                 "-t", "%.3f" % float(duration),
-                 "-map", "0:v:0", "-an",
+                 "-ss", "%.3f" % float(start), "-i", source_path] + length +
+                ["-map", "0:v:0", "-an",
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
                  "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                  dest_path])

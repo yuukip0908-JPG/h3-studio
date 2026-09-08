@@ -650,8 +650,21 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/batches":
                 return self._json({"batches": MANAGER.recent_batches()})
             if path.startswith("/api/batch/"):
-                b = MANAGER.batch(path.rsplit("/", 1)[-1])
-                return self._json(b.as_dict()) if b else self._error(404, "no such batch")
+                batch_id = path.rsplit("/", 1)[-1]
+                b = MANAGER.batch(batch_id)
+                if b is not None:
+                    return self._json(b.as_dict())
+                # A batch from a previous session is not a missing batch. The
+                # page re-fetches this right after 「これを選ぶ」, so a 404 here
+                # made selecting on a history-opened card look broken even once
+                # the select itself worked.
+                row = history.get_batch(batch_id)
+                if not row:
+                    return self._error(404, "no such batch")
+                for g in row.get("generations", []):
+                    g["output_url"] = ("/api/video/%s" % g["id"]) if (
+                        g.get("status") == "done" and g.get("output_path")) else None
+                return self._json(row)
             if path == "/api/history":
                 limit = int((query.get("limit") or ["50"])[0])
                 return self._json({"batches": history.list_batches(limit=limit),
@@ -691,7 +704,7 @@ class Handler(BaseHTTPRequestHandler):
             # Planning is free: no GPU, no files, no commitment. It exists so
             # the split and both estimates can be seen before deciding.
             return self._json(MANAGER.plan_long_draft(
-                data.get("source_duration"),
+                data.get("source_duration"), source_fps=data.get("source_fps"),
                 segment_seconds=data.get("segment_seconds"),
                 params=data.get("params")))
         if path == "/api/long_draft":

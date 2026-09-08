@@ -158,6 +158,9 @@ class LongDraftSegment:
         self.end = plan["end"]
         self.duration = plan["duration"]
         self.frames = plan.get("frames")
+        # How much SOURCE this segment eats. Differs from `duration` whenever
+        # the source is not 24 fps, and it is what the next segment starts at.
+        self.cut_seconds = plan.get("cut_seconds")
         self.seed = seed
         self.status = "pending"          # pending|queued|running|done|cancelled|error
         self.segment_file = None         # the cut source clip on this Mac
@@ -174,7 +177,8 @@ class LongDraftSegment:
 
     def as_dict(self, gen=None):
         d = {"index": self.index, "start": self.start, "end": self.end,
-             "duration": self.duration, "frames": self.frames, "seed": self.seed,
+             "duration": self.duration, "frames": self.frames,
+             "cut_seconds": self.cut_seconds, "seed": self.seed,
              "status": self.status, "segment_file": self.segment_file,
              "segment_bytes": self.segment_bytes, "segment_probe": self.segment_probe,
              "comfy_video": self.comfy_video, "batch_id": self.batch_id,
@@ -703,6 +707,49 @@ class JobManager:
         with self.lock:
             return self.generations.get(gen_id)
 
+    def _generation_or_row(self, gen_id):
+        """The live Generation, or a detached one rebuilt from history.
+
+        Deliberately NOT folded into generation(). recover_from_history() uses
+        `if self.generation(row["id"]): continue` as its "already adopted?"
+        guard, over rows that all came from history -- a fallback there makes
+        that guard always true, no Batch is ever rebuilt, and recovered
+        in-flight work disappears from the UI. That is a worse bug than the one
+        this fixes, so the fallback belongs at the leaves that need it and
+        nowhere else.
+
+        The rebuilt object is NOT registered in self.generations: it describes
+        finished work, and the poller and the reconciler have no business
+        seeing it.
+        """
+        gen = self.generation(gen_id)
+        if gen is not None:
+            return gen
+        row = history.get_generation(gen_id)
+        return self._detached_generation(row) if row else None
+
+    @staticmethod
+    def _detached_generation(row):
+        """Rebuild the fields a finished generation is asked about."""
+        try:
+            params = json.loads(row.get("params") or "{}")
+        except (ValueError, TypeError):
+            params = {}
+        gen = Generation(row["id"], row["batch_id"], row.get("idx") or 0,
+                         row.get("seed") or 0, params, {}, row.get("cache_expected"))
+        gen.prompt_id = row.get("prompt_id")
+        gen.status = row.get("status") or "done"
+        gen.queued_at = row.get("created_at") or time.time()
+        gen.started_at = row.get("started_at")
+        gen.finished_at = row.get("finished_at")
+        gen.output_path = row.get("output_path")
+        gen.output_filename = row.get("output_filename")
+        gen.cache_result = row.get("cache_result")
+        gen.error = row.get("error")
+        gen.selected = bool(row.get("selected"))
+        gen.recovered = True
+        return gen
+
     def recent_batches(self, limit=12):
         with self.lock:
             return [b.as_dict() for b in self.batches[-limit:][::-1]]
@@ -1187,7 +1234,8 @@ class JobManager:
         with self.lock:
             return [r.as_dict() for r in self.long_draft_runs[-limit:][::-1]]
 
-    def plan_long_draft(self, source_duration, segment_seconds=None, params=None):
+    def plan_long_draft(self, source_duration, segment_seconds=None, params=None,
+                        source_fps=None):
         """The split, its notes and both estimates -- with no GPU and no files.
 
         This is what the UI shows before anything is committed to, so the
@@ -1195,7 +1243,7 @@ class JobManager:
         about M minutes" and can decide.
         """
         segment_seconds = float(segment_seconds or longdraft.SEGMENT_SECONDS_DEFAULT)
-        segments = longdraft.plan_segments(source_duration, segment_seconds)
+        segments = longdraft.plan_segments(source_duration, segment_seconds, source_fps)
         params = dict(params or {})
         per_segment = []
         total = 0
@@ -1216,7 +1264,10 @@ class JobManager:
             "segment_count": len(per_segment),
             "segment_seconds": segment_seconds,
             "source_duration": round(float(source_duration), 3),
-            "notes": longdraft.plan_notes(segments, source_duration, segment_seconds),
+            "notes": longdraft.plan_notes(segments, source_duration, segment_seconds,
+                                          source_fps),
+            "source_fps": source_fps,
+            "source_covered": segments[-1]["end"] if segments else 0.0,
             "estimated_seconds": total,
             "estimated_source": per_segment[0]["expected_source"] if per_segment else None,
             "single_estimated_seconds": whole,
@@ -1273,7 +1324,10 @@ class JobManager:
                 "元動画の長さを読み取れませんでした。長尺Draftには長さが必要です。")
 
         segment_seconds = float(segment_seconds or longdraft.SEGMENT_SECONDS_DEFAULT)
-        plan = longdraft.plan_segments(source_duration, segment_seconds)
+        # The frame rate is what makes the cut exact; without it the plan falls
+        # back to seconds and says so in its notes.
+        source_fps = (meta or {}).get("fps")
+        plan = longdraft.plan_segments(source_duration, segment_seconds, source_fps)
         parent_seed = int(parent_seed) if parent_seed is not None else longdraft.new_parent_seed()
         ld_id = longdraft.new_id()
         longdraft.ensure_run_dir(ld_id)
@@ -1313,7 +1367,8 @@ class JobManager:
             seg = LongDraftSegment(item, longdraft.segment_seed(parent_seed, item["index"],
                                                                 seed_policy))
             dest = longdraft.source_segment_path(ld_id, seg.index)
-            cut = longdraft.cut_segment(source_video_local, dest, seg.start, seg.duration)
+            cut = longdraft.cut_segment(source_video_local, dest, seg.start, seg.duration,
+                                        frames=seg.frames if source_fps else None)
             seg.segment_file = cut["path"]
             seg.segment_bytes = cut["bytes"]
             seg.segment_probe = cut["probe"]
@@ -1444,7 +1499,7 @@ class JobManager:
 
     def submit_final(self, gen_id, *, finish_options=None, quality="final"):
         """Build a Final from exactly one selected generation."""
-        src = self.generation(gen_id)
+        src = self._generation_or_row(gen_id)
         if src is None:
             raise ValueError("unknown generation %s" % gen_id)
         if src.status != "done":
@@ -1851,7 +1906,7 @@ class JobManager:
 
     # ---------- select / export ----------
     def select(self, gen_id, selected=True):
-        gen = self.generation(gen_id)
+        gen = self._generation_or_row(gen_id)
         if gen is None:
             return False
         with self.lock:
@@ -1860,21 +1915,42 @@ class JobManager:
                     if other.batch_id == gen.batch_id:
                         other.selected = False
             gen.selected = bool(selected)
+        # history is the durable copy either way, and for a detached generation
+        # it is the ONLY copy -- the object above is thrown away on return.
         history.set_selected(gen_id, selected)
         return True
 
     def export(self, gen_id, dest_dir):
-        gen = self.generation(gen_id)
-        if gen is None or not gen.output_path or not os.path.exists(gen.output_path):
+        gen = self._generation_or_row(gen_id)
+        if gen is None or not gen.output_path:
             raise ValueError("generation %s has no downloadable output" % gen_id)
+        # A path out of the database is still a path. /api/video already
+        # confines one to OUTPUT_DIR before opening it; export copies the file
+        # somewhere the operator keeps things, so it confines it too.
+        source = os.path.realpath(gen.output_path)
+        if not source.startswith(os.path.realpath(config.OUTPUT_DIR) + os.sep):
+            raise ValueError("generation %s points outside the output directory" % gen_id)
+        if not os.path.exists(source):
+            raise ValueError("generation %s: the file is no longer on disk (%s)"
+                             % (gen_id, gen.output_path))
+        gen.output_path = source
         os.makedirs(dest_dir, exist_ok=True)
         base = "H3_%s_%s_seed%d.mp4" % (gen.params["mode"], gen.id, gen.seed)
         dest = os.path.join(dest_dir, base)
         shutil.copy2(gen.output_path, dest)
         meta = os.path.join(dest_dir, base.replace(".mp4", ".json"))
+        live = self.batch(gen.batch_id)
+        if live is not None:
+            batch_meta = live.meta
+        else:
+            # The sidecar is the reason to export rather than copy the file by
+            # hand; an empty one for anything older than this process would
+            # have made it worthless exactly when it is most useful.
+            row = history.get_batch(gen.batch_id) or {}
+            batch_meta = {k: v for k, v in row.items() if k != "generations"}
         with open(meta, "w", encoding="utf-8") as f:
-            json.dump({"generation": gen.as_dict(), "batch": (self.batch(gen.batch_id) or Batch(
-                gen.batch_id, "?", gen.params["mode"], [], {})).meta}, f, indent=2, ensure_ascii=False)
+            json.dump({"generation": gen.as_dict(), "batch": batch_meta},
+                      f, indent=2, ensure_ascii=False)
         return dest
 
 

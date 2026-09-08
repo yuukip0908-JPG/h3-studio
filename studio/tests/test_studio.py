@@ -965,6 +965,77 @@ class EndToEndTests(StudioTestCase):
         self.assertEqual(data["generation"]["seed"], batch.generations[0].seed)
         self.assertEqual(data["batch"]["prompt"], "export me")
 
+    def test_a_restarted_studio_can_still_export_select_and_finalize(self):
+        """Everything the operator does with a finished video is a leaf lookup.
+
+        The old code answered all three from this process's in-memory index,
+        and startup recovery re-adopts only UNFINISHED rows -- so a restart
+        made every completed generation unexportable, unselectable and
+        un-finalizable while its mp4 sat on disk with output_path recorded.
+        Reported as 「ダウンロードできない」; select and finalize were the same
+        bug waiting one click further on.
+        """
+        m = self.make_manager()
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="survives a restart",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        self.wait_batch(batch)
+        gen_id = batch.generations[0].id
+
+        restarted = self.make_manager()          # a new process's view: memory is empty
+        self.assertIsNone(restarted.generation(gen_id), "the fixture proved nothing")
+
+        dest = os.path.join(self.tmp, "exports-after-restart")
+        out = restarted.export(gen_id, dest)
+        self.assertTrue(os.path.exists(out))
+        with open(out.replace(".mp4", ".json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["batch"]["prompt"], "survives a restart")
+
+        self.assertTrue(restarted.select(gen_id, True))
+        self.assertTrue(history.get_generation(gen_id)["selected"],
+                        "select touched only the object it threw away")
+
+        final = restarted.submit_final(gen_id)
+        self.assertEqual(final.kind, "final")
+        self.wait_batch(final)
+
+    def test_recovery_still_rebuilds_batches_after_the_export_fix(self):
+        """The trap the fix had to avoid.
+
+        recover_from_history() uses `if self.generation(row["id"]): continue`
+        over rows that all came from history. Had the fallback gone into
+        generation() itself, that guard would always be true, no Batch would be
+        rebuilt, and recovered in-flight work would vanish from the UI -- a
+        worse bug than the one being fixed.
+        """
+        m = self.make_manager()
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="left running",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        gen = batch.generations[0]
+        wait_until(lambda: gen.prompt_id is not None, 10)
+        history.update_generation(gen.id, status="running", prompt_id=gen.prompt_id or "p-1")
+
+        restarted = self.make_manager()
+        restarted.recover_from_history()
+        self.assertIsNotNone(restarted.batch(batch.id),
+                             "recovery stopped rebuilding batches")
+        self.assertTrue(any(b["id"] == batch.id for b in restarted.recent_batches()),
+                        "recovered work is no longer visible in the UI")
+
+    def test_export_refuses_a_path_outside_the_output_directory(self):
+        """A path out of the database is still a path."""
+        m = self.make_manager()
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="confined",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        self.wait_batch(batch)
+        gen_id = batch.generations[0].id
+        history.update_generation(gen_id, output_path="/etc/passwd")
+        restarted = self.make_manager()
+        with self.assertRaises(ValueError):
+            restarted.export(gen_id, os.path.join(self.tmp, "nope"))
+
     def test_history_records_the_provenance_of_every_video(self):
         m = self.make_manager()
         batch = m.submit_batch(mode=graph.MODE_IMAGE_TRACE, prompt_text="tracked",
@@ -2701,7 +2772,14 @@ class LongDraftRunTests(StudioTestCase):
         for seg in run.segments:
             self.assertTrue(os.path.exists(seg.segment_file))
             self.assertGreater(seg.segment_bytes, 1000)
-            self.assertAlmostEqual(seg.segment_probe["duration"], seg.duration, delta=0.2)
+            # The cut is a COUNT OF FRAMES, so its length is frames/source_fps
+            # -- not the nominal duration. Asserting the nominal here is what
+            # let the two diverge: at 30 fps the cut was 0.733 s too long and
+            # the surplus was thrown away by the node; at 24 fps a 6.0 s cut
+            # was 14 frames SHORT of the 158 the graph asked for.
+            self.assertAlmostEqual(seg.segment_probe["duration"],
+                                   seg.cut_seconds or seg.duration, delta=0.2)
+            self.assertAlmostEqual(seg.segment_probe["frames"], seg.frames, delta=1)
             self.assertTrue(longdraft.contains(seg.segment_file))
             # ComfyUI's input directory is flat, so the name a second Long
             # Draft would collide with must carry this run's id.
@@ -5396,6 +5474,106 @@ class GpuVerificationLifetimeTests(unittest.TestCase):
         runpod_ctl._persist_endpoint(self._running("A", "X"))
         self.assertTrue(self._state()["gpuVerified"])
         self.assertTrue(runpod_ctl.gpu_verified("A", "X"))
+
+
+
+class FrameExactCutTests(unittest.TestCase):
+    """The node reads a COUNT OF FRAMES; the plan used to advance by SECONDS.
+
+    Measured on results/studio/long_draft/ld_22a5ae75be: the three cut files
+    hold 180/180/186 frames at 30 fps while the three outputs hold 158/158/158.
+    The node takes frames[:158], so each segment consumed 5.267 s of source
+    while the plan moved on by 6.0 s -- a 0.733 s jump in the reference itself
+    at every boundary, before any model drift, and a manifest recording a
+    window that was never used.
+    """
+
+    def test_segments_are_contiguous_in_the_source(self):
+        segs = longdraft.plan_segments(18.2, 6.0, 30.0)
+        for a, b in zip(segs, segs[1:]):
+            self.assertAlmostEqual(a["end"], b["start"], places=2,
+                                   msg="the source jumps between segments")
+
+    def test_a_segment_consumes_frames_not_seconds(self):
+        seg = longdraft.plan_segments(18.2, 6.0, 30.0)[0]
+        self.assertEqual(seg["frames"], 158)
+        self.assertAlmostEqual(seg["cut_seconds"], 158 / 30.0, places=3)
+        self.assertEqual(seg["duration"], 6.0,
+                         "the nominal duration is the graph's length and a cache key")
+
+    def test_the_nominal_duration_is_never_re_derived(self):
+        """Deriving duration from the advance shrinks every segment silently.
+
+        frame_count(5.267) is 141, not 158, and duration is part of
+        graph.expected_cache -- so every entry would MISS as well.
+        """
+        for fps in (24.0, 25.0, 30.0, 59.94):
+            for seg in longdraft.plan_segments(18.2, 6.0, fps)[:-1]:
+                self.assertEqual(seg["duration"], 6.0)
+                self.assertEqual(seg["frames"], 158)
+
+    def test_an_unknown_frame_rate_keeps_the_old_behaviour_and_says_so(self):
+        segs = longdraft.plan_segments(18.2, 6.0, None)
+        self.assertEqual([s["start"] for s in segs], [0.0, 6.0, 12.0])
+        notes = longdraft.plan_notes(segs, 18.2, 6.0, None)
+        self.assertTrue(any("フレームレート" in n for n in notes), notes)
+
+    def test_a_tail_too_short_for_a_legal_reference_clip_is_reported(self):
+        """2.4 s of source left cannot make a >= 2 s clip on the 17k+5 lattice."""
+        segs = longdraft.plan_segments(18.2, 6.0, 30.0)
+        self.assertEqual(len(segs), 3)
+        notes = longdraft.plan_notes(segs, 18.2, 6.0, 30.0)
+        self.assertTrue(any("末尾" in n for n in notes), notes)
+
+    def test_a_high_frame_rate_source_hits_the_segment_limit_sooner(self):
+        """Each segment eats 158/fps seconds, so 60 fps needs longer segments.
+
+        Not a regression -- the arithmetic is the point -- but the operator has
+        to be told which knob to turn, and the existing message does that.
+        """
+        with self.assertRaises(longdraft.LongDraftError) as caught:
+            longdraft.plan_segments(61.3, 6.0, 60.0)
+        self.assertIn("segment length", str(caught.exception))
+        self.assertTrue(longdraft.plan_segments(61.3, 12.0, 60.0))
+
+    def test_no_segment_asks_for_more_source_than_exists(self):
+        for total in (7.0, 12.5, 18.2, 30.0):
+            for fps in (24.0, 25.0, 30.0):
+                for seg in longdraft.plan_segments(total, 6.0, fps):
+                    self.assertLessEqual(seg["start"] + seg["cut_seconds"], total + 0.01,
+                                         "segment %d over-reads %gs @%gfps"
+                                         % (seg["index"], total, fps))
+                    self.assertGreaterEqual(seg["cut_seconds"] + 0.01,
+                                            longdraft.MIN_SEGMENT_SECONDS,
+                                            "a cut below H3's reference floor")
+
+    def test_a_24fps_source_loses_nothing_at_a_boundary(self):
+        segs = longdraft.plan_segments(18.2, 6.0, 24.0)
+        self.assertAlmostEqual(segs[0]["cut_seconds"], 158 / 24.0, places=3)
+        self.assertGreater(segs[-1]["end"], 17.0, "a 24 fps source should cover more")
+
+    def test_the_cut_asks_ffmpeg_for_a_frame_count(self):
+        seen = {}
+
+        def fake(args, timeout=600):
+            seen["args"] = args
+            return None
+
+        orig_run, orig_desc = longdraft._run_ffmpeg, longdraft.describe_segment_file
+        longdraft._run_ffmpeg = fake
+        longdraft.describe_segment_file = lambda p: {"path": p, "bytes": 1, "probe": None}
+        tmp = tempfile.mkdtemp(prefix="h3-cut-")
+        try:
+            src = os.path.join(tmp, "src.mp4")
+            with open(src, "wb") as f:
+                f.write(b"0")
+            longdraft.cut_segment(src, os.path.join(tmp, "out.mp4"), 5.267, 6.0, frames=158)
+            self.assertIn("-frames:v", seen["args"])
+            self.assertEqual(seen["args"][seen["args"].index("-frames:v") + 1], "158")
+            self.assertNotIn("-t", seen["args"], "a frame count and a duration disagree")
+        finally:
+            longdraft._run_ffmpeg, longdraft.describe_segment_file = orig_run, orig_desc
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

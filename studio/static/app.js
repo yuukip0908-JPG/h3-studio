@@ -231,6 +231,9 @@ async function refreshLongDraftPlan() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         source_duration: meta.duration,
+        /* Without the frame rate the split falls back to seconds, and H3 reads
+           frames -- that mismatch is what skipped 0.7 s at every boundary. */
+        source_fps: meta.fps,
         segment_seconds: longDraftCfg().segment_seconds_default,
         params: { megapixels: preset().megapixels, steps: preset().steps,
                   aspect_ratio: $("aspect").value },
@@ -259,9 +262,14 @@ function renderLongDraftPlan() {
     body.innerHTML = `<p class="hint warn">${esc(plan.error)}</p>`;
     return;
   }
+  /* Three quantities, and the UI used to show one. The operator asks for
+     6.0 s; H3 renders 158 frames (6.6 s of output); and 158 frames of a 30 fps
+     source is 5.3 s of their video. The middle column is the one that used to
+     be wrong. */
   const rows = plan.segments.map((sg) =>
-    `<tr><td>Segment ${sg.index + 1}</td><td>${sg.start.toFixed(1)} - ${sg.end.toFixed(1)} 秒</td>
-     <td>${sg.duration.toFixed(1)} 秒</td><td>${sg.frames} フレーム</td></tr>`).join("");
+    `<tr><td>Segment ${sg.index + 1}</td><td>元動画 ${sg.start.toFixed(1)} - ${sg.end.toFixed(1)} 秒</td>
+     <td>${(sg.cut_seconds || sg.duration).toFixed(1)} 秒ぶん</td>
+     <td>${sg.frames} フレーム</td></tr>`).join("");
   /* Both numbers are estimates and are labelled as such. They come from
      measured history when this machine has comparable runs, and from the
      duration-scaled baseline when it does not. */
@@ -269,7 +277,8 @@ function renderLongDraftPlan() {
     ? plan.single_estimated_seconds / plan.estimated_seconds : null;
   body.innerHTML = `
     <div class="ld-head">元動画 <b>${plan.source_duration.toFixed(1)} 秒</b> ·
-      分割 <b>${plan.segment_count}</b> · 1 segment <b>${plan.segment_seconds} 秒</b></div>
+      分割 <b>${plan.segment_count}</b> · 1 segment <b>${plan.segment_seconds} 秒</b>${
+        plan.source_covered ? ` · 使用 <b>${plan.source_covered.toFixed(1)} 秒</b>` : ""}</div>
     <table class="ld-table"><tbody>${rows}</tbody></table>
     <div class="ld-eta">
       <div>通常生成（1本）: <b>推定 約${fmtDuration(plan.single_estimated_seconds)}</b></div>
@@ -303,7 +312,8 @@ function buildLongDraftShell() {
     + '<div class="ld-preview-wrap" hidden>'
     + '<h2>結合プレビュー（確認用）</h2><div class="vid ld-preview"></div>'
     + '<p class="hint">segment を順番につないだだけの確認用プレビューです。'
-    + '個々の segment 動画はそのまま残っています。</p></div>'
+    + '個々の segment 動画はそのまま残っています。</p>'
+    + '<div class="acts"><a class="btn ld-download" download>結合動画をダウンロード</a></div></div>'
     + '<p class="hint warn ld-warning"></p>'
     + '<div class="ld-actions"></div>'
     + '<p class="hint ld-manifest"></p>';
@@ -367,6 +377,11 @@ function renderLongDraftRun(run) {
   const previewWrap = shell.querySelector(".ld-preview-wrap");
   previewWrap.hidden = !run.preview_url;
   ensureVideo(shell.querySelector(".ld-preview"), run.preview_url || null);
+  const ldDl = shell.querySelector(".ld-download");
+  if (run.preview_url) {
+    ldDl.href = run.preview_url;
+    ldDl.download = `H3_long_draft_${run.id}.mp4`;
+  }
 
   setText(shell.querySelector(".ld-warning"), run.warning || "");
   setHtml(shell.querySelector(".ld-actions"), run.resumable
@@ -897,7 +912,12 @@ function buildResultCard() {
     + '<div class="meta"><span class="stage"></span><span class="timing"></span></div>'
     + '<div class="acts">'
     + '<button class="btn" data-act="select"></button>'
-    + '<button class="btn" data-act="export">書き出し</button></div>';
+    + '<button class="btn" data-act="export">書き出し</button>'
+    /* An anchor, not a button: /api/video/<id> already falls back to the
+       history row (server.py _video), so this works for a generation this
+       process never saw -- which is exactly when 書き出し fails. The action
+       handler below matches button[data-act], so this is not caught by it. */
+    + '<a class="btn" data-act="download" download>ダウンロード</a></div>';
   return card;
 }
 
@@ -944,6 +964,13 @@ function renderResults(batch) {
     setClass(pick, "btn-primary", g.selected);
     pick.disabled = g.status !== "done";
     card.querySelector('[data-act="export"]').disabled = g.status !== "done";
+    const dl = card.querySelector('[data-act="download"]');
+    dl.hidden = g.status !== "done";
+    if (!dl.hidden) {
+      dl.href = "/api/video/" + g.id;
+      /* A live batch carries meta.mode; a history row carries mode. */
+      dl.download = `H3_${(batch.meta && batch.meta.mode) || batch.mode || "video"}_${g.id}.mp4`;
+    }
   });
 
   pruneChildren(root, keys);
