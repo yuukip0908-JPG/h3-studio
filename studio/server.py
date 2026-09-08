@@ -23,7 +23,8 @@ if __package__ in (None, ""):  # allow `python3 studio/server.py`
     __package__ = "studio"
 
 from . import (comfy_client, config, gpu_plan, graph, history, jobs,  # noqa: E402
-               longdraft, mediaprobe, postprocess, preflight, runpod_ctl, startup)
+               longdraft, mediaprobe, postprocess, preflight, premiere, runpod_ctl,
+               startup)
 
 STARTED_AT = time.time()
 MANAGER = None
@@ -694,6 +695,10 @@ class Handler(BaseHTTPRequestHandler):
                 if rest.endswith("/preview"):
                     return self._long_draft_preview(rest[:-len("/preview")])
                 return self._long_draft(rest)
+            if path == "/api/premiere":
+                # Read-only, and it never launches anything: the answer is a
+                # file the panel rewrites while Premiere is open.
+                return self._json(premiere.status())
             if path == "/api/doctor":
                 return self._json(_doctor())
             return self._error(404, "unknown endpoint")
@@ -726,6 +731,31 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/long_draft/") and path.endswith("/resume"):
             ld_id = path[len("/api/long_draft/"):-len("/resume")]
             return self._json(MANAGER.resume_long_draft(ld_id).as_dict())
+        if path == "/api/premiere/send":
+            # Hands finished files to Premiere. Additive: they land in a bin in
+            # the project already open. Nothing is cut, nothing is exported,
+            # and Premiere is never started by this.
+            ids = data.get("generation_ids") or ([data["generation_id"]]
+                                                 if data.get("generation_id") else [])
+            paths = []
+            for gid in ids:
+                path_for = MANAGER.delivered_or_raw(gid)
+                if path_for:
+                    paths.append(path_for)
+            if not paths:
+                return self._error(404, "送れるファイルがありません")
+            try:
+                return self._json(premiere.import_files(paths))
+            except premiere.PremiereUnavailable as e:
+                # Not something the operator has to act on. Premiere being shut
+                # is the normal state while a 46 minute render runs, so the
+                # hand-over is remembered and goes across the next time the
+                # bridge answers -- nothing to keep open, nothing to time.
+                n = premiere.queue_add(paths)
+                return self._json({"ok": True, "queued": len(paths), "pending": n,
+                                   "reason": "not_running", "error": str(e)})
+            except premiere.PremiereError as e:
+                return self._json({"ok": False, "reason": "failed", "error": str(e)})
         if path == "/api/export":
             dest = data.get("dest") or os.path.join(config.STUDIO_DATA_DIR, "exports")
             out = MANAGER.export(data["generation_id"], dest)
@@ -1219,6 +1249,11 @@ def build_app(comfy=None):
     GUARD = runpod_ctl.CostGuard(MANAGER.is_busy, on_warn, on_stop,
                                  is_sequence_active=MANAGER.has_active_long_draft)
     GUARD.start()
+
+    # Hands queued files over the moment Premiere appears. In the Studio and
+    # not in the browser: closing the tab must not mean it never happens.
+    premiere.start_watcher()
+
     global STARTER
     STARTER = _build_starter()
     return MANAGER, GUARD

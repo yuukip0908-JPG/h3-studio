@@ -40,7 +40,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from studio import (comfy_client, config, graph, history, jobs,  # noqa: E402
-                    longdraft, mediaprobe, postprocess, runpod_ctl,
+                    longdraft, mediaprobe, postprocess, premiere, runpod_ctl,
                     startup)
 from studio.tests import mock_comfy  # noqa: E402
 
@@ -5591,6 +5591,168 @@ class FrameExactCutTests(unittest.TestCase):
             longdraft._run_ffmpeg, longdraft.describe_segment_file = orig_run, orig_desc
             shutil.rmtree(tmp, ignore_errors=True)
 
+
+
+class PremiereBridgeTests(unittest.TestCase):
+    """The hand-over to Premiere, without Premiere.
+
+    The bridge is a directory: a command file goes in, the panel inside
+    Premiere writes a response file back, and a heartbeat says whether the
+    panel is there at all. All three are simulated here, because the point of
+    the module is the protocol, and requiring an editor to be open to run the
+    tests would defeat the reason the queue exists.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="h3-premiere-")
+        self.prev = os.environ.get("H3_PREMIERE_BRIDGE")
+        os.environ["H3_PREMIERE_BRIDGE"] = self.tmp
+        premiere._queue_path_override = os.path.join(self.tmp, "queue.json")
+
+    def tearDown(self):
+        premiere.stop_watcher()
+        premiere._queue_path_override = None
+        if self.prev is None:
+            os.environ.pop("H3_PREMIERE_BRIDGE", None)
+        else:
+            os.environ["H3_PREMIERE_BRIDGE"] = self.prev
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _beat(self, age_seconds=0.0):
+        with open(os.path.join(self.tmp, premiere.HEARTBEAT_FILE), "w") as f:
+            json.dump({"t": (time.time() - age_seconds) * 1000.0, "started": True}, f)
+
+    def _panel(self, reply, stop):
+        """Stand in for the CEP panel: answer command-*.json with response-*.json."""
+        def loop():
+            while not stop.wait(0.02):
+                for name in os.listdir(self.tmp):
+                    if not (name.startswith("command-") and name.endswith(".json")):
+                        continue
+                    path = os.path.join(self.tmp, name)
+                    try:
+                        with open(path) as f:
+                            cmd = json.load(f)
+                    except (OSError, ValueError):
+                        continue
+                    out = os.path.join(self.tmp, "response-%s.json" % cmd["id"])
+                    staging = out + ".part"
+                    with open(staging, "w") as f:
+                        json.dump(reply, f)
+                    os.rename(staging, out)
+        t = threading.Thread(target=loop, daemon=True)
+        t.start()
+        return t
+
+    def test_a_stale_heartbeat_is_not_a_running_premiere(self):
+        self._beat(age_seconds=60)
+        self.assertFalse(premiere.available())
+        self._beat(age_seconds=0)
+        self.assertTrue(premiere.available())
+
+    def test_no_bridge_directory_is_reported_not_crashed(self):
+        os.environ["H3_PREMIERE_BRIDGE"] = os.path.join(self.tmp, "nope")
+        st = premiere.status()
+        self.assertFalse(st["available"])
+        self.assertFalse(st["bridge_installed"])
+        self.assertIn("Bridge", st["reason"])
+
+    def test_a_command_is_only_visible_once_it_is_whole(self):
+        """The panel matches on the prefix, so the scratch name must not."""
+        self._beat()
+        seen = []
+        stop = threading.Event()
+
+        def watch():
+            while not stop.wait(0.005):
+                for n in os.listdir(self.tmp):
+                    if n.startswith("command-"):
+                        with open(os.path.join(self.tmp, n)) as f:
+                            seen.append(f.read())
+        w = threading.Thread(target=watch, daemon=True)
+        w.start()
+        panel = self._panel({"success": True, "result": '{"ok":true,"imported":1}'}, stop)
+        try:
+            premiere.run_script("(function(){return '1';})();", timeout=6)
+        finally:
+            stop.set()
+            w.join(timeout=2)
+            panel.join(timeout=2)
+        # Every command file that was ever visible parsed: none was truncated.
+        for raw in seen:
+            json.loads(raw)
+
+    def test_the_scripts_return_value_is_the_answer(self):
+        self._beat()
+        stop = threading.Event()
+        panel = self._panel(
+            {"success": True, "result": '{"ok":true,"imported":2,"project":"x.prproj"}'}, stop)
+        try:
+            src = os.path.join(self.tmp, "a.mp4")
+            open(src, "w").close()
+            out = premiere.import_files([src], timeout=6)
+        finally:
+            stop.set()
+            panel.join(timeout=2)
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["imported"], 2)
+
+    def test_a_refusal_inside_premiere_is_raised_not_reported_as_success(self):
+        self._beat()
+        stop = threading.Event()
+        panel = self._panel({"success": True, "result": '{"ok":false,"error":"no project"}'}, stop)
+        try:
+            src = os.path.join(self.tmp, "b.mp4")
+            open(src, "w").close()
+            with self.assertRaises(premiere.PremiereError):
+                premiere.import_files([src], timeout=6)
+        finally:
+            stop.set()
+            panel.join(timeout=2)
+
+    def test_with_premiere_shut_the_hand_over_waits_instead_of_failing(self):
+        """The whole reason the queue exists: nothing has to be open at 3am."""
+        src = os.path.join(self.tmp, "c.mp4")
+        open(src, "w").close()
+        with self.assertRaises(premiere.PremiereUnavailable):
+            premiere.import_files([src], timeout=1)
+        self.assertEqual(premiere.queue_add([src]), 1)
+        self.assertEqual(len(premiere.queue_pending()), 1)
+        # Nothing goes across while it is shut.
+        self.assertIsNone(premiere.flush_queue())
+        self.assertEqual(len(premiere.queue_pending()), 1)
+        # It opens.
+        self._beat()
+        stop = threading.Event()
+        panel = self._panel({"success": True, "result": '{"ok":true,"imported":1}'}, stop)
+        try:
+            out = premiere.flush_queue()
+        finally:
+            stop.set()
+            panel.join(timeout=2)
+        self.assertEqual(out["flushed"], 1)
+        self.assertEqual(premiere.queue_pending(), [])
+
+    def test_a_failed_hand_over_keeps_the_queue(self):
+        src = os.path.join(self.tmp, "d.mp4")
+        open(src, "w").close()
+        premiere.queue_add([src])
+        self._beat()
+        stop = threading.Event()
+        panel = self._panel({"success": False, "error": "boom"}, stop)
+        try:
+            self.assertIsNone(premiere.flush_queue())
+        finally:
+            stop.set()
+            panel.join(timeout=2)
+        self.assertEqual(len(premiere.queue_pending()), 1)
+
+    def test_a_file_that_has_been_deleted_is_dropped(self):
+        gone = os.path.join(self.tmp, "gone.mp4")
+        open(gone, "w").close()
+        premiere.queue_add([gone])
+        os.unlink(gone)
+        self.assertEqual(premiere.queue_pending(), [])
 
 
 class DeliveryWiringTests(StudioTestCase):

@@ -1722,6 +1722,8 @@ $("btn-drawer-close").addEventListener("click", () => go("studio"));
   pollStatus();
   loadHistory();
   setInterval(loadHistory, 30000);
+  pollPremiere();
+  setInterval(pollPremiere, 8000);
 })();
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1869,9 +1871,58 @@ function renderDelivery() {
     + '<div class="detail-acts">'
     + `<a class="btn" href="/api/video/${g.id}" download>ダウンロード</a>`
     + `<button class="btn" data-export="${g.id}">書き出し先に保存</button>`
+    + `<button class="btn btn-primary" data-premiere="${g.id}">Premiere に送る</button>`
+    + (premiereOn ? "" : '<p class="hint">Premiere は起動していません。押すと予約され、'
+        + '次に Premiere を開いたときに自動で入ります。</p>')
     + "</div>");
 }
+
+/* Premiere on its own slow timer, not inside /api/status: the answer is a file
+   the bridge panel rewrites every couple of seconds, and it changes only when
+   an application is opened or closed. */
+let premiereOn = false;
+let premiereWhy = "";
+let premierePending = 0;
+async function pollPremiere() {
+  let p = {};
+  try { p = await api("/api/premiere"); }
+  catch (e) { p = { available: false, reason: "Premiere の状態を確認できません。" }; }
+  const was = premiereOn, wasPending = premierePending;
+  premiereOn = Boolean(p.available);
+  premierePending = p.pending || 0;
+  premiereWhy = p.reason || "";
+  const el = $("premiere-status");
+  if (el) {
+    setText(el, premiereOn
+      ? ("接続しています。送ったものはプロジェクトの「H3 Studio」ビンに入ります。"
+         + (premierePending ? `（${premierePending} 本を送信中）` : ""))
+      : (premiereWhy + (premierePending ? ` 予約 ${premierePending} 本。` : "")));
+    setClass(el, "warn", !premiereOn && premierePending > 0);
+  }
+  /* The hand-over happens in the Studio, so the first the page hears of it is
+     the count reaching zero while Premiere is up. Say so once. */
+  if (premiereOn && wasPending > 0 && premierePending === 0) {
+    notice("info", `予約していた ${wasPending} 本を Premiere に入れました。`);
+  }
+  if (was !== premiereOn) renderDelivery();
+}
 $("delivery-body").addEventListener("click", async (e) => {
+  const send = e.target.closest("[data-premiere]");
+  if (send) {
+    send.disabled = true;
+    try {
+      const r = await api("/api/premiere/send", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ generation_id: send.dataset.premiere }),
+      });
+      notice(r.ok ? "info" : "warn", r.queued
+        ? `予約しました。次に Premiere を開いたときに自動で入ります（待ち ${r.pending} 本）。`
+        : r.ok ? `Premiere に入れました（${r.project || "プロジェクト"} の「H3 Studio」ビン）。`
+        : (r.error || "Premiere に送れませんでした。"));
+    } catch (err) { notice("error", err.message); }
+    finally { send.disabled = false; pollPremiere(); }
+    return;
+  }
   const b = e.target.closest("[data-export]");
   if (!b) return;
   try {

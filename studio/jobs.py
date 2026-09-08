@@ -1633,6 +1633,25 @@ class JobManager:
             history.update_generation(g.id, finish_options=finish_options or {})
         return batch
 
+    def delivered_or_raw(self, gen_id):
+        """The file that should leave this program, or None.
+
+        The delivered file when there is one -- it carries the source's timing
+        and the source's audio, which is what the raw output is missing -- and
+        the raw output otherwise. Same rule /api/video already follows.
+        """
+        gen = self._generation_or_row(gen_id)
+        if gen is not None:
+            path = getattr(gen, "delivery_path", None) or getattr(gen, "output_path", None)
+            if path and os.path.exists(path):
+                return path
+        row = history.get_generation(gen_id) if hasattr(history, "get_generation") else None
+        if row:
+            path = row.get("delivery_path") or row.get("output_path")
+            if path and os.path.exists(path):
+                return path
+        return None
+
     def cancel_all(self):
         """Stop everything this Studio has in flight.
 
