@@ -5769,3 +5769,175 @@ class LastInputsTests(StudioTestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(ROOT_DIR, "scripts"))
+import validation_rules  # noqa: E402
+
+
+class ValidatorCacheRuleTests(unittest.TestCase):
+    """v2_validate.sh's cache assertion, which used to be unpassable.
+
+    It demanded MISS on the first generation of every pipeline. CLIPCached
+    entries live on the network volume and outlive every Pod, so from the
+    second run of the validator onward the first generation is legitimately a
+    HIT -- and the check failed, and a failure deleted results/V2_READY. The
+    rule these tests state is the one that is actually true: a HIT is never a
+    fault, and only a MISS *after* the first generation is.
+    """
+
+    def test_cold_cache_miss_then_hits_passes(self):
+        ok, why = validation_rules.cache_pattern(["MISS", "HIT", "HIT"])
+        self.assertTrue(ok, why)
+        self.assertIn("cold cache", why)
+
+    def test_warm_cache_all_hits_passes(self):
+        # The case that failed against the real Pod on 2026-09-08: 31 cache
+        # entries already on the volume, nothing written during the run, four
+        # HITs -- and the validator called it a failure.
+        ok, why = validation_rules.cache_pattern(["HIT", "HIT", "HIT"])
+        self.assertTrue(ok, why)
+        self.assertIn("warm cache", why)
+
+    def test_warm_cache_four_hits_passes(self):
+        ok, _ = validation_rules.cache_pattern(["HIT", "HIT", "HIT", "HIT"])
+        self.assertTrue(ok)
+
+    def test_second_generation_miss_fails(self):
+        # Same fingerprint, no reuse: the cache is not persisting within a
+        # single run, which is the one thing this check must still catch.
+        ok, why = validation_rules.cache_pattern(["MISS", "MISS"])
+        self.assertFalse(ok)
+        self.assertIn("position 2", why)
+
+    def test_late_miss_fails(self):
+        ok, why = validation_rules.cache_pattern(["MISS", "HIT", "MISS", "HIT"])
+        self.assertFalse(ok)
+        self.assertIn("position 3", why)
+
+    def test_unreported_cache_result_fails(self):
+        # A cancelled generation reports None. That is not a pass.
+        for bad in (["HIT", None, "HIT"], ["HIT", "", "HIT"],
+                    ["HIT", "NODE_NOT_EXECUTED"], ["UNKNOWN"]):
+            ok, why = validation_rules.cache_pattern(bad)
+            self.assertFalse(ok, "%r should not pass (%s)" % (bad, why))
+
+    def test_no_generations_fails(self):
+        ok, _ = validation_rules.cache_pattern([])
+        self.assertFalse(ok)
+
+    def test_single_generation_either_way(self):
+        for r in ("HIT", "MISS"):
+            ok, _ = validation_rules.cache_pattern([r])
+            self.assertTrue(ok, r)
+
+
+class ValidatorMarkerRuleTests(unittest.TestCase):
+    """results/V2_READY must survive a failing run.
+
+    It is the record of a validation that passed, naming the commit and the
+    date. On 2026-09-08 a run failed on the unpassable cache check above and
+    deleted the 2026-09-06 marker -- destroying evidence of a run that had
+    nothing to do with the failure.
+    """
+
+    def test_failure_keeps_an_existing_marker(self):
+        action, why = validation_rules.marker_action(fail_count=3, marker_exists=True)
+        self.assertEqual(action, "keep")
+        self.assertIn("untouched", why)
+
+    def test_failure_without_a_marker_writes_nothing(self):
+        action, _ = validation_rules.marker_action(fail_count=1, marker_exists=False)
+        self.assertEqual(action, "none")
+
+    def test_clean_pass_writes_the_marker(self):
+        action, _ = validation_rules.marker_action(fail_count=0, marker_exists=False)
+        self.assertEqual(action, "write")
+        action, _ = validation_rules.marker_action(fail_count=0, marker_exists=True)
+        self.assertEqual(action, "write")
+
+
+class ValidatorScriptTests(unittest.TestCase):
+    """The rules above, exercised through the block v2_validate.sh really ships.
+
+    The helper being right is not the same as the script calling it right, and
+    the bug that deleted the marker lived in the shell, not in Python. So this
+    lifts the actual marker block out of the shipped file and runs it.
+    """
+
+    SCRIPT = os.path.join(ROOT_DIR, "scripts", "v2_validate.sh")
+
+    def _marker_block(self):
+        with open(self.SCRIPT, encoding="utf-8") as fh:
+            src = fh.read()
+        start = src.index('MARKER="$DIR/results/V2_READY"')
+        end = src.index("esac", start) + len("esac")
+        return src[start:end]
+
+    def _run_block(self, fail, pass_count=17, marker_text=None):
+        block = self._marker_block()
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        os.makedirs(os.path.join(tmp, "results"))
+        marker = os.path.join(tmp, "results", "V2_READY")
+        if marker_text is not None:
+            with open(marker, "w") as fh:
+                fh.write(marker_text)
+        log = os.path.join(tmp, "run.log")
+        script = "\n".join([
+            "set -uo pipefail",
+            'DIR="%s"' % tmp,
+            'FAIL=%d' % fail,
+            'PASS=%d' % pass_count,
+            'LOG="%s"' % log,
+            'say(){ echo "$*" >> "$LOG"; }',
+            # the real script resolves the helper relative to $DIR; point that
+            # at the repo so the shipped call site is what runs.
+            'mkdir -p "$DIR/scripts" && cp "%s" "$DIR/scripts/validation_rules.py"'
+            % os.path.join(ROOT_DIR, "scripts", "validation_rules.py"),
+            block,
+        ])
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        said = ""
+        if os.path.exists(log):
+            with open(log, encoding="utf-8") as fh:
+                said = fh.read()
+        content = None
+        if os.path.exists(marker):
+            with open(marker, encoding="utf-8") as fh:
+                content = fh.read()
+        return content, said
+
+    def test_failing_run_does_not_delete_the_marker(self):
+        original = "H3 STUDIO V2 READY\ncreated: 2026-09-06T10:27:58Z\ncommit: 59d5d0c\n"
+        content, said = self._run_block(fail=3, marker_text=original)
+        self.assertEqual(content, original, "a failing run rewrote or deleted the marker")
+        self.assertIn("left as it is", said)
+
+    def test_passing_run_writes_a_new_marker(self):
+        content, said = self._run_block(fail=0, marker_text=None)
+        self.assertIsNotNone(content, "a clean pass wrote no marker")
+        self.assertIn("H3 STUDIO V2 READY", content)
+        self.assertIn("FAIL=0", content)
+        self.assertIn("wrote results/V2_READY", said)
+
+    def test_passing_run_replaces_a_stale_marker(self):
+        content, _ = self._run_block(fail=0, marker_text="old\n")
+        self.assertIn("H3 STUDIO V2 READY", content)
+
+    def test_script_never_removes_the_marker(self):
+        # Belt and braces: the deletion must not come back by any route.
+        with open(self.SCRIPT, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn("rm -f \"$DIR/results/V2_READY\"", src)
+        self.assertNotIn("rm -f $DIR/results/V2_READY", src)
+
+    def test_script_does_not_force_a_cache_miss_with_a_nonce(self):
+        # Making every pipeline MISS would "fix" the cache check by running
+        # three consecutive encoder stagings in one ComfyUI process, which is
+        # the documented container-OOM condition. Warm cache is the answer.
+        with open(self.SCRIPT, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn("nonce", src.lower())
