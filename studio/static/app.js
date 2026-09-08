@@ -301,8 +301,13 @@ document.querySelectorAll("#longdraft-seg button").forEach((b) => {
   });
 });
 
-const JP_SEG = { pending: "待機", queued: "待機", running: "生成中", done: "完了",
-                 cancelled: "中止", error: "エラー" };
+const JP_SEG = { planned: "準備中", pending: "待機", queued: "待機", submitting: "送信中",
+                 running: "生成中", done: "完了", cancelled: "中止", error: "エラー" };
+/* The tag printed the raw enum. history.py also allows NODE_NOT_EXECUTED and
+   UNKNOWN, which had no style at all -- a colourless pill with a developer
+   word in it. These are the same words the cache hint already uses. */
+const JP_CACHE = { HIT: "キャッシュ再利用", MISS: "解析あり",
+                   NODE_NOT_EXECUTED: "解析なし", UNKNOWN: "不明" };
 const SEG_ICON = { done: "✓", running: "●", queued: "●", pending: "○",
                    cancelled: "×", error: "!" };
 
@@ -389,7 +394,11 @@ function renderLongDraftRun(run) {
   setHtml(shell.querySelector(".ld-actions"), run.resumable
     ? `<button class="btn" id="btn-ld-resume" data-ld="${run.id}">未完了の segment だけ再開する</button>`
     : "");
-  setText(shell.querySelector(".ld-manifest"), "manifest: " + (run.manifest_path || ""));
+  /* An absolute filesystem path with an English key. The folder is worth
+     knowing; the path is not worth a permanent line of the panel. */
+  const man = shell.querySelector(".ld-manifest");
+  setText(man, run.manifest_path ? "保存先: " + run.manifest_path.split("/").slice(-2, -1)[0] : "");
+  if (run.manifest_path) man.title = run.manifest_path;
 }
 
 document.addEventListener("click", async (e) => {
@@ -662,7 +671,9 @@ function renderGpuOffer(g) {
       <div class="opt">
         <span class="p">${o.label}　<b>${money(o.usd_per_hour)}</b>
           ${o.usd_30min != null ? `　30分：約 $${o.usd_30min.toFixed(2)}` : ""}</span>
-        <button class="btn" data-confirm-gpu="${o.gpu}">これで開始</button>
+        <button class="btn" data-confirm-gpu="${o.gpu}" data-label="${esc(o.label)}"
+          data-hour="${o.usd_per_hour != null ? o.usd_per_hour : ""}"
+          data-half="${o.usd_30min != null ? o.usd_30min : ""}">これで開始</button>
       </div>`).join("")
     + '<div class="actions">'
     + '<button class="btn" id="btn-gpu-wait">待つ（もう一度 RTX 6000 Ada を探す）</button>'
@@ -771,7 +782,12 @@ function genRemaining(g, now) {
 }
 
 function genTiming(g, now) {
-  if (g.status === "done") return g.seconds != null ? `${g.seconds}秒` : "";
+  /* `seconds` on a live generation; `generation_seconds` on a history row --
+     the same measurement under two names, and the rail was blank for one. */
+  if (g.status === "done") {
+    const secs = g.seconds != null ? g.seconds : g.generation_seconds;
+    return secs != null ? fmtDuration(secs) : "";
+  }
   if (g.status !== "running" || !g.started_at) return "";
   const elapsed = now / 1000 - g.started_at;
   const left = genRemaining(g, now);
@@ -930,12 +946,19 @@ function renderResults(batch) {
   const root = $("results");
   const now = Date.now();
   const keys = new Set();
+  /* One take fills the widest area on the screen; several are compared in a
+     grid. Measured before this: a single take used 12% of the centre column
+     and the video somebody waited 22 minutes for was shown at 268px. */
+  root.classList.toggle("solo", batch.generations.length === 1);
 
   batch.generations.forEach((g, i) => {
     keys.add(g.id);
     const card = ensureChild(root, g.id, buildResultCard);
     card.dataset.gen = g.id;
     setClass(card, "sel", g.selected);
+    setClass(card, "done", g.status === "done");
+    setClass(card, "err", g.status === "error");
+    setClass(card, "cancelled", g.status === "cancelled");
 
     const slot = card.querySelector(".vid");
     if (g.output_url) {
@@ -943,7 +966,8 @@ function renderResults(batch) {
     } else {
       ensureVideo(slot, null);
       setHtml(slot, '<div class="ph">' + (g.status === "error"
-        ? "エラー<br>" + esc(g.error || "") : esc(g.progress_text || g.status)) + "</div>");
+        ? "エラー<br>" + esc(g.error || "")
+        : esc(JP_SEG[g.status] || g.progress_text || g.status)) + "</div>");
     }
 
     const bar = card.querySelector(".bar-progress");
@@ -952,13 +976,32 @@ function renderResults(batch) {
     const width = Math.round(genProgress(g, now) * 100) + "%";
     if (fill && fill.style.width !== width) fill.style.width = width;
 
-    setText(card.querySelector(".who"), `#${i + 1} · seed ${g.seed}`);
+    /* A live generation carries params as an object; a row opened from history
+       carries the same facts as columns and params as a JSON string. Read
+       whichever is there rather than showing "#1" for half the shelf. */
+    const p = (g.params && typeof g.params === "object") ? g.params : {};
+    const bits = [];
+    const dur = p.duration || g.duration;
+    const mp = p.megapixels || g.resolution_mp;
+    const steps = p.steps || g.steps;
+    if (dur) bits.push(dur + "秒");
+    if (mp) bits.push(mp + " MP");
+    if (steps) bits.push(steps + " steps");
+    setHtml(card.querySelector(".who"),
+      (bits.length ? esc(bits.join(" · ")) : `#${i + 1}`) +
+      `<span class="seed">seed ${g.seed}</span>`);
     setHtml(card.querySelector(".tagwrap"), g.cache_result
-      ? `<span class="tag ${g.cache_result}">${g.cache_result}</span>`
+      ? `<span class="tag ${esc(g.cache_result)}">${esc(JP_CACHE[g.cache_result] || g.cache_result)}</span>`
       : (g.status === "error" ? '<span class="tag err">エラー</span>' : ""));
     setText(card.querySelector(".stage"), genIndeterminate(g)
       ? genStateText(g)
-      : (g.phase_label ? g.phase_label + " · " : "") + (g.progress_text || g.status));
+      /* A history row has no progress_text, so it fell through to the raw
+         status -- the rail read "done" in an otherwise Japanese panel. */
+      /* progress_text is initialised to the literal "queued" server-side, so
+         preferring it over the map printed English into a Japanese panel. */
+      : (g.phase_label ? g.phase_label + " · " : "") +
+        (g.status === "queued" || g.status === "submitting"
+          ? JP_SEG[g.status] : (g.progress_text || JP_SEG[g.status] || g.status)));
     setText(card.querySelector(".timing"), genTiming(g, now));
 
     const pick = card.querySelector('[data-act="select"]');
@@ -1170,10 +1213,12 @@ $("video-file").addEventListener("change", async (e) => {
     state.sourceVideoMeta = r.probe;
     state.sourceVideoLocal = r.local_path;
     const p = r.probe || {};
-    const bits = [r.video, (Math.round(r.bytes / 1024 / 1024 * 10) / 10) + " MB"];
-    if (p.duration) bits.push(p.duration + "s");
+    /* f.name is what the operator chose; r.video is the name ComfyUI assigned
+       to it, which means nothing to them. Units in Japanese, like the rest. */
+    const bits = [f.name, (Math.round(r.bytes / 1024 / 1024 * 10) / 10) + " MB"];
+    if (p.duration) bits.push(p.duration + "秒");
     if (p.fps) bits.push(p.fps + " fps");
-    if (p.frames) bits.push(p.frames + " frames");
+    if (p.frames) bits.push(p.frames + "フレーム");
     if (!r.sent_to_comfyui) bits.push("GPU起動後に自動で転送します");
     $("video-status").textContent = bits.join(" · ");
     renderReadiness();
@@ -1201,7 +1246,7 @@ $("image-file").addEventListener("change", async (e) => {
     state.image = r.image;
     state.localPath = r.local_path;
     $("image-status").textContent =
-      `${r.image}（${Math.round(r.bytes / 1024)} KB）` +
+      `${f.name}（${Math.round(r.bytes / 1024)} KB）` +
       (r.sent_to_comfyui ? "" : " · GPU起動後に自動で転送します");
     renderReadiness();
     const img = $("image-preview");
@@ -1305,9 +1350,10 @@ $("btn-finalize").addEventListener("click", async () => {
   } catch (e) { notice("error", e.message); }
 });
 
-async function startGpu(confirmGpu) {
+async function startGpu(confirmGpu, label) {
   $("btn-gpu-start").disabled = true;
-  notice("info", confirmGpu ? `${confirmGpu} で起動します…` : "GPU を起動しています…", 4000);
+  /* The label is the card's name; confirmGpu is the machine id the API wants. */
+  notice("info", confirmGpu ? `${label || confirmGpu} で起動します…` : "GPU を起動しています…", 4000);
   try {
     /* The server answers as soon as the sequence is accepted, not when it
        finishes: Pod start plus ComfyUI boot is minutes, and a request left open
@@ -1336,9 +1382,15 @@ $("btn-gpu-start").addEventListener("click", () => startGpu(null));
 $("gpu-offer").addEventListener("click", (e) => {
   const pick = e.target.closest("[data-confirm-gpu]");
   if (pick) {
-    const card = pick.previousElementSibling ? pick.parentElement.textContent.trim() : pick.dataset.confirmGpu;
-    if (!confirm("高額な GPU を起動します。\n\n" + card + "\n\nよろしいですか？")) return;
-    return startGpu(pick.dataset.confirmGpu);
+    /* Built from the offer's own values. Reading parentElement.textContent
+       swept up the button's caption, so the one dialog that authorises
+       unplanned GPU spend read "…30分：約 $0.60これで開始". */
+    const d = pick.dataset;
+    const lines = [d.label || d.confirmGpu];
+    if (d.hour) lines.push(`1時間 約$${Number(d.hour).toFixed(2)}`);
+    if (d.half) lines.push(`30分 約$${Number(d.half).toFixed(2)}`);
+    if (!confirm("高額な GPU を起動します。\n\n" + lines.join("\n") + "\n\nよろしいですか？")) return;
+    return startGpu(pick.dataset.confirmGpu, d.label);
   }
   if (e.target.id === "btn-gpu-wait") return startGpu(null);
   if (e.target.id === "btn-gpu-cancel") {
@@ -1427,7 +1479,7 @@ $("auto-stop").addEventListener("change", async (e) => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ minutes: Number(e.target.value) }),
     });
-    notice("info", "AUTO STOP: " + (e.target.value === "0" ? "OFF" : e.target.value + " 分"));
+    notice("info", "自動停止: " + (e.target.value === "0" ? "OFF" : e.target.value + " 分"));
   } catch (err) { notice("error", err.message); }
 });
 
@@ -1476,7 +1528,12 @@ async function loadHistory() {
       const done = b.generations.filter((g) => g.status === "done").length;
       const sel = b.generations.find((g) => g.selected);
       const shot = sel || b.generations.find((g) => g.status === "done");
-      return `<div class="h-item" data-batch="${b.id}" title="${esc(b.prompt || "")}">
+      /* A batch where everything errored rendered "0/4本" -- identical to one
+         still queued. The rail says which, without reading the numbers. */
+      const st = b.generations.some((g) => ["running", "queued", "submitting"].includes(g.status))
+        ? "h-run" : b.generations.some((g) => g.status === "error")
+        ? "h-err" : done === 0 ? "h-cancelled" : "";
+      return `<div class="h-item ${st}" data-batch="${b.id}" title="${esc(b.prompt || "")}">
         ${thumb(shot && shot.id)}
         <div class="h-meta"><b>${sel ? "★ " : ""}${JP_MODE[b.mode] || b.mode}</b>
         <span class="h-sub">${JP_KIND[b.kind] || b.kind} · ${done}/${b.generations.length}本${
@@ -1512,10 +1569,10 @@ $("history").addEventListener("click", async (e) => {
 });
 
 /* The source video is picked once and the photograph is what changes, so the
-   video the operator was working with is put back rather than asked for again.
-   Preview thumbnails are not restored: the browser has no File object for a
-   file it did not just read, and /api/video is for finished generations, not
-   for inputs. The name, the probe and the readiness state are what matter. */
+   video the operator was working with is put back rather than asked for again
+   -- as a picture, not as a filename. /api/input serves the file itself out of
+   the upload directory, and ?poster=1 returns one frame of a video, because a
+   video cannot be an <img> and a black player is not a preview. */
 async function restoreLastInputs() {
   let inputs;
   try { inputs = (await api("/api/last_inputs")).inputs || {}; }
@@ -1525,17 +1582,24 @@ async function restoreLastInputs() {
     state.sourceVideoMeta = inputs.video.meta || null;
     state.sourceVideoLocal = inputs.video.local;
     const p = state.sourceVideoMeta || {};
-    const bits = [inputs.video.name + "（前回の素材）"];
-    if (p.duration) bits.push(p.duration + "s");
+    const bits = [];
+    if (p.duration) bits.push(p.duration + "秒");
     if (p.fps) bits.push(p.fps + " fps");
-    if (p.frames) bits.push(p.frames + " frames");
-    $("video-status").textContent = bits.join(" · ");
+    if (p.frames) bits.push(p.frames + "フレーム");
+    $("video-status").textContent = bits.join(" · ") || inputs.video.name;
     $("video-notes").textContent = (p.notes || []).join("\n");
+    const v = $("video-preview");
+    v.src = "/api/input/" + encodeURIComponent(inputs.video.name);
+    v.poster = "/api/input/" + encodeURIComponent(inputs.video.name) + "?poster=1";
+    v.hidden = false;
   }
   if (inputs.image) {
     state.image = inputs.image.name;
     state.localPath = inputs.image.local;
-    $("image-status").textContent = inputs.image.name + "（前回の素材）";
+    $("image-status").textContent = inputs.image.name;
+    const img = $("image-preview");
+    img.src = "/api/input/" + encodeURIComponent(inputs.image.name);
+    img.hidden = false;
   }
   renderReadiness();
   renderCacheHint();

@@ -22,8 +22,8 @@ if __package__ in (None, ""):  # allow `python3 studio/server.py`
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "studio"
 
-from . import (comfy_client, config, gpu_plan, graph, history, jobs, longdraft, mediaprobe,  # noqa: E402
-               preflight, runpod_ctl, startup)
+from . import (comfy_client, config, gpu_plan, graph, history, jobs,  # noqa: E402
+               longdraft, mediaprobe, postprocess, preflight, runpod_ctl, startup)
 
 STARTED_AT = time.time()
 MANAGER = None
@@ -679,6 +679,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._video(path.rsplit("/", 1)[-1])
             if path.startswith("/api/poster/"):
                 return self._poster(path.rsplit("/", 1)[-1])
+            if path.startswith("/api/input/"):
+                return self._input_file(path[len("/api/input/"):],
+                                        want_poster=query.get("poster") == ["1"])
             if path == "/api/long_draft":
                 return self._json({"long_drafts": MANAGER.recent_long_drafts(),
                                    "available": MANAGER.long_draft_available()})
@@ -888,6 +891,37 @@ class Handler(BaseHTTPRequestHandler):
         # A finished preview is a finished video: same validator, same 304, same
         # confinement check above.
         return self._serve_file(path, "video/mp4")
+
+    def _input_file(self, name, want_poster=False):
+        """Serve a file the operator picked, so it can be SHOWN.
+
+        The previews were built with URL.createObjectURL, which only exists for
+        a file this browser session read: a reload turned the restored material
+        into a filename. Nothing served UPLOAD_DIR at all -- it was written and
+        never read back. Confined the same way /api/video is, because the name
+        comes from a URL.
+        """
+        safe = os.path.basename(name or "")
+        path = os.path.realpath(os.path.join(config.UPLOAD_DIR, safe))
+        if not safe or not path.startswith(os.path.realpath(config.UPLOAD_DIR) + os.sep):
+            return self._error(404, "no such input")
+        if not os.path.exists(path):
+            return self._error(404, "no such input")
+        if want_poster:
+            # A video cannot be an <img>. One frame of it can.
+            shot = postprocess.poster_path(path)
+            try:
+                if not os.path.exists(shot):
+                    postprocess.poster(path, shot, at_fraction=0.1)
+            except Exception:  # noqa: BLE001
+                return self._error(404, "no poster for %s" % safe)
+            return self._serve_file(shot, "image/jpeg")
+        ext = os.path.splitext(safe)[1].lower()
+        kind = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".webp": "image/webp", ".gif": "image/gif",
+                ".mp4": "video/mp4", ".mov": "video/quicktime",
+                ".webm": "video/webm"}.get(ext, "application/octet-stream")
+        return self._serve_file(path, kind)
 
     def _poster(self, gen_id):
         """One frame of a finished generation. Same confinement as /api/video:

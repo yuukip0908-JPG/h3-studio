@@ -6,7 +6,13 @@
   --line:#232936; --line-soft:#1B2029;
   --fg:#E8ECF3; --dim:#8B95A7; --faint:#5C6678;
   --accent:#5B8CFF; --accent-2:#8B6BFF; --accent-dim:#2B3B63;
-  --go:#2FA463; --stop:#D14A3E; --warn:#DCA741; --hit:#3FBE7C; --miss:#C79544;
+  --go:#2FA463; --stop:#D14A3E; --warn:#DCA741;
+  /* A cache HIT is good news; a MISS is the ordinary first run, not a warning.
+     Dressing it in near-amber made the common case look like a fault. */
+  --hit:#3FBE7C; --miss:#93A0B4;
+  /* Progress is not selection. Both were --accent, so a running card and a
+     selected card read the same from two metres. */
+  --running:#5B8CFF; --sel:#8B6BFF;
   --r-lg:14px; --r-md:10px; --r-sm:8px;
   --edge:inset 0 1px 0 rgba(255,255,255,.045);
   --lift:0 1px 2px rgba(0,0,0,.4), 0 12px 28px -20px rgba(0,0,0,.9);
@@ -23,7 +29,6 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
   font:14px/1.5 -apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif}
-h1{font-size:16px;letter-spacing:.14em;margin:0}
 h2{font-size:11px;letter-spacing:.16em;color:var(--dim);text-transform:uppercase;
   margin:22px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
 h2:first-child{margin-top:0}
@@ -55,11 +60,14 @@ h1{font-weight:600;font-size:13px;letter-spacing:.2em;
    below its content and the whole shell grows a page scrollbar instead. */
 html,body{height:100%}
 body{overflow:hidden}
-.app{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;height:100dvh;min-height:0}
+.app{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;
+  grid-template-columns:minmax(0,1fr);height:100dvh;min-height:0;min-width:0}
 .bar{position:static}
 
-.alerts{display:flex;flex-direction:column;gap:8px;padding:0 16px;margin-top:12px}
-.alerts:empty{display:none}
+.alerts{display:flex;flex-direction:column;gap:8px;padding:0 16px;margin-top:12px;
+  max-height:38vh;overflow-y:auto;min-width:0}
+/* :empty never matched -- the element always has hidden children. */
+.alerts:not(:has(> *:not([hidden]))){display:none;margin:0}
 .alerts>*:not([hidden])~*{margin-top:0}
 
 /* Two columns, not three. The centre is the largest area, so it holds the
@@ -77,8 +85,11 @@ main.work{display:grid;grid-template-columns:330px minmax(0,1fr);
 #panel-input{grid-template-rows:auto minmax(0,1fr) auto}
 .col>h2:first-child{margin:-16px -16px 0;padding:14px 16px 8px;
   border-bottom:1px solid var(--line-soft)}
-.pane-body{min-height:0;overflow-y:auto;overscroll-behavior:contain;
+.pane-body{min-height:0;min-width:0;overflow-y:auto;overscroll-behavior:contain;
   margin:0 -16px;padding:12px 16px 4px}
+#panel-results .pane-body{display:flex;flex-direction:column}
+#panel-results #results{flex:0 0 auto}
+#panel-results #results.solo{flex:1 1 auto;min-height:0}
 #panel-input .go{margin:0 -16px -16px;padding:12px 16px 16px;
   border-top:1px solid var(--line-soft);background:var(--panel)}
 #panel-input .go .btn{width:100%}
@@ -95,19 +106,26 @@ details.adv[open]{padding-bottom:4px}
 /* In the bar the mode is a label, not a card: the sub-caption and the wrap
    both belong to the column version of .seg. */
 .seg-mode{flex-wrap:nowrap;flex:0 0 auto}
-.seg-mode button{white-space:nowrap;padding:5px 12px}
-.seg-mode button .sub{display:none}
+.seg-mode button{white-space:nowrap;padding:4px 12px;flex-direction:row;gap:7px;align-items:baseline}
+/* Kept, not hidden: without it the bar is three English phrases and no
+   explanation of what they do. Inline instead of stacked so it still fits. */
+.seg-mode button .sub{font-size:10px;opacity:.7}
 /* An empty hint must not leave a gap in a column that cannot scroll. */
 .hint:empty{display:none}
 
 /* ---- shelf --------------------------------------------------------------
    A fixed-height strip that scrolls sideways. Height is set by the thumbnail,
    so it never eats the work area. */
-.shelf{margin:0 16px 14px;padding:10px 12px 12px;display:flex;flex-direction:column;gap:8px}
+.shelf{margin:0 16px 14px;padding:10px 12px 12px;display:flex;flex-direction:column;gap:8px;
+  min-width:0}
 .shelf-head{display:flex;align-items:baseline;gap:14px}
 .shelf-head h2{margin:0;border:none;padding:0}
 .shelf-head .hint{margin:0}
-#history{display:flex;gap:8px;overflow-x:auto;overflow-y:hidden;
+/* min-width:0 is what makes overflow-x:auto engage at all. Without it a flex
+   item is sized to max-content, so the strip grew to 25 tiles wide, stretched
+   the grid, and carried STOP GPU -- the control that ends a $0.84/h bill --
+   off the right of the screen with no scrollbar to reach it. */
+#history{display:flex;gap:8px;overflow-x:auto;overflow-y:hidden;min-width:0;
   padding-bottom:4px;overscroll-behavior-x:contain}
 #history .h-item{flex:0 0 auto;width:136px;border:1px solid var(--line);
   border-radius:12px;overflow:hidden;background:var(--raised);padding:0;cursor:pointer;
@@ -164,7 +182,7 @@ textarea{resize:vertical}
 input[type=range]{width:100%;accent-color:var(--accent)}
 input[type=file]{font-size:12px;color:var(--dim)}
 .hint{font-size:11px;color:var(--dim);margin:6px 0 0}
-.hint.warn{color:var(--warn)}
+.hint.warn{color:var(--warn);border-left:2px solid var(--warn);padding-left:8px}
 #image-preview{margin-top:8px;max-width:100%;border-radius:6px;border:1px solid var(--line)}
 
 .seg{display:flex;gap:6px;flex-wrap:wrap}
@@ -198,9 +216,16 @@ input[type=file]{font-size:12px;color:var(--dim)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
 .card{background:var(--sunk);border:1px solid var(--line);border-radius:12px;overflow:hidden;
   display:flex;flex-direction:column;box-shadow:var(--edge);transition:border-color .14s,box-shadow .14s}
-.card:hover{border-color:#2E3644}
-.card.sel{border-color:var(--accent);
-  box-shadow:var(--edge),0 0 0 1px var(--accent) inset,0 10px 30px -18px rgba(91,140,255,.9)}
+.card:hover:not(.sel){border-color:#2E3644}
+.card{position:relative}
+.card.sel{border-color:var(--sel);
+  box-shadow:var(--edge),0 0 0 1px var(--sel) inset,0 10px 30px -18px rgba(139,107,255,.9)}
+.card.sel::after{content:"★ 選択中";position:absolute;top:8px;left:8px;z-index:2;
+  font-size:10px;letter-spacing:.08em;padding:3px 8px;border-radius:999px;
+  background:var(--sel);color:#fff;font-weight:600}
+/* Failure and cancellation were carried by 12px text alone. */
+.card.err{border-color:var(--stop)}
+.card.cancelled{opacity:.55}
 .card video{width:100%;display:block;background:#000;aspect-ratio:16/9;object-fit:contain}
 .card .ph{aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;
   color:var(--dim);font-size:12px;text-align:center;padding:10px}
@@ -209,12 +234,57 @@ input[type=file]{font-size:12px;color:var(--dim)}
 .card .acts{display:flex;gap:6px;padding:0 10px 10px}
 .card .acts .btn{flex:1;padding:6px;font-size:11px}
 .bar-progress{height:3px;background:#1d222b}
-.bar-progress > i{display:block;height:100%;background:var(--accent);transition:width .3s}
+.bar-progress > i{display:block;height:100%;background:var(--running);transition:width .3s}
+.card.done .bar-progress > i{background:var(--hit)}
+.card.err .bar-progress > i{background:var(--stop)}
 .tag{padding:2px 7px;border-radius:999px;font-size:10px;letter-spacing:.06em;
   border:1px solid transparent;font-weight:600}
 .tag.HIT{color:var(--hit);background:rgba(63,190,124,.13);border-color:rgba(63,190,124,.3)}
-.tag.MISS{color:var(--miss);background:rgba(199,149,68,.13);border-color:rgba(199,149,68,.3)}
+.tag.MISS{color:var(--miss);background:rgba(147,160,180,.12);border-color:rgba(147,160,180,.28)}
+.tag.UNKNOWN,.tag.NODE_NOT_EXECUTED{color:var(--faint);background:var(--sunk);border-color:var(--line)}
 .tag.err{color:#F2988D;background:rgba(209,74,62,.13);border-color:rgba(209,74,62,.32)}
+
+/* ---- one take, at the size it was paid for -------------------------------
+   The convention this borrows from is the NLE's: player in the middle,
+   inspector on the right, media along the bottom. The timeline is deliberately
+   absent -- there are no clips to arrange, and arranging them is the editing
+   app's job. What transfers is the player and the rail. */
+.grid.solo{grid-template-columns:1fr;height:100%;min-height:0}
+.grid.solo .card{display:grid;grid-template-columns:minmax(0,1fr) 264px;
+  grid-template-rows:auto minmax(0,1fr) auto;align-items:start;
+  height:100%;min-height:260px;max-height:100%}
+.grid.solo .card .vid{grid-column:1;grid-row:1/4;height:100%;display:flex;
+  align-items:center;justify-content:center;background:#05070A;min-height:0}
+.grid.solo .card video{height:100%;max-height:100%;object-fit:contain;aspect-ratio:auto}
+.grid.solo .card .ph{aspect-ratio:auto;height:100%}
+.grid.solo .card .bar-progress{grid-column:2;grid-row:1;margin:14px 16px 0;border-radius:2px}
+/* The rail: identity, then state, then what can be done about it. */
+.grid.solo .card .meta{grid-column:2;grid-row:2;display:block;padding:12px 16px 0;align-self:start}
+/* The state sits at the foot of the rail, above the buttons. It used to share
+   a grid cell with the identity block and clear it with padding-top:76px --
+   a number that collides the moment the identity line wraps. */
+.grid.solo .card .meta + .meta{grid-row:2;align-self:end;padding:0 16px 12px}
+.grid.solo .card .acts{grid-column:2;grid-row:3;flex-direction:column;padding:0 16px 16px}
+.grid.solo .card .acts .btn{width:100%;padding:9px;font-size:12px}
+.grid.solo .card .who{display:block;font-size:13px;color:var(--fg);letter-spacing:.01em}
+.grid.solo .card .who .seed{display:block;font-size:11px;color:var(--faint);
+  font-variant-numeric:tabular-nums;margin-top:3px;letter-spacing:.02em}
+.grid.solo .card .tagwrap{display:block;margin-top:8px}
+.grid.solo .card .stage{display:block;font-size:12px;color:var(--dim)}
+.grid.solo .card .timing{display:block;font-size:12px;margin-top:2px;color:var(--fg)}
+.card .who .seed{display:none}
+@media (max-width:1180px){
+  /* Below this the rail stops being readable, so it goes under the player. */
+  .grid.solo .card{grid-template-columns:1fr;grid-template-rows:auto auto auto auto;min-height:0}
+  .grid.solo .card .vid{grid-column:1;grid-row:1}
+  .grid.solo .card video{max-height:46vh}
+  .grid.solo .card .bar-progress,.grid.solo .card .meta,
+  .grid.solo .card .meta + .meta,.grid.solo .card .acts{grid-column:1}
+  .grid.solo .card .bar-progress{grid-row:2;margin:0}
+  .grid.solo .card .meta{grid-row:3;padding:10px 12px 0}
+  .grid.solo .card .meta + .meta{grid-row:4;padding:4px 12px 0}
+  .grid.solo .card .acts{grid-row:5;flex-direction:row;padding:10px 12px 12px}
+}
 
 .opts{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px}
 .opt{display:flex;align-items:center;gap:6px;font-size:12px}
@@ -301,9 +371,14 @@ input[type=file]{font-size:12px;color:var(--dim)}
 .ld-seg-state { font-size: 12px; opacity: .9; margin: 3px 0 6px; }
 .ld-seg video, .ld-preview { width: 100%; border-radius: 6px; display: block; }
 .ld-preview { margin-bottom: 6px; }
-/* A long draft is several takes of one clip; the strip says so with a rail,
-   not by being a different shape. */
-#history .h-ld{box-shadow:inset 3px 0 0 #3FBE7C}
+/* A long draft is several takes of one clip. The tile already says 長尺, so the
+   rail is a category mark -- not --hit's green, which means "cache reused". */
+#history .h-ld{box-shadow:inset 3px 0 0 var(--accent-2)}
+/* State the shelf could not show at all: a batch where everything failed
+   rendered identically to one still queued. */
+#history .h-run{box-shadow:inset 3px 0 0 var(--go)}
+#history .h-err{box-shadow:inset 3px 0 0 var(--stop)}
+#history .h-cancelled{opacity:.6}
 
 /* No step count yet (encode, queueing, a recovered generation): show that it is
    working rather than a percentage nobody measured. */
