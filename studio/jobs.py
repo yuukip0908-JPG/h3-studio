@@ -98,6 +98,9 @@ class Generation:
             "progress_text": self.progress_text, "error": self.error,
             "cache_result": self.cache_result, "cache_expected": self.cache_expected,
             "output_url": "/api/video/%s" % self.id if self.output_path else None,
+            # Whether postprocess produced a delivered file. The UI states what
+            # was done to the video; without this it would have to guess.
+            "delivered": bool(self.delivery_path),
             "seconds": (round(self.finished_at - self.started_at, 1)
                         if self.started_at and self.finished_at else None),
             "selected": self.selected,
@@ -1599,8 +1602,24 @@ class JobManager:
         if src.status != "done":
             raise ValueError("generation %s is not finished" % gen_id)
         p = src.params
+        # The whole point of the Draft/Final pair is that Final re-encodes
+        # nothing: same prompt, same material, SAME PIXELS, so the cached
+        # encoder output is reused and the Final is the take that was chosen.
+        # submit_batch has no megapixels argument -- resolution reaches graph
+        # only through quality_overrides -- so a Draft generated above the
+        # preset silently fell back to the Final preset's 0.4 MP here, which is
+        # both a cache MISS and a different image from the one selected.
+        ov = {}
+        if p.get("megapixels"):
+            ov["megapixels"] = p["megapixels"]
+        # Sampler and scheduler are part of how the picture was made, so they
+        # follow it too. Steps deliberately do NOT: 12 -> 30 is what Final is.
+        for k in ("sampler", "scheduler"):
+            if p.get(k):
+                ov[k] = p[k]
         batch = self.submit_batch(
             mode=p["mode"], prompt_text=p["prompt"], quality=quality, variations=1,
+            quality_overrides=ov or None,
             duration=p["duration"], aspect_ratio=p["aspect_ratio"], image=p.get("image"),
             image_source=None, reference_strength=p.get("reference_strength"),
             source_video=p.get("source_video"),

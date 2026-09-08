@@ -27,6 +27,10 @@
 *::-webkit-scrollbar-thumb:hover{background:#303849;background-clip:content-box}
 *::-webkit-scrollbar-track{background:transparent}
 *{box-sizing:border-box}
+/* An author rule with a class selector beats the UA's [hidden]{display:none},
+   so .seg{display:flex} rendered a hidden control. Every hidden element in this
+   page is hidden by a class-bearing element, so this has to win outright. */
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--fg);
   font:14px/1.5 -apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif}
 h2{font-size:11px;letter-spacing:.16em;color:var(--dim);text-transform:uppercase;
@@ -52,88 +56,112 @@ h1{font-weight:600;font-size:13px;letter-spacing:.2em;
 .chip-unknown{color:var(--faint)}
 @keyframes h3-pulse{0%,100%{opacity:.95}50%{opacity:.35}}
 
-/* ---- fixed shell -------------------------------------------------------
+/* ---- five screens, one document ----------------------------------------
    The Studio is operated, not read, so the working surface is one viewport
-   and the page itself never scrolls. Only the three columns scroll, and only
-   when their own content exceeds them. `min-height:0` on every grid child is
-   what actually makes that work: without it a grid item refuses to shrink
-   below its content and the whole shell grows a page scrollbar instead. */
+   and the page itself never scrolls. Only panel bodies scroll, and only when
+   their own content exceeds them. `min-height:0` AND `min-width:0` on every
+   grid child is what actually makes that work: without min-height a grid item
+   refuses to shrink below its content and the shell grows a page scrollbar;
+   without min-width a flex/grid item is sized to max-content, which is how a
+   strip of thumbnails once pushed STOP GPU off the right of the screen. */
 html,body{height:100%}
 body{overflow:hidden}
-.app{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;
+.app{display:grid;grid-template-rows:auto auto minmax(0,1fr);
   grid-template-columns:minmax(0,1fr);height:100dvh;min-height:0;min-width:0}
 .bar{position:static}
 
+/* Navigation is a peer of the logo, not a sidebar: five screens do not earn a
+   permanent 200px column in a tool whose subject is a video. */
+.nav{display:flex;gap:2px;margin-left:6px}
+.nav button{display:flex;flex-direction:column;align-items:center;gap:0;
+  background:transparent;border:1px solid transparent;color:var(--dim);
+  border-radius:var(--r-sm);padding:5px 13px 4px;font:inherit;font-size:12.5px;
+  cursor:pointer;line-height:1.25;transition:background .14s,color .14s,border-color .14s}
+.nav button .sub{font-size:8.5px;letter-spacing:.14em;opacity:.5;text-transform:uppercase}
+.nav button:hover:not(.on){color:var(--fg);background:var(--raised)}
+.nav button.on{color:#fff;background:linear-gradient(180deg,#2B3550,#222A40);
+  border-color:#3A4666;box-shadow:var(--edge)}
+
 .alerts{display:flex;flex-direction:column;gap:8px;padding:0 16px;margin-top:12px;
-  max-height:38vh;overflow-y:auto;min-width:0}
+  max-height:34vh;overflow-y:auto;min-width:0}
 /* :empty never matched -- the element always has hidden children. */
 .alerts:not(:has(> *:not([hidden]))){display:none;margin:0}
-.alerts>*:not([hidden])~*{margin-top:0}
 
-/* Two columns, not three. The centre is the largest area, so it holds the
-   thing being looked at; the shelf is a strip under it. Three columns gave the
-   widest space to what is empty most of the time. */
-main.work{display:grid;grid-template-columns:330px minmax(0,1fr);
-  gap:14px;padding:14px 16px 10px;min-height:0}
+main.screens{min-height:0;min-width:0;display:grid}
+.screen{min-height:0;min-width:0;padding:14px 16px 16px;gap:12px}
+.screen[hidden]{display:none}
+
+/* Every panel is header / scrolling body. A sticky footer would have content
+   passing underneath it -- which it did, straight through the 画質 buttons --
+   so the body is a grid row that ends where the footer begins. */
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);
   padding:16px;box-shadow:var(--edge),var(--lift)}
-/* Header, scrolling body, footer. A sticky footer would have content passing
-   underneath it -- which it did, straight through the 画質 buttons. The body
-   is the only part that scrolls, so nothing can ever slide under the one
-   control the column exists to reach. */
-.col{min-height:0;overflow:hidden;display:grid;grid-template-rows:auto minmax(0,1fr)}
-#panel-input{grid-template-rows:auto minmax(0,1fr) auto}
-.col>h2:first-child{margin:-16px -16px 0;padding:14px 16px 8px;
+.col{min-height:0;min-width:0;overflow:hidden;display:grid;grid-template-rows:auto minmax(0,1fr)}
+.col.has-foot{grid-template-rows:auto minmax(0,1fr) auto}
+.col>h2:first-child,.col>.shelf-head{margin:-16px -16px 0;padding:13px 16px 8px;
   border-bottom:1px solid var(--line-soft)}
 .pane-body{min-height:0;min-width:0;overflow-y:auto;overscroll-behavior:contain;
-  margin:0 -16px;padding:12px 16px 4px}
+  margin:0 -16px;padding:12px 16px 6px}
+.go{margin:0 -16px -16px;padding:11px 16px 16px;
+  border-top:1px solid var(--line-soft);background:var(--panel)}
+.go .btn-big{width:100%}
+.go .btn-ghost{width:100%;margin-top:6px}
+
+/* ---- 1. Studio ---------------------------------------------------------
+   Four columns for the decision, two panels under it for the result. The
+   video is the widest track because the video is the thing being judged. */
+.studio{display:grid;grid-template-rows:minmax(0,1fr) 208px}
+.studio-top{display:grid;gap:12px;min-height:0;min-width:0;
+  grid-template-columns:212px 274px minmax(320px,1fr) 352px}
+.studio-bottom{display:grid;gap:12px;min-height:0;min-width:0;
+  grid-template-columns:minmax(0,1fr) 344px}
+#panel-settings{grid-template-rows:auto minmax(0,1fr) auto}
 #panel-results .pane-body{display:flex;flex-direction:column}
 #panel-results #results{flex:0 0 auto}
 #panel-results #results.solo{flex:1 1 auto;min-height:0}
-#panel-input .go{margin:0 -16px -16px;padding:12px 16px 16px;
-  border-top:1px solid var(--line-soft);background:var(--panel)}
-#panel-input .go .btn{width:100%}
 
-details.adv{border-top:1px solid var(--line);margin:4px 0 12px;padding-top:10px}
-details.adv>summary{font-size:11px;letter-spacing:.12em;color:var(--dim);
-  text-transform:uppercase;cursor:pointer;list-style:none;padding:2px 0}
-details.adv>summary::-webkit-details-marker{display:none}
-details.adv>summary::before{content:"▸ ";color:var(--dim)}
-details.adv[open]>summary::before{content:"▾ "}
-details.adv[open]{padding-bottom:4px}
-#mt-prompt-helper>summary{cursor:pointer;margin:6px 0}
+/* A stacked segmented control: the choice is a short list of named things, so
+   it reads down the column rather than fighting for width across it. */
+.seg-stack{flex-direction:column;gap:4px}
+.seg-stack button{flex:0 0 auto;width:100%;align-items:flex-start;text-align:left;
+  padding:8px 11px;gap:2px}
+.seg-stack button .sub{font-size:10px;letter-spacing:.01em;opacity:.7}
 
-/* In the bar the mode is a label, not a card: the sub-caption and the wrap
-   both belong to the column version of .seg. */
-.seg-mode{flex-wrap:nowrap;flex:0 0 auto}
-.seg-mode button{white-space:nowrap;padding:4px 12px;flex-direction:row;gap:7px;align-items:baseline}
-/* Kept, not hidden: without it the bar is three English phrases and no
-   explanation of what they do. Inline instead of stacked so it still fits. */
-.seg-mode button .sub{font-size:10px;opacity:.7}
-/* An empty hint must not leave a gap in a column that cannot scroll. */
-.hint:empty{display:none}
+/* The two tiers of the settings column. This is the one piece of information
+   design here that comes from a measurement rather than a convention: the top
+   group does not enter the cache fingerprint, so re-running with a different
+   value skips the 75-90 s encode; the bottom group is the fingerprint. */
+.tier{border:1px solid var(--line);border-radius:var(--r-md);padding:11px 12px 2px;
+  margin-bottom:12px;background:var(--sunk)}
+.tier-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;
+  margin:-2px 0 10px}
+.tier-head b{font-size:11px;letter-spacing:.1em;font-weight:600}
+.tier-head span{font-size:10px;color:var(--faint);letter-spacing:.04em}
+.tier-cheap{border-color:rgba(63,190,124,.28)}
+.tier-cheap .tier-head b{color:var(--hit)}
+.tier-costly{border-color:rgba(220,167,65,.3)}
+.tier-costly .tier-head b{color:var(--warn)}
+.with-btn{display:flex;gap:5px}
+.with-btn input{min-width:0}
+.with-btn .btn{flex:0 0 auto;padding:0 10px}
+.fixed-kv{opacity:.72;margin-bottom:6px}
+.preset-echo{font-size:10px;letter-spacing:.04em;text-transform:none;color:var(--warn)}
 
-/* ---- shelf --------------------------------------------------------------
-   A fixed-height strip that scrolls sideways. Height is set by the thumbnail,
-   so it never eats the work area. */
-.shelf{margin:0 16px 14px;padding:10px 12px 12px;display:flex;flex-direction:column;gap:8px;
-  min-width:0}
-.shelf-head{display:flex;align-items:baseline;gap:14px}
+/* The shelf: a fixed-height strip that scrolls sideways, so it can never eat
+   the work area no matter how many takes exist. */
+.shelf-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
 .shelf-head h2{margin:0;border:none;padding:0}
 .shelf-head .hint{margin:0}
-/* min-width:0 is what makes overflow-x:auto engage at all. Without it a flex
-   item is sized to max-content, so the strip grew to 25 tiles wide, stretched
-   the grid, and carried STOP GPU -- the control that ends a $0.84/h bill --
-   off the right of the screen with no scrollbar to reach it. */
-#history{display:flex;gap:8px;overflow-x:auto;overflow-y:hidden;min-width:0;
-  padding-bottom:4px;overscroll-behavior-x:contain}
-#history .h-item{flex:0 0 auto;width:136px;border:1px solid var(--line);
+#panel-side{grid-template-rows:auto minmax(0,1fr)}
+#history{display:flex;gap:8px;overflow-x:auto;overflow-y:hidden;min-width:0;min-height:0;
+  padding:12px 0 6px;overscroll-behavior-x:contain;align-items:flex-start}
+#history .h-item{flex:0 0 auto;width:132px;border:1px solid var(--line);
   border-radius:12px;overflow:hidden;background:var(--raised);padding:0;cursor:pointer;
   font-size:11px;color:var(--dim);box-shadow:var(--edge);
   transition:border-color .14s,transform .14s,box-shadow .14s}
 #history .h-item:hover{border-color:var(--accent);transform:translateY(-2px);
   box-shadow:var(--edge),0 12px 24px -14px rgba(0,0,0,.95)}
-#history .h-thumb{display:block;width:100%;height:90px;object-fit:cover;background:#080A0E}
+#history .h-thumb{display:block;width:100%;height:86px;object-fit:cover;background:#080A0E}
 #history .h-thumb.none{display:flex;align-items:center;justify-content:center;
   font-size:9px;letter-spacing:.16em;color:var(--faint);
   background:repeating-linear-gradient(45deg,#0E1117,#0E1117 6px,#11151C 6px,#11151C 12px)}
@@ -143,26 +171,76 @@ details.adv[open]{padding-bottom:4px}
 #history .h-sub{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   font-variant-numeric:tabular-nums;color:var(--faint)}
 
-/* ---- Pod drawer ---------------------------------------------------------
-   Detail, read when something needs explaining. It overlays rather than
-   taking a column, because the column it used to occupy is the shelf. */
-.drawer{position:fixed;top:0;right:0;bottom:0;width:340px;max-width:92vw;z-index:40;
-  background:var(--panel);border-left:1px solid var(--line);padding:16px;
-  overflow-y:auto;box-shadow:-16px 0 40px -20px rgba(0,0,0,.7)}
-.drawer-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}
-.drawer-head h2{margin:0;border:none;padding:0}
+/* ---- 2. History / 3. Assets: filter, grid, inspector ------------------- */
+.hist,.assets{grid-template-columns:222px minmax(0,1fr) 340px;display:grid}
+.hgrid,.agrid{display:grid;gap:10px;
+  grid-template-columns:repeat(auto-fill,minmax(148px,1fr))}
+.tile{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--raised);
+  cursor:pointer;box-shadow:var(--edge);transition:border-color .14s,transform .14s}
+.tile:hover{border-color:var(--accent);transform:translateY(-2px)}
+.tile.on{border-color:var(--sel);box-shadow:var(--edge),0 0 0 1px var(--sel) inset}
+.tile img,.tile .h-thumb{display:block;width:100%;height:104px;object-fit:cover;background:#080A0E}
+.tile .h-thumb.none{display:flex;align-items:center;justify-content:center;font-size:9px;
+  letter-spacing:.16em;color:var(--faint);
+  background:repeating-linear-gradient(45deg,#0E1117,#0E1117 6px,#11151C 6px,#11151C 12px)}
+.tile .t-meta{padding:7px 9px 9px;font-size:11px;color:var(--dim);line-height:1.45}
+.tile .t-meta b{display:block;color:var(--fg);font-size:11.5px;font-weight:600;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile .t-meta span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  color:var(--faint);font-variant-numeric:tabular-nums}
+.badges{display:flex;gap:4px;flex-wrap:wrap;margin-top:5px}
+.badge{font-size:9px;letter-spacing:.05em;padding:2px 6px;border-radius:999px;
+  border:1px solid var(--line);color:var(--dim);background:var(--sunk)}
+.badge.final{color:var(--sel);border-color:rgba(139,107,255,.4)}
+.badge.err{color:#F2988D;border-color:rgba(209,74,62,.35)}
+.facet{display:flex;flex-direction:column;gap:3px}
+.facet button{display:flex;justify-content:space-between;gap:8px;background:transparent;
+  border:1px solid transparent;color:var(--dim);border-radius:var(--r-sm);
+  padding:6px 9px;font:inherit;font-size:12px;cursor:pointer;text-align:left}
+.facet button:hover:not(.on){background:var(--raised);color:var(--fg)}
+.facet button.on{background:var(--raised);border-color:var(--accent-dim);color:var(--fg)}
+.facet button i{font-style:normal;font-variant-numeric:tabular-nums;color:var(--faint)}
+.detail-media{width:100%;border-radius:var(--r-md);border:1px solid var(--line);
+  background:#000;display:block;margin-bottom:10px}
+.detail-acts{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+.detail-acts .btn{width:100%}
 
-@media (max-width:1000px){
-  /* Three columns do not fit. Stop pretending it is an app shell and let the
-     page scroll the way a document does. */
+/* ---- 4. GPU / 5. Settings --------------------------------------------- */
+.gpu,.settings{grid-template-columns:328px minmax(0,1fr) 336px;display:grid}
+.events{font-size:11.5px;line-height:1.6}
+.events div{display:flex;gap:8px;padding:3px 0;border-bottom:1px solid var(--line-soft)}
+.events time{color:var(--faint);font-variant-numeric:tabular-nums;flex:0 0 auto}
+.events .lv-error{color:#F2988D}
+.events .lv-warn{color:var(--warn)}
+.qrow{border:1px solid var(--line);border-radius:var(--r-md);padding:10px 12px;
+  margin-bottom:8px;background:var(--sunk)}
+.qrow b{font-size:12.5px}
+.qrow .qsub{font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+.setgrp{border:1px solid var(--line);border-radius:var(--r-md);padding:12px;
+  margin-bottom:12px;background:var(--sunk)}
+.setgrp h3{margin:0 0 8px;font-size:11px;letter-spacing:.14em;color:var(--dim);
+  text-transform:uppercase;font-weight:600}
+
+/* Below this width four columns are a lie. Stop pretending it is an app shell
+   and let the page scroll the way a document does. */
+@media (max-width:1360px){
+  .studio-top{grid-template-columns:196px 246px minmax(260px,1fr) 320px}
+  .hist,.assets{grid-template-columns:196px minmax(0,1fr) 300px}
+  .gpu,.settings{grid-template-columns:296px minmax(0,1fr) 300px}
+}
+@media (max-width:1120px){
   body{overflow:auto}
   .app{display:block;height:auto}
-  main.work{grid-template-columns:1fr}
-  .shelf{margin:0 16px 16px}
+  main.screens{display:block}
+  .screen{display:block;padding:12px 14px 20px}
+  .studio,.studio-top,.studio-bottom{display:block}
+  .studio-bottom{height:auto}
+  .panel{margin-bottom:12px}
   .col{overflow:visible;display:block}
-  .col>h2:first-child{margin:0 0 10px;padding:0 0 6px}
+  .col>h2:first-child,.col>.shelf-head{margin:0 0 10px;padding:0 0 6px}
   .pane-body{overflow:visible;margin:0;padding:0}
-  #panel-input .go{margin:12px 0 0;padding:0;border:none}
+  .go{margin:12px 0 0;padding:0;border:none}
+  .nav{flex-wrap:wrap}
 }
 
 .field{margin-bottom:14px}
@@ -388,3 +466,18 @@ input[type=file]{font-size:12px;color:var(--dim)}
   0%   { transform: translateX(-100%); }
   100% { transform: translateX(320%); }
 }
+
+/* The two files a generation was made from, shown as pictures. A filename is
+   not a preview, and this panel exists to be recognised at a glance. */
+.mats{display:flex;gap:8px;margin:8px 0 10px}
+.mats .mat{width:74px;height:74px;object-fit:cover;border-radius:var(--r-sm);
+  border:1px solid var(--line);background:#080A0E}
+.detail-acts a.btn{text-align:center;text-decoration:none;display:block}
+
+/* A preview is a preview, not the column. Both used to size themselves to the
+   file, so a 2048px portrait pushed everything under it out of a pane that
+   does not grow. */
+#image-preview,#video-preview{max-height:210px;width:100%;object-fit:contain;
+  background:#080A0E;margin:0 0 8px}
+/* An uploaded filename is 40+ characters of hash and blew the column out. */
+#image-status,#video-status{overflow-wrap:anywhere;color:var(--faint);font-size:10.5px}

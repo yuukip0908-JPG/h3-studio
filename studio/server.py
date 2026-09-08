@@ -543,7 +543,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(403, refusal)
         try:
             if path.startswith("/api/"):
-                if GUARD and path not in ("/api/status",):
+                # Polls are not activity. The page asks for /api/status every
+                # few seconds and /api/history every 30, so counting either as
+                # "the operator is working" meant an idle auto-stop could never
+                # fire and a forgotten Pod billed until it was noticed by hand.
+                if GUARD and path not in ("/api/status", "/api/history"):
                     GUARD.touch()
                 return self._api(method, path, query)
             return self._static(path)

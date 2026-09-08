@@ -27,6 +27,13 @@ const state = {
   refImageSize: "match",
   draftQuality: "standard",
   cfg: null,
+  screen: "studio",
+  /* Per-run departures from the preset. Empty means "the preset, exactly" --
+     which is what makes the echo beside 生成設定 truthful rather than decorative. */
+  ov: { steps: null, megapixels: null },
+  seedFixed: null,
+  batches: [],
+  events: [],
   batch: null,       // current batch shown in RESULTS
   selected: null,
   busy: false,
@@ -114,6 +121,35 @@ function preset() {
   return (state.cfg && state.cfg.presets[state.mode + "/" + state.quality]) || {};
 }
 
+/* What will actually be sent. The server does preset.update(overrides), so the
+   UI has to mirror that or the cache forecast under the button predicts the
+   preset's resolution while the request carries another one. */
+function overrides() {
+  const o = {};
+  if (state.ov.steps != null) o.steps = state.ov.steps;
+  if (state.ov.megapixels != null) o.megapixels = state.ov.megapixels;
+  return o;
+}
+function effective() { return Object.assign({}, preset(), overrides()); }
+
+/* The whole point of decision 3: a value that no longer matches the preset is
+   never silently in force. It is named, with what it was and what it is now. */
+function renderPresetEcho() {
+  const p = preset(), e = effective(), bits = [];
+  if (e.steps !== p.steps) bits.push(`Steps ${p.steps}→${e.steps}`);
+  if (e.megapixels !== p.megapixels) bits.push(`解像度 ${p.megapixels}→${e.megapixels} MP`);
+  if (state.seedFixed != null) bits.push(`Seed 固定`);
+  const el = $("preset-echo");
+  if (el) el.textContent = bits.length ? "（変更あり: " + bits.join(" / ") + "）" : "";
+  const q = $("quality-hint");
+  if (q) q.textContent = e.megapixels ? `${e.megapixels} MP・${e.steps} ステップ` : "";
+  setText($("kv-sampler"), e.sampler || "—");
+  setText($("kv-scheduler"), e.scheduler || "—");
+  const sd = $("steps-default");
+  if (sd) sd.textContent = p.steps ? "プリセット " + p.steps : "";
+  if ($("steps") && document.activeElement !== $("steps")) $("steps").value = e.steps || "";
+}
+
 function renderModeHints() {
   const mode = state.mode;
   const inputs = (state.cfg && state.cfg.mode_inputs[mode]) || [];
@@ -136,11 +172,40 @@ function renderModeHints() {
       : mode === "motion_trace"
       ? "元動画から動き・テンポ・カメラを、人物画像から顔・服・雰囲気を取ります。プロンプトには「何を残して、何を変えたいか」を書いてください。"
       : "画像は使いません。プロンプトだけで世界観やカメラワークを探します（忠実度の設定はこのモードでは効きません）。";
-  const p = preset();
-  $("quality-hint").textContent = p.megapixels
-    ? `${p.megapixels} MP・${p.steps} ステップ`
-    : "";
+  renderPresetEcho();
+  arrangeTiers();
   renderCacheHint();
+}
+
+/* Mirrors studio/graph.py expected_cache(). Kept in one place because two
+   things read it: the forecast under the button, and which tier each control
+   is filed under. */
+const CACHE_KEYS = {
+  image_trace: ["image", "aspect_ratio", "megapixels"],
+  motion_trace: ["image", "source_video", "aspect_ratio", "megapixels",
+                 "duration", "ref_image_size"],
+  prompt_cinema: [],
+};
+
+/* The two tiers are not a fixed layout: a control is expensive only if it is
+   in THIS mode's fingerprint. Duration re-encodes a Motion Trace (the reference
+   video is truncated to the frame count) but is free for Image Trace, and
+   Prompt Cinema passes images=[] so nothing here costs an encode at all.
+   Filing 長さ permanently under "変えると解析が入る" would have told an Image
+   Trace operator to avoid a change that is free. */
+function arrangeTiers() {
+  const keys = CACHE_KEYS[state.mode] || [];
+  const cheap = $("tier-cheap"), costly = $("tier-costly");
+  if (!cheap || !costly) return;
+  const place = (blockId, keyName) => {
+    const el = $(blockId);
+    if (el) (keys.indexOf(keyName) >= 0 ? costly : cheap).appendChild(el);
+  };
+  place("blk-resolution", "megapixels");
+  place("blk-duration", "duration");
+  place("blk-refsize", "ref_image_size");
+  /* An empty "this costs 90 seconds" box is a warning about nothing. */
+  costly.hidden = costly.children.length <= 1;
 }
 
 // Mirrors studio/graph.py expected_cache(): prompt and (Image Trace only) the
@@ -153,28 +218,34 @@ function renderCacheHint() {
     image: state.image,
     source_video: state.sourceVideo,
     aspect_ratio: $("aspect").value,
-    megapixels: preset().megapixels,
+    megapixels: effective().megapixels,
     duration: Number($("duration").value),
     ref_image_size: state.refImageSize,
   };
   /* Mirrors studio/graph.py expected_cache() for all three modes. Motion Trace
      also folds duration in: the reference video is truncated to the generated
      frame count, so a different duration is a different encode. */
-  const KEYS = {
-    image_trace: ["image", "aspect_ratio", "megapixels"],
-    motion_trace: ["image", "source_video", "aspect_ratio", "megapixels",
-                   "duration", "ref_image_size"],
-    prompt_cinema: [],
-  };
-  let verdict = "MISS";
+  const KEYS = CACHE_KEYS;
+  /* Three answers, not two. lastEncoder lives only in this tab's memory and is
+     written after a successful generation, so a freshly opened Studio knows
+     nothing -- and answering "解析あり" there stated a cost nobody had measured
+     every single time the page was reloaded. */
+  let verdict = "UNKNOWN";
   if (prev && prev.prompt === cur.prompt) {
     verdict = (KEYS[state.mode] || []).every((k) => prev[k] === cur[k]) ? "HIT" : "MISS";
+  } else if (prev) {
+    verdict = "MISS";
   }
   const n = state.variations;
-  $("cache-hint").innerHTML = verdict === "HIT"
-    ? `1本目から <span class="tag HIT">キャッシュ再利用</span> — 待ち時間の長い解析は起きません。`
-    : `1本目だけ <span class="tag MISS">解析あり</span>（約60秒）、` +
-      `残り ${Math.max(0, n - 1)} 本は <span class="tag HIT">キャッシュ再利用</span>で速く出ます。`;
+  $("cache-hint").innerHTML = verdict === "UNKNOWN"
+    ? `<span class="tag UNKNOWN">解析の有無は不明</span> この画面を開き直したので、`
+      + `前回と同じ設定かどうかを判断できません。`
+    : verdict === "HIT"
+    ? `<span class="tag HIT">キャッシュ再利用</span> 解析は起きません。`
+    : n > 1
+    ? `1本目だけ <span class="tag MISS">解析あり</span>（約60秒）、` +
+      `残り ${n - 1} 本は <span class="tag HIT">キャッシュ再利用</span>で速く出ます。`
+    : `<span class="tag MISS">解析あり</span> 素材か解像度が変わったので、約60秒の解析が入ります。`;
 }
 
 // ------------------------------------------------------- Long Draft (Phase 0)
@@ -446,7 +517,12 @@ async function pollStatus() {
     const s = await api("/api/status");
     state.pollFails = 0;
     state.lastGpu = s.gpu;
+    state.batches = s.batches || [];
+    state.events = s.events || [];
     renderGpu(s.gpu);
+    renderGpuScreen(s);
+    renderSettingsScreen(s);
+    renderDelivery();
     renderStats(s.stats);
     /* A reload used to empty the results panel: state.batch only ever got set
        by submitting, so the finished videos vanished even though they were on
@@ -1295,6 +1371,15 @@ $("btn-generate").addEventListener("click", async () => {
   if (inputs.indexOf("reference_strength") >= 0 && !$("refstrength").disabled) {
     payload.reference_strength = Number($("refstrength").value);
   }
+  /* graph.build does preset.update(overrides), so anything omitted here keeps
+     the preset's value. An empty object is sent as nothing at all. */
+  const ov = overrides();
+  if (Object.keys(ov).length) payload.quality_overrides = ov;
+  /* A fixed seed is what makes two runs comparable; it is also a cache HIT, so
+     it is the one re-run that costs nothing but sampling. */
+  if (state.seedFixed != null) {
+    payload.seeds = Array.from({ length: state.variations }, (_, i) => state.seedFixed + i);
+  }
   $("btn-generate").disabled = true;
   try {
     const batch = await api("/api/generate", {
@@ -1304,7 +1389,7 @@ $("btn-generate").addEventListener("click", async () => {
     state.lastEncoder[state.mode] = {
       prompt: payload.prompt.trim(), image: payload.image,
       source_video: payload.source_video,
-      aspect_ratio: payload.aspect_ratio, megapixels: preset().megapixels,
+      aspect_ratio: payload.aspect_ratio, megapixels: effective().megapixels,
       duration: payload.duration, ref_image_size: state.refImageSize,
     };
     renderResults(batch);
@@ -1524,7 +1609,18 @@ async function loadHistory() {
         <div class="h-meta"><b>長尺 · ${JP_MODE[d.mode] || d.mode}</b>
         <span class="h-sub">${(d.source_duration || 0).toFixed(1)}秒 · ${done}/${segs.length} 本</span></div></div>`;
     }).join("");
-    $("history").innerHTML = ldRows + h.batches.map((b) => {
+    /* Decision 4: the shelf is the work in progress, not the archive. Scoped
+       to the reference video being used, so swapping the photograph keeps the
+       takes and swapping the video changes them. Everything ever made is the
+       History screen, which is where "search all of it" belongs. */
+    /* Scoping to nothing is worse than not scoping: with the page limited to
+       15 batches, a run of Image Trace work empties a Motion Trace shelf even
+       though the takes exist. Fall back, and say which list is on screen. */
+    const mine = state.sourceVideo
+      ? h.batches.filter((b) => b.source_video === state.sourceVideo) : [];
+    const scoped = mine.length ? mine : h.batches;
+    setText($("shelf-title"), mine.length ? "この素材で作ったもの" : "最近作ったもの");
+    $("history").innerHTML = ldRows + scoped.map((b) => {
       const done = b.generations.filter((g) => g.status === "done").length;
       const sel = b.generations.find((g) => g.selected);
       const shot = sel || b.generations.find((g) => g.status === "done");
@@ -1538,7 +1634,9 @@ async function loadHistory() {
         <div class="h-meta"><b>${sel ? "★ " : ""}${JP_MODE[b.mode] || b.mode}</b>
         <span class="h-sub">${JP_KIND[b.kind] || b.kind} · ${done}/${b.generations.length}本${
           b.duration ? " · " + b.duration + "秒" : ""}</span></div></div>`;
-    }).join("") || "<div class='hint'>まだ履歴はありません。</div>";
+    }).join("") || (ldRows ? "" :
+      `<div class='hint'>${state.sourceVideo
+        ? "この参照動画で作ったものはまだありません。" : "まだ履歴はありません。"}</div>`);
 
     /* Nothing on screen and nothing in this process's memory (a restarted
        Studio): show the most recent batch from history so the work is still
@@ -1605,23 +1703,18 @@ async function restoreLastInputs() {
   renderCacheHint();
   renderSourceBudget();
   refreshLongDraftPlan();
+  /* The shelf is scoped to the reference video, and until this resolves there
+     is no reference video to scope to -- so the first paint has to be redone
+     rather than left showing everything. */
+  loadHistory();
 }
 
-/* The Pod drawer. Detail lives behind a button so the column it used to fill
-   can be the shelf; anything that means "something is wrong" -- gpu-why,
-   comfy-down, the start sequence, a paid-card offer -- stays in the layout
-   above the work, because a problem nobody sees is worse than a crowded bar. */
-function setDrawer(open) {
-  const d = $("gpu-drawer");
-  if (!d) return;
-  d.hidden = !open;
-  $("btn-drawer").setAttribute("aria-expanded", open ? "true" : "false");
-}
-$("btn-drawer").addEventListener("click", () => setDrawer($("gpu-drawer").hidden));
-$("btn-drawer-close").addEventListener("click", () => setDrawer(false));
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("gpu-drawer").hidden) setDrawer(false);
-});
+/* The Pod's detail is a screen, not an overlay. 詳細 in the bar navigates to
+   it; setDrawer is kept because it is the one entry point the rest of the file
+   already knows about. */
+function setDrawer(open) { if (open) go("gpu"); }
+$("btn-drawer").addEventListener("click", () => go("gpu"));
+$("btn-drawer-close").addEventListener("click", () => go("studio"));
 
 (async function init() {
   try { await loadConfig(); maybeSuggestTags(); renderDurationHint(); }
@@ -1630,4 +1723,540 @@ document.addEventListener("keydown", (e) => {
   pollStatus();
   loadHistory();
   setInterval(loadHistory, 30000);
+})();
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Five screens
+   ═══════════════════════════════════════════════════════════════════════════
+   The router only toggles which section is shown. Every screen is in the DOM
+   from load, because the listeners above are bound by id at load: a screen
+   built lazily is a screen whose buttons do nothing. Nothing here re-renders
+   the Studio -- pollStatus keeps owning that. */
+
+const SCREENS = ["studio", "history", "assets", "gpu", "settings"];
+
+/* The live payload carries params as an object; the history DB carries the same
+   thing as the TEXT column it was stored in. Reading one shape and being handed
+   the other is why 解像度 and Steps rendered as em-dashes for every past run. */
+function paramsOf(g) {
+  const p = g && g.params;
+  if (!p) return {};
+  if (typeof p === "object") return p;
+  try { return JSON.parse(p) || {}; } catch (e) { return {}; }
+}
+
+function go(screen) {
+  if (SCREENS.indexOf(screen) < 0) screen = "studio";
+  state.screen = screen;
+  document.querySelectorAll("[data-screen]").forEach((el) => {
+    el.hidden = el.dataset.screen !== screen;
+  });
+  document.querySelectorAll("#nav button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.nav === screen);
+  });
+  try { localStorage.setItem("h3.screen", screen); } catch (e) { /* private window */ }
+  if (location.hash !== "#/" + screen) history.replaceState(null, "", "#/" + screen);
+  if (screen === "history") loadHistoryScreen();
+  if (screen === "assets") renderAssets();
+}
+
+$("nav").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-nav]");
+  if (b) go(b.dataset.nav);
+});
+window.addEventListener("hashchange", () => go((location.hash || "").replace("#/", "")));
+
+// ---------------------------------------------------------------- presets
+/* Decision 3: the preset is the entry point and rewrites every value under it.
+   Picking one clears the departures, so "標準" always means standard. */
+const PRESET_MAP = {
+  standard: { quality: "draft", megapixels: null },
+  hires:    { quality: "draft", megapixels: 1.0 },
+  final:    { quality: "final", megapixels: null },
+};
+
+function applyPreset(key) {
+  const p = PRESET_MAP[key];
+  if (!p) return;
+  state.quality = p.quality;
+  state.ov = { steps: null, megapixels: p.megapixels };
+  document.querySelectorAll("#preset-seg button").forEach((b) =>
+    b.classList.toggle("on", b.dataset.preset === key));
+  /* quality-seg is hidden but still the thing the rest of the file reads. */
+  document.querySelectorAll("#quality-seg button").forEach((b) =>
+    b.classList.toggle("on", b.dataset.quality === p.quality));
+  $("megapixels").value = p.megapixels == null ? "" : String(p.megapixels);
+  renderPresetEcho();
+  renderCacheHint();
+  renderDurationHint();
+}
+$("preset-seg").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-preset]");
+  if (b) applyPreset(b.dataset.preset);
+});
+
+/* Resolution is offered as megapixels rather than as pixels: the width and
+   height come from ComfyUI's own resolution node, and printing a w×h this file
+   computed itself would be a number nobody measured. */
+const MP_CHOICES = [
+  { v: "",    label: "プリセットのまま" },
+  { v: "0.4", label: "0.4 MP（検証済み・baseline）" },
+  { v: "0.6", label: "0.6 MP（実験）" },
+  { v: "1.0", label: "1.0 MP / 768p（実験・VRAM未検証）" },
+];
+$("megapixels").innerHTML = MP_CHOICES
+  .map((c) => `<option value="${c.v}">${c.label}</option>`).join("");
+$("megapixels").addEventListener("change", (e) => {
+  state.ov.megapixels = e.target.value === "" ? null : Number(e.target.value);
+  renderPresetEcho();
+  renderCacheHint();   // resolution IS the fingerprint: this one costs an encode
+});
+$("steps").addEventListener("input", (e) => {
+  const n = parseInt(e.target.value, 10);
+  state.ov.steps = Number.isFinite(n) && n > 0 ? n : null;
+  renderPresetEcho();  // steps are not in the fingerprint, so no forecast change
+});
+$("seed").addEventListener("input", (e) => {
+  const n = parseInt(e.target.value, 10);
+  state.seedFixed = Number.isFinite(n) ? n : null;
+  setText($("seed-hint"), state.seedFixed == null
+    ? "空欄なら毎回ランダム。数字を入れると固定されます。"
+    : "固定中。同じ設定で seed だけ変えるのは、キャッシュ再利用なので速いです。");
+  renderPresetEcho();
+});
+$("btn-seed-dice").addEventListener("click", () => {
+  $("seed").value = "";
+  state.seedFixed = null;
+  setText($("seed-hint"), "空欄なら毎回ランダム。数字を入れると固定されます。");
+  renderPresetEcho();
+});
+
+// -------------------------------------------------------------- 出力・納品
+/* What actually came out, and what was done to it afterwards. Every line here
+   is a fact the pipeline recorded -- the audio and the re-encode lines describe
+   what postprocess.deliver() really did, not an option somebody could set. */
+function renderDelivery() {
+  const el = $("delivery-body");
+  if (!el) return;
+  const b = state.batch;
+  const gens = (b && b.generations) || [];
+  const g = gens.find((x) => x.selected && x.status === "done")
+         || gens.slice().reverse().find((x) => x.status === "done");
+  if (!g) {
+    setHtml(el, '<p class="hint">まだ書き出したものがありません。</p>');
+    return;
+  }
+  const pr = paramsOf(g);
+  const rows = [
+    ["解像度", pr.megapixels ? pr.megapixels + " MP" : "—"],
+    ["長さ", pr.duration ? pr.duration + " 秒" : "—"],
+    ["fps", "24（H3 の出力）"],
+    ["Steps", pr.steps != null ? String(pr.steps) : "—"],
+    ["Seed", g.seed != null ? String(g.seed) : "—"],
+    ["解析", g.cache_result === "HIT" ? "なし（キャッシュ再利用）"
+           : g.cache_result === "MISS" ? "あり" : "—"],
+    ["生成時間", g.seconds ? fmtDuration(g.seconds) : "—"],
+  ];
+  const delivered = g.delivered;
+  setHtml(el,
+    `<video class="detail-media" controls preload="metadata" src="/api/video/${g.id}"
+       poster="/api/poster/${g.id}"></video>`
+    + '<dl class="kv">' + rows.map(([k, v]) =>
+        `<div><dt>${k}</dt><dd>${esc(String(v))}</dd></div>`).join("") + "</dl>"
+    + (delivered
+        ? '<p class="hint">納品版を再生しています — 元動画の音声と再生速度を戻し、'
+          + '映像は再エンコードしていません。</p>'
+        : '<p class="hint">生成そのままの出力です（納品版はまだありません）。</p>')
+    + '<div class="detail-acts">'
+    + `<a class="btn" href="/api/video/${g.id}" download>ダウンロード</a>`
+    + `<button class="btn" data-export="${g.id}">書き出し先に保存</button>`
+    + "</div>");
+}
+$("delivery-body").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-export]");
+  if (!b) return;
+  try {
+    const r = await api("/api/export", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ generation_id: b.dataset.export }),
+    });
+    notice("info", "保存しました: " + r.path);
+  } catch (err) { notice("error", err.message); }
+});
+
+// ------------------------------------------------------------- 2. History
+/* Its own fetch, and a bigger page than the shelf: the poll payload carries a
+   full workflow graph per generation, so the 30 s loop is left at 15 and the
+   archive is only paid for when the archive is opened. */
+let histBatches = [];
+let histSel = null;
+const histFilter = { q: "", mode: "all", st: "all", sort: "new" };
+let histLoaded = false;
+
+async function loadHistoryScreen(force) {
+  if (histLoaded && !force) { renderHist(); return; }
+  try {
+    const h = await api("/api/history?limit=60");
+    histBatches = h.batches || [];
+    histLoaded = true;
+  } catch (e) { notice("error", "履歴を読めませんでした: " + e.message); }
+  renderHist();
+}
+
+function histRows() {
+  const q = histFilter.q.trim().toLowerCase();
+  return histBatches.filter((b) => {
+    if (histFilter.mode !== "all" && b.mode !== histFilter.mode) return false;
+    const done = b.generations.some((g) => g.status === "done");
+    const err = b.generations.some((g) => g.status === "error");
+    const run = b.generations.some((g) => ["running", "queued", "submitting"].includes(g.status));
+    if (histFilter.st === "done" && !done) return false;
+    if (histFilter.st === "error" && !err) return false;
+    if (histFilter.st === "running" && !run) return false;
+    if (q && (b.prompt || "").toLowerCase().indexOf(q) < 0) return false;
+    return true;
+  }).sort((a, b) => histFilter.sort === "old" ? a.created_at - b.created_at
+    : histFilter.sort === "long" ? (b.duration || 0) - (a.duration || 0)
+    : b.created_at - a.created_at);
+}
+
+function renderHist() {
+  const facet = (id, opts, key) => {
+    setHtml($(id), opts.map(([v, label, n]) =>
+      `<button data-f="${v}" class="${histFilter[key] === v ? "on" : ""}">${label}<i>${n}</i></button>`
+    ).join(""));
+  };
+  const countMode = (m) => histBatches.filter((b) => m === "all" || b.mode === m).length;
+  facet("hist-modes", [["all", "すべて", countMode("all")],
+    ["motion_trace", JP_MODE.motion_trace, countMode("motion_trace")],
+    ["image_trace", JP_MODE.image_trace, countMode("image_trace")],
+    ["prompt_cinema", JP_MODE.prompt_cinema, countMode("prompt_cinema")]], "mode");
+  const cs = (f) => histBatches.filter(f).length;
+  facet("hist-states", [["all", "すべて", histBatches.length],
+    ["done", "完成", cs((b) => b.generations.some((g) => g.status === "done"))],
+    ["running", "生成中", cs((b) => b.generations.some((g) => ["running", "queued", "submitting"].includes(g.status)))],
+    ["error", "失敗", cs((b) => b.generations.some((g) => g.status === "error"))]], "st");
+
+  const rows = histRows();
+  setText($("hist-count"), `${rows.length} 件 / 全 ${histBatches.length} 件`);
+  setHtml($("hist-grid"), rows.map((b) => {
+    const sel = b.generations.find((g) => g.selected);
+    const shot = sel || b.generations.find((g) => g.status === "done");
+    const err = !shot && b.generations.some((g) => g.status === "error");
+    const d = new Date((b.created_at || 0) * 1000);
+    const when = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    return `<div class="tile ${histSel === b.id ? "on" : ""}" data-hb="${b.id}"
+        title="${esc(b.prompt || "")}">
+      ${thumb(shot && shot.id)}
+      <div class="t-meta"><b>${esc((b.prompt || "（プロンプトなし）").slice(0, 28))}</b>
+        <span>${when} · ${b.duration ? b.duration + "秒" : "—"}</span>
+        <div class="badges"><span class="badge">${JP_MODE[b.mode] || b.mode}</span>
+          <span class="badge ${b.kind === "final" ? "final" : ""}">${JP_KIND[b.kind] || b.kind}</span>
+          ${err ? '<span class="badge err">失敗</span>' : ""}</div>
+      </div></div>`;
+  }).join("") || '<p class="hint">条件に合う履歴がありません。</p>');
+}
+
+$("hist-q").addEventListener("input", (e) => { histFilter.q = e.target.value; renderHist(); });
+$("hist-sort").addEventListener("change", (e) => { histFilter.sort = e.target.value; renderHist(); });
+$("hist-modes").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-f]"); if (!b) return;
+  histFilter.mode = b.dataset.f; renderHist();
+});
+$("hist-states").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-f]"); if (!b) return;
+  histFilter.st = b.dataset.f; renderHist();
+});
+
+$("hist-grid").addEventListener("click", (e) => {
+  const t = e.target.closest("[data-hb]"); if (!t) return;
+  histSel = t.dataset.hb;
+  renderHist();
+  renderHistDetail(histBatches.find((b) => b.id === histSel));
+});
+
+function renderHistDetail(b) {
+  if (!b) return;
+  const sel = b.generations.find((g) => g.selected);
+  const shot = sel || b.generations.find((g) => g.status === "done") || b.generations[0] || {};
+  const pr = paramsOf(shot);
+  const d = new Date((b.created_at || 0) * 1000);
+  const kv = [
+    ["生成モード", JP_MODE[b.mode] || b.mode],
+    ["種類", JP_KIND[b.kind] || b.kind],
+    ["作成", d.toLocaleString("ja-JP")],
+    ["長さ", b.duration ? b.duration + " 秒" : "—"],
+    ["縦横比", b.aspect_ratio || "—"],
+    ["解像度", pr.megapixels ? pr.megapixels + " MP" : "—"],
+    ["Steps", pr.steps != null ? String(pr.steps) : "—"],
+    ["Seed", shot.seed != null ? String(shot.seed) : "—"],
+    ["忠実度", b.reference_strength != null ? String(b.reference_strength) : "—"],
+    ["再現精度", b.ref_image_size || "—"],
+    ["解析", shot.cache_result === "HIT" ? "なし（再利用）"
+           : shot.cache_result === "MISS" ? "あり" : "—"],
+  ];
+  const mat = [];
+  if (b.image) mat.push(`<img class="mat" src="/api/input/${encodeURIComponent(b.image)}" alt="" title="${esc(b.image)}">`);
+  if (b.source_video) mat.push(`<img class="mat" src="/api/input/${encodeURIComponent(b.source_video)}?poster=1" alt="" title="${esc(b.source_video)}">`);
+
+  setHtml($("hist-detail"),
+    (shot.status === "done"
+      ? `<video class="detail-media" controls preload="metadata" src="/api/video/${shot.id}" poster="/api/poster/${shot.id}"></video>`
+      : '<p class="hint">再生できる出力がありません。</p>')
+    + `<p class="hint">${esc(b.prompt || "")}</p>`
+    + (mat.length ? '<div class="mats">' + mat.join("") + "</div>" : "")
+    + '<dl class="kv">' + kv.map(([k, v]) =>
+        `<div><dt>${k}</dt><dd>${esc(String(v))}</dd></div>`).join("") + "</dl>"
+    + '<div class="detail-acts">'
+    + `<button class="btn btn-primary" data-open="${b.id}">Studio で開く</button>`
+    + (shot.status === "done" ? `<a class="btn" href="/api/video/${shot.id}" download>ダウンロード</a>` : "")
+    + "</div>");
+}
+
+/* The reason this screen exists (指示書 §5): a past generation comes back as a
+   starting point, not as a video to look at. Everything the form can hold is
+   restored; the material is restored by name, which is what /api/input serves. */
+$("hist-detail").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-open]"); if (!b) return;
+  const batch = histBatches.find((x) => x.id === b.dataset.open);
+  if (batch) openInStudio(batch);
+});
+
+function setMode(mode) {
+  if (!mode) return;
+  state.mode = mode;
+  document.querySelectorAll("#mode-seg button").forEach((x) =>
+    x.classList.toggle("on", x.dataset.mode === mode));
+  renderModeHints();
+}
+
+function openInStudio(b) {
+  setMode(b.mode);
+  applyPreset(b.kind === "final" ? "final" : "standard");
+  $("prompt").value = b.prompt || "";
+  if (b.aspect_ratio) $("aspect").value = b.aspect_ratio;
+  if (b.duration) $("duration").value = b.duration;
+  if (b.reference_strength != null && !$("refstrength").disabled) {
+    $("refstrength").value = b.reference_strength;
+    setText($("ref-value"), String(b.reference_strength));
+  }
+  if (b.ref_image_size) {
+    state.refImageSize = b.ref_image_size;
+    document.querySelectorAll("#refsize-seg button").forEach((x) =>
+      x.classList.toggle("on", x.dataset.refsize === b.ref_image_size));
+  }
+  if (b.image) {
+    state.image = b.image;
+    state.localPath = b.image_source || null;
+    $("image-preview").src = "/api/input/" + encodeURIComponent(b.image);
+    $("image-preview").hidden = false;
+    setText($("image-status"), b.image);
+  }
+  if (b.source_video) {
+    state.sourceVideo = b.source_video;
+    try { state.sourceVideoMeta = JSON.parse(b.source_video_meta || "null"); } catch (err) { /* older row */ }
+    const v = $("video-preview");
+    v.src = "/api/input/" + encodeURIComponent(b.source_video);
+    v.poster = "/api/input/" + encodeURIComponent(b.source_video) + "?poster=1";
+    v.hidden = false;
+  }
+  go("studio");
+  /* pollStatus locks onto whatever state.batch holds, so painting a past batch
+     into the centre while something is generating replaces the running take
+     with a finished one and the operator loses sight of the work they are
+     paying for. Restore the settings either way; only take over the preview
+     when nothing is in flight. */
+  if (state.busy) {
+    notice("info", "設定を戻しました。生成中なので、プレビューは動いている方を表示したままにします。");
+  } else {
+    renderResults(historyBatchToView(b));
+  }
+  renderDurationHint();
+  renderSourceBudget();
+  renderCacheHint();
+  loadHistory();
+  if (!state.busy) {
+    notice("info", "この生成の設定を Studio に戻しました。素材とプロンプトはそのまま使えます。");
+  }
+}
+
+// -------------------------------------------------------------- 3. Assets
+/* Derived from history, not from a new table: an asset here is a file this
+   Studio actually generated with. Nothing is written, nothing is indexed, and
+   there is no second place for material to live. Deletion is honestly absent
+   -- there is no endpoint that removes a file. */
+let assetKind = "all";
+let assetSel = null;
+
+function assetIndex() {
+  const src = histLoaded ? histBatches : (state.batches || []);
+  const m = new Map();
+  for (const b of src) {
+    for (const [name, kind] of [[b.image, "image"], [b.source_video, "video"]]) {
+      if (!name) continue;
+      const cur = m.get(name) || { name, kind, uses: 0, last: 0, gen: null };
+      cur.uses += 1;
+      if ((b.created_at || 0) > cur.last) {
+        cur.last = b.created_at || 0;
+        const shot = (b.generations || []).find((g) => g.status === "done");
+        cur.gen = shot ? shot.id : cur.gen;
+        cur.batch = b;
+      }
+      m.set(name, cur);
+    }
+  }
+  return Array.from(m.values()).sort((a, b) => b.last - a.last);
+}
+
+function renderAssets() {
+  const all = assetIndex();
+  setText($("ac-all"), all.length + " 点");
+  setText($("ac-image"), all.filter((a) => a.kind === "image").length + " 点");
+  setText($("ac-video"), all.filter((a) => a.kind === "video").length + " 点");
+  const rows = all.filter((a) => assetKind === "all" || a.kind === assetKind);
+  setHtml($("asset-grid"), rows.map((a) => {
+    const url = "/api/input/" + encodeURIComponent(a.name) + (a.kind === "video" ? "?poster=1" : "");
+    const d = new Date(a.last * 1000);
+    return `<div class="tile ${assetSel === a.name ? "on" : ""}" data-asset="${esc(a.name)}">
+      <img src="${url}" alt="" loading="lazy"
+        onerror="this.outerHTML='&lt;div class=\\'h-thumb none\\'&gt;NO PREVIEW&lt;/div&gt;'">
+      <div class="t-meta"><b>${esc(a.name)}</b>
+        <span>${a.kind === "video" ? "参照動画" : "人物画像"} · ${a.uses} 回使用</span>
+        <span>${d.getMonth() + 1}/${d.getDate()} 最終使用</span>
+      </div></div>`;
+  }).join("") || '<p class="hint">まだ素材がありません。生成すると、ここに使った素材が並びます。</p>');
+}
+
+$("asset-kinds").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-kind]"); if (!b) return;
+  assetKind = b.dataset.kind;
+  document.querySelectorAll("#asset-kinds button").forEach((x) =>
+    x.classList.toggle("on", x === b));
+  renderAssets();
+});
+
+$("asset-grid").addEventListener("click", (e) => {
+  const t = e.target.closest("[data-asset]"); if (!t) return;
+  assetSel = t.dataset.asset;
+  renderAssets();
+  const a = assetIndex().find((x) => x.name === assetSel);
+  if (!a) return;
+  const url = "/api/input/" + encodeURIComponent(a.name);
+  setHtml($("asset-detail"),
+    (a.kind === "video"
+      ? `<video class="detail-media" controls preload="metadata" src="${url}" poster="${url}?poster=1"></video>`
+      : `<img class="detail-media" src="${url}" alt="">`)
+    + '<dl class="kv">'
+    + `<div><dt>種類</dt><dd>${a.kind === "video" ? "参照動画" : "人物画像"}</dd></div>`
+    + `<div><dt>使用回数</dt><dd>${a.uses} 回</dd></div>`
+    + `<div><dt>最後に使用</dt><dd>${new Date(a.last * 1000).toLocaleString("ja-JP")}</dd></div>`
+    + "</dl>"
+    + '<div class="detail-acts">'
+    + `<button class="btn btn-primary" data-use="${esc(a.name)}">この素材で作る</button>`
+    + "</div>");
+});
+
+$("asset-detail").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-use]"); if (!b) return;
+  const a = assetIndex().find((x) => x.name === b.dataset.use);
+  if (a && a.batch) openInStudio(a.batch);
+});
+
+// ----------------------------------------------------------------- 4. GPU
+/* The queue and the log. The Pod card, the cost and the auto-stop are the same
+   elements the drawer held -- renderGpuCard / renderGpuCost still fill them. */
+function renderGpuScreen(s) {
+  const el = $("gpu-queue");
+  if (!el) return;
+  const active = [];
+  for (const b of (s.batches || [])) {
+    for (const g of (b.generations || [])) {
+      if (["running", "queued", "submitting"].includes(g.status)) active.push([b, g]);
+    }
+  }
+  setHtml(el, active.length ? active.map(([b, g]) => `
+    <div class="qrow">
+      <b>${JP_MODE[b.mode] || b.mode} · ${JP_KIND[b.kind] || b.kind}</b>
+      <div class="qsub">${esc(genStateText(g))}${
+        g.seconds ? " · " + fmtDuration(g.seconds) : ""}</div>
+      <div class="bar-progress ${genIndeterminate(g) ? "indeterminate" : ""}">
+        <i style="width:${Math.round(genProgress(g, Date.now() / 1000) * 100)}%"></i></div>
+      <div class="qsub">${esc(genTiming(g, Date.now() / 1000) || "")}</div>
+    </div>`).join("")
+    : '<p class="hint">生成は動いていません。</p>');
+
+  setHtml($("gpu-events"), (s.events || []).slice().reverse().map((ev) => {
+    const d = new Date((ev.t || 0) * 1000);
+    return `<div class="lv-${ev.level}"><time>${String(d.getHours()).padStart(2, "0")}:${
+      String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}</time>
+      <span>${esc(ev.text || "")}</span></div>`;
+  }).join("") || '<p class="hint">まだログはありません。</p>');
+}
+
+// ------------------------------------------------------------ 5. Settings
+/* 指示書 §8 says this screen is "next time's default behaviour". H3 Studio does
+   not persist per-generation defaults, so inventing switches here would be five
+   controls that forget. What it shows instead is what is genuinely in force --
+   with an input only where something can actually be changed. */
+function renderSettingsScreen(s) {
+  const el = $("settings-body");
+  if (!el) return;
+  const g = (s && s.gpu) || state.lastGpu || {};
+  const cfg = state.cfg || {};
+  const grp = (title, rows) => `<div class="setgrp"><h3>${title}</h3><dl class="kv">`
+    + rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(String(v == null ? "—" : v))}</dd></div>`).join("")
+    + "</dl></div>";
+  setHtml(el,
+    grp("納品（生成のたびに自動で実行されます）", [
+      ["元動画の音声を戻す", "する"],
+      ["元の再生速度に戻す", "する"],
+      ["映像の再エンコード", "しない（-c:v copy）"],
+      ["Raw 出力", "残す"],
+      ["再生に使うファイル", "納品版があれば納品版"],
+    ])
+    + grp("RunPod", [
+      ["接続", g.have_api_key ? "APIキーあり" : "APIキーを読めません"],
+      ["Pod", g.pod_id || "—"],
+      ["GPU", g.gpu || "—"],
+      ["時間単価", g.hourly_usd != null ? "$" + Number(g.hourly_usd).toFixed(2) + " / 時" : "—"],
+      ["Network Volume", g.network_volume_id || "—"],
+      ["データセンター", g.datacenter || "—"],
+    ])
+    + grp("ComfyUI", [
+      ["接続先", g.comfy_url || "—"],
+      ["状態", g.comfy_liveness === "live" ? "応答あり"
+             : g.comfy_liveness === "dead" ? "応答なし" : "不明"],
+      ["Reference Strength ノード",
+       (cfg.reference_strength || {}).available === false ? "未導入" : "あり"],
+      ["Turbo LoRA", (cfg.draft_quality || {}).available === false ? "未導入"
+        : (cfg.draft_quality || {}).available === true ? "あり" : "不明（GPU停止中）"],
+    ])
+    + grp("保存先", [
+      ["書き出し先", cfg.output_dir || "—"],
+      ["Studio", "このMac（127.0.0.1:8010）"],
+    ])
+    + grp("このアプリ", [
+      ["バージョン", s && s.studio_version ? s.studio_version : "—"],
+      ["起動からの時間", s && s.uptime_seconds ? fmtDuration(s.uptime_seconds) : "—"],
+      ["生成した本数", s && s.stats ? s.stats.generations + " 本" : "—"],
+    ]));
+}
+
+$("btn-doctor").addEventListener("click", async () => {
+  setText($("doctor-out"), "点検中…");
+  try {
+    const d = await api("/api/doctor");
+    setHtml($("doctor-out"), (d.checks || []).map((c) =>
+      `<div class="lv-${c.status === "PASS" ? "" : c.status === "WARN" ? "warn" : "error"}">
+        ${c.status === "PASS" ? "✓" : c.status === "WARN" ? "!" : "✗"} ${esc(c.check)}
+        <span class="dim">${esc(c.detail || "")}</span></div>`).join(""));
+  } catch (e) { setText($("doctor-out"), "点検できませんでした: " + e.message); }
+});
+
+/* Come back to the screen that was open. A reload during a 20 minute
+   generation should not send you to the front page. */
+(function restoreScreen() {
+  let want = (location.hash || "").replace("#/", "");
+  if (!want) { try { want = localStorage.getItem("h3.screen") || "studio"; } catch (e) { want = "studio"; } }
+  go(want);
 })();
