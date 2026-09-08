@@ -40,13 +40,31 @@ curl -fsS --max-time 5 "$BASE/api/config" >/dev/null && ok "Studio responds on $
   || { no "Studio did not start (see $LOG)"; exit 1; }
 
 # ---- 2. Pod stopped -> START GPU -> ready ----
-STATE="$(api /api/status '' 30 | python3 -c 'import json,sys;print(json.load(sys.stdin)["gpu"].get("pod_state"))')"
-say "initial Pod state: $STATE"
-say "starting GPU (this is where billing resumes)"
-START_JSON="$(api /api/gpu/start '{}' 900)"
-echo "$START_JSON" | tee -a "$LOG" | python3 -m json.tool >/dev/null 2>&1 || true
-echo "$START_JSON" | grep -q '"ok": true' && ok "START GPU: Pod RUNNING + ComfyUI healthy" \
-  || { no "START GPU failed: $START_JSON"; }
+# Two things this has to get right, both learned the hard way:
+#
+#   * /api/gpu/start is asynchronous. It answers the moment the sequence is
+#     accepted, so "ok": true is only ever in the reply when the caller asks it
+#     to wait. Posting {} and grepping for "ok": true failed every single time
+#     regardless of whether the Pod came up -- and a FAIL here deletes
+#     results/V2_READY, which is a real measurement, over a bug in the check.
+#   * the start guard refuses to run while any Pod is RUNNING, because two
+#     ComfyUI processes must never share the network volume. That guard is
+#     right, but it also means this script cannot start a GPU that is already
+#     up. An already-running, already-healthy Pod is the passing state, not a
+#     failure -- validate on it instead of bouncing it.
+POD_JSON="$(api /api/status '' 30)"
+STATE="$(echo "$POD_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["gpu"].get("pod_state"))')"
+READY="$(echo "$POD_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["gpu"].get("comfy_ready"))')"
+say "initial Pod state: $STATE (comfy_ready=$READY)"
+if [[ "$STATE" == "RUNNING" && "$READY" == "True" ]]; then
+  ok "GPU already RUNNING + ComfyUI healthy -- validating on it, not restarting"
+else
+  say "starting GPU (this is where billing resumes)"
+  START_JSON="$(api /api/gpu/start '{"wait_seconds":900}' 960)"
+  echo "$START_JSON" | tee -a "$LOG" | python3 -m json.tool >/dev/null 2>&1 || true
+  echo "$START_JSON" | grep -q '"ok": true' && ok "START GPU: Pod RUNNING + ComfyUI healthy" \
+    || { no "START GPU failed: $START_JSON"; }
+fi
 
 api /api/status '' 30 | python3 -c '
 import json,sys
