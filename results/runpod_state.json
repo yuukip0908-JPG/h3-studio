@@ -23,7 +23,7 @@
     "containerDiskInGb": 60,
     "cloudType": "SECURE"
   },
-  "podId": "wu98ylaz5rp7k9",
+  "podId": "4rnvt6xl3l7dwg",
   "networkVolumeId": "olmj77x4pc",
   "status": "BASELINE_READY",
   "lastUpdated": "2026-09-09",
@@ -33,7 +33,7 @@
   "sshPort": null,
   "costPerHrTotal": 0.84,
   "gpuUsdPerHour": 1.59,
-  "comfyUrl": "https://wu98ylaz5rp7k9-8188.proxy.runpod.net",
+  "comfyUrl": "https://4rnvt6xl3l7dwg-8188.proxy.runpod.net",
   "accountSpendRatePerHr": 0.867,
   "comfyuiCommit": "169fcf35a2fc163fec31338b816503ddac0d3fcf",
   "clipcachedCommit": "f17ba8f369740a02a2138031517f853eb67b9d43",
@@ -59,9 +59,10 @@
     "9e4742fx6vlhqv",
     "63zwtjnt82nid4",
     "4g4zkc5c89sxt4",
-    "l5rih7kh3rdxn6"
+    "l5rih7kh3rdxn6",
+    "wu98ylaz5rp7k9"
   ],
-  "previousPodId": "l5rih7kh3rdxn6",
+  "previousPodId": "wu98ylaz5rp7k9",
   "podCleanup": "2026-09-07: six unused Pods deleted, then the redundant A100 y9ts66clj5wml6, all on the operator's instruction and all through the four-condition guard. Remaining: nkiurl6132qe5t (active, RTX 6000 Ada $0.84/hr) and ufhtfdg9ulv3fj (backup). Network volume olmj77x4pc (200GB, US-WA-1) verified present after every deletion.",
   "gpuVerified": false,
   "gpuVerifiedFor": null,

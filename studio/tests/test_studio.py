@@ -92,8 +92,23 @@ class StudioTestCase(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def make_manager(self):
+        """A manager that stops when the test does.
+
+        This used to start one and never stop it. make_manager is called 103
+        times across the suite, and every JobManager runs a poll loop that
+        wakes every two seconds, so by the end of a run something like a
+        hundred of them were polling mock servers at once. Tests that wait for
+        a generation then miss deadlines they clear in 13 seconds on their
+        own -- which is why the suite went from green at 463 tests to nine
+        timeouts at 514 while the total runtime barely moved: the failures
+        were the later tests, starved by the earlier ones.
+
+        shutdown() only sets an event and stops the listener, so a test that
+        already calls it is unaffected by this running again.
+        """
         self.manager = jobs.JobManager(comfy=comfy_client.ComfyClient(self.url))
         self.manager.start()
+        self.addCleanup(self.manager.shutdown)
         return self.manager
 
     def wait_batch(self, batch, timeout=40.0):
@@ -2318,6 +2333,43 @@ class CostGuardTests(unittest.TestCase):
         self.assertEqual(st["idle_minutes"], config.RECOMMENDED_AUTO_STOP_MINUTES)
         self.assertIn(st["idle_minutes"], config.AUTO_STOP_CHOICES)
 
+    def test_reading_never_counts_as_activity(self):
+        """Three timers on the page hit the API while nobody is doing anything.
+
+        This was a deny-list of poll paths. Adding /api/premiere to the page on
+        2026-09-09 without adding it to that list reset the idle timer every
+        eight seconds, so the guard could not fire for anyone with the tab
+        open. Measured: idle_seconds went 1 -> 0 across one GET.
+
+        The rule is now uniform, so a fourth timer cannot break it: a GET is
+        reading, and reading is not work. Everything that spends money or
+        changes state is a POST.
+        """
+        srv = io.open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "server.py"), encoding="utf-8").read()
+        i = srv.find("if GUARD and")
+        self.assertGreater(i, 0)
+        line = srv[i:srv.find("\n", i)]
+        self.assertIn('method != "GET"', line)
+        # The old shape must not come back.
+        self.assertNotIn("/api/status", line)
+        self.assertNotIn("path not in", line)
+
+    def test_every_endpoint_the_page_polls_is_a_get(self):
+        """The rule above only holds while the timers stay read-only."""
+        js = io.open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "static", "app.js"), encoding="utf-8").read()
+        polled = re.findall(r"setInterval\(\s*(\w+)", js)
+        self.assertTrue(polled, "no timers found -- has the page changed shape?")
+        for fn in set(polled):
+            m = re.search(r"function %s\s*\([^)]*\)\s*\{" % re.escape(fn), js)
+            if not m:
+                continue
+            body = js[m.end():m.end() + 2000]
+            for call in re.findall(r'api\(\s*"([^"]+)"[^)]*\)', body):
+                self.assertNotIn("method", body[body.find(call):body.find(call) + 120],
+                                 "%s polls %s with a method argument" % (fn, call))
+
     def test_a_busy_studio_is_never_stopped_by_the_default(self):
         """The default only became safe to turn on because of this."""
         from studio import runpod_ctl
@@ -4422,7 +4474,13 @@ class StartupRecoveryTests(StudioTestCase):
         self.assertIsNotNone(recovered, "the submitting row was not recovered")
         self.assertTrue(wait_until(lambda: recovered.prompt_id == real_pid, 15),
                         "the prompt was never matched back by its filename prefix")
-        self.assertEqual(history.get_generation(gen.id)["prompt_id"], real_pid)
+        # The row is written after the attribute is set, so reading it on the
+        # next line asserted a value that had not been persisted yet. It held
+        # while the machine was idle and failed once the suite got busy, which
+        # is the least useful way for a test to be wrong.
+        self.assertTrue(wait_until(
+            lambda: (history.get_generation(gen.id) or {}).get("prompt_id") == real_pid, 15),
+            "the matched prompt id was never written to history")
 
     def test_a_job_comfyui_never_heard_of_is_not_failed_on_sight(self):
         _batch, gens = self._submit_and_forget(seconds=6.0)
@@ -5928,6 +5986,55 @@ class IdentityWeightTests(unittest.TestCase):
         i = src.find("signature = self._submit_signature(")
         self.assertGreater(i, 0)
         self.assertIn("extra_images=tuple(extra_images or ())", src[i:i + 900])
+
+
+class RefusedBeforeItCostsAnythingTests(unittest.TestCase):
+    """Values ComfyUI will reject, caught here instead of after a Pod start.
+
+    The seed one happened for real on 2026-09-09: a number input with no min
+    let its spinner reach -2, RandomNoise declares noise_seed as INT min 0, and
+    the round trip cost two Pod starts to discover. These are cheap to assert
+    and the failure they prevent is measured in dollars, not in wrong pixels.
+
+    An HTML min/max is advisory -- it stops the spinner, not the keyboard, and
+    it is not there at all for a caller using the API directly -- so the
+    refusal has to live in graph.build.
+    """
+
+    def _build(self, **kw):
+        opts = dict(image="a.png", source_video="v.mp4")
+        opts.update(kw)
+        return graph.build("motion_trace", "x", opts.pop("seed", 1), **opts)
+
+    def test_a_length_of_zero_or_less_is_refused(self):
+        for bad in (0.0, -2.0):
+            with self.assertRaises(graph.GraphError):
+                self._build(duration=bad)
+
+    def test_a_step_count_below_one_is_refused(self):
+        with self.assertRaises(graph.GraphError):
+            self._build(overrides={"steps": 0})
+
+    def test_a_negative_seed_is_refused(self):
+        with self.assertRaises(graph.GraphError):
+            self._build(seed=-2)
+
+    def test_a_long_take_is_still_allowed(self):
+        """18 seconds is past H3's trained range and generates anyway; the page
+        warns beyond 362 frames. Refusing it here would remove a length the
+        project deliberately keeps (docs/V2_KNOWN_LIMITATIONS.md)."""
+        p, params = self._build(duration=18.0)
+        self.assertEqual(params["duration"], 18.0)
+
+    def test_every_numeric_input_declares_its_range(self):
+        """So the spinner cannot walk into a value the server will refuse."""
+        html = io.open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "static", "index.html"),
+            encoding="utf-8").read()
+        for tag in re.findall(r'<input[^>]*type="number"[^>]*>', html):
+            name = re.search(r'id="([^"]+)"', tag)
+            self.assertIn("min=", tag, "no min on %s" % (name and name.group(1)))
+            self.assertIn("max=", tag, "no max on %s" % (name and name.group(1)))
 
 
 class WaitReadabilityTests(unittest.TestCase):

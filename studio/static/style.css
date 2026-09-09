@@ -519,11 +519,16 @@ input[type=file]{font-size:12px;color:var(--dim)}
    Every number here was already on the panel, at 12px in a corner, under two
    buttons that cannot be pressed while it runs. */
 .card .prog{grid-column:2;grid-row:2;padding:4px 16px 0;align-self:start}
-.card .p-hero{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+/* Reserved, so the encode -> sampling change does not move the panel. */
+.card .p-hero{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  min-height:38px}
 .card .p-pct{font-size:34px;line-height:1;font-weight:650;color:var(--fg);
   font-variant-numeric:tabular-nums;letter-spacing:-.01em}
 .card .p-pct i{font-size:17px;font-style:normal;color:var(--dim);margin-left:2px}
 /* No percentage during the encode, so the phase name takes the same slot. */
+/* The clock stands in the percentage's slot while there is nothing to count,
+   at the same size, so the number changes meaning without changing shape. */
+.card .p-clock{font-size:30px;letter-spacing:0}
 .card .p-state{font-size:19px;line-height:1.15;font-weight:600;color:var(--fg)}
 .card .p-left{font-size:15px;color:var(--fg);font-variant-numeric:tabular-nums}
 .card .p-sub{margin-top:5px;font-size:11.5px;color:var(--dim);

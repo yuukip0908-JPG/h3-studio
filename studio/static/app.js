@@ -932,15 +932,31 @@ function renderProgress(box, g, now) {
   /* No percentage during the encode: ComfyUI sends no progress at all there,
      and a bar driven by elapsed-against-estimate is a guess in a bar's
      clothing. Say what it is doing instead of inventing a number. */
+  /* The encode runs for two minutes with no progress events at all, and then
+     sampling starts. That used to swap a 19px phase name for a 34px
+     percentage and fill an until-then empty slot beside it, moving everything
+     below down by 14px -- measured -- after two minutes of a motionless
+     panel. Both halves of the top line are now occupied in both states and
+     the row keeps its height, so the change is a change of numbers rather
+     than of layout.
+
+     What is deliberately not done is showing a percentage during the encode:
+     there is nothing to count, and a bar driven by elapsed-against-estimate
+     is a guess wearing a progress bar's clothes. The clock is honest -- it is
+     the only number that exists yet -- so it takes the same slot the
+     percentage will take. */
+  const elapsed = g.started_at ? fmtDuration(now / 1000 - g.started_at) : "";
   const hero = vague
-    ? `<span class="p-state">${esc(genStateText(g))}</span>`
+    ? `<span class="p-pct p-clock">${esc(elapsed || "--")}</span>`
     : `<span class="p-pct">${Math.round(genProgress(g, now) * 100)}<i>%</i></span>`;
-  const eta = left != null && left > 3
-    ? `<span class="p-left">残り約 ${esc(fmtDuration(left))}</span>` : "";
+  const eta = vague
+    ? `<span class="p-left">${esc(genStateText(g))}</span>`
+    : (left != null && left > 3
+       ? `<span class="p-left">残り約 ${esc(fmtDuration(left))}</span>` : "");
   const sub = vague
-    ? (g.started_at ? `${fmtDuration(now / 1000 - g.started_at)} 経過` : "")
+    ? `${esc(g.phase_label || "準備中")} · 経過時間`
     : `${esc(g.phase_label || "Sampling")} ${s.value | 0} / ${s.max | 0}`
-      + (g.started_at ? ` · ${fmtDuration(now / 1000 - g.started_at)} 経過` : "");
+      + (elapsed ? ` · ${elapsed} 経過` : "");
 
   const done = g.phase_seconds || {};
   /* The server sends these so a rename cannot leave the checklist naming a

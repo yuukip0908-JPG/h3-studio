@@ -545,10 +545,20 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path.startswith("/api/"):
                 # Polls are not activity. The page asks for /api/status every
-                # few seconds and /api/history every 30, so counting either as
-                # "the operator is working" meant an idle auto-stop could never
-                # fire and a forgotten Pod billed until it was noticed by hand.
-                if GUARD and path not in ("/api/status", "/api/history"):
+                # few seconds, /api/history every 30 and /api/premiere every 8,
+                # so counting those as "the operator is working" means an idle
+                # auto-stop can never fire and a forgotten Pod bills until
+                # somebody notices by hand.
+                #
+                # This was a list of paths to exclude, and adding a third poll
+                # to the page without adding it here silently disabled the
+                # guard for anyone with the tab open -- which is everyone.
+                # A list that has to be updated in a second file every time the
+                # page grows a timer is a list that will be wrong again, so the
+                # rule no longer needs maintaining: reading is never activity.
+                # Every poll is a GET; everything that spends money or changes
+                # state is not.
+                if GUARD and method != "GET":
                     GUARD.touch()
                 return self._api(method, path, query)
             return self._static(path)

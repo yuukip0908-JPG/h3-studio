@@ -277,7 +277,7 @@
             <div class="field" id="field-seed">
               <label>Seed</label>
               <div class="with-btn">
-                <input type="number" id="seed" placeholder="毎回ランダム" min="0" step="1">
+                <input type="number" id="seed" placeholder="毎回ランダム" min="0" max="18446744073709551615" step="1">
                 <button id="btn-seed-dice" class="btn btn-ghost" title="ランダムに戻す">🎲</button>
               </div>
             </div>
@@ -485,6 +485,14 @@
   <section class="panel col" id="panel-set-diag">
     <h2>点検</h2>
     <div class="pane-body">
+      <!-- Colour, interpolation, reframing and export are Premiere's work;
+           this Studio stops at a correct file and hands it over. The status is
+           read from the bridge panel's own heartbeat, so it says what is true
+           rather than what was true when the page loaded. -->
+      <div class="setgrp">
+        <h3>Premiere Pro</h3>
+        <div id="premiere-status" class="hint">確認中…</div>
+      </div>
       <button id="btn-doctor" class="btn">点検する</button>
       <div id="doctor-out" class="hint"></div>
     </div>

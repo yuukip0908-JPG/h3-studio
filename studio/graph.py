@@ -493,6 +493,19 @@ def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
     # the way to ComfyUI and comes back as an HTTP 400 -- after a Pod has been
     # started and paid for. The number input had no min attribute, so the
     # spinner walked below zero on its own.
+    # A length or a step count of zero is not a request anybody makes on
+    # purpose, and neither survives ComfyUI -- but the way it is discovered
+    # matters: without this it is an HTTP 400 after a Pod has been started and
+    # paid for. Both inputs had no min attribute, so their spinners walked
+    # down through zero the same way the seed's did.
+    #
+    # No upper bound. 18 seconds is over H3's trained range and generates
+    # anyway (docs/V2_KNOWN_LIMITATIONS.md), and the page already warns past
+    # 362 frames. Refusing it here would take away a length the project has
+    # deliberately kept.
+    if float(duration) <= 0:
+        raise GraphError("尺は 0 秒より長くしてください（受け取った値: %s）" % duration)
+
     if int(seed) < 0:
         raise GraphError("seed は 0 以上にしてください（受け取った値: %d）" % int(seed))
 
@@ -526,6 +539,9 @@ def build(mode, prompt_text, seed, *, quality="draft", duration=2.0,
         if not lora_file:
             raise GraphError("no Turbo LoRA is defined for %s" % mode)
         insert_turbo_lora(p, lora_file, turbo_strength)
+
+    if int(steps) < 1:
+        raise GraphError("steps は 1 以上にしてください（受け取った値: %s）" % steps)
 
     sched = one_id(p, "BasicScheduler")
     p[sched]["inputs"]["scheduler"] = preset["scheduler"]
