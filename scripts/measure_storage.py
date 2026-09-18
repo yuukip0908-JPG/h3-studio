@@ -65,17 +65,32 @@ def acquire():
                 % pod["id"])
             return pod["id"], runpod_ctl.describe(pod["id"]), False
 
-    existing = [p["id"] for p in runpod_ctl.list_pods()
-                if p.get("networkVolumeId") == VOLUME]
-    for pod_id in existing[:1]:
-        log("restart %s" % pod_id)
+    # One candidate per host machine, not one candidate. A refused start says
+    # "not enough free GPUs on the host machine to start this pod" -- the
+    # shortage is per host, and these Pods are spread over eight of them, so
+    # trying a single Pod throws away seven chances. A start that is refused
+    # costs nothing: three refusals were measured at $0.00.
+    by_host, order = {}, []
+    for pod in runpod_ctl.list_pods():
+        if pod.get("networkVolumeId") != VOLUME:
+            continue
+        host = (pod.get("machine") or {}).get("machineId") or pod["id"]
+        if host not in by_host:
+            by_host[host] = pod["id"]
+            order.append(host)
+    log("%d stopped Pods across %d host machines -- trying one per host"
+        % (len(by_host), len(order)))
+    for host in order:
+        pod_id = by_host[host]
+        log("restart %s (host %s)" % (pod_id, host))
         try:
             runpod_ctl._call("POST", "/pods/%s/start" % pod_id, {})
             info = wait_running(pod_id, 150)
             if info:
                 return pod_id, info, True
+            log("  started but never reached RUNNING")
         except Exception as e:  # noqa: BLE001
-            log("  refused: %s" % str(e)[:150])
+            log("  refused: %s" % str(e)[:120])
 
     log("create a CPU Pod (this measurement needs no GPU)")
     try:
