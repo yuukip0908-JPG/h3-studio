@@ -23,17 +23,17 @@
     "containerDiskInGb": 60,
     "cloudType": "SECURE"
   },
-  "podId": "4rnvt6xl3l7dwg",
+  "podId": "qco0zgaskjuu4s",
   "networkVolumeId": "olmj77x4pc",
   "status": "BASELINE_READY",
-  "lastUpdated": "2026-09-09",
+  "lastUpdated": "2026-09-18",
   "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
   "note_allowedCudaVersions": "omitted: requiring 13.0 returned \"no instances currently available\"",
   "publicIp": null,
   "sshPort": null,
   "costPerHrTotal": 0.84,
   "gpuUsdPerHour": 1.59,
-  "comfyUrl": "https://4rnvt6xl3l7dwg-8188.proxy.runpod.net",
+  "comfyUrl": "https://qco0zgaskjuu4s-8188.proxy.runpod.net",
   "accountSpendRatePerHr": 0.867,
   "comfyuiCommit": "169fcf35a2fc163fec31338b816503ddac0d3fcf",
   "clipcachedCommit": "f17ba8f369740a02a2138031517f853eb67b9d43",
@@ -60,9 +60,10 @@
     "63zwtjnt82nid4",
     "4g4zkc5c89sxt4",
     "l5rih7kh3rdxn6",
-    "wu98ylaz5rp7k9"
+    "wu98ylaz5rp7k9",
+    "4rnvt6xl3l7dwg"
   ],
-  "previousPodId": "wu98ylaz5rp7k9",
+  "previousPodId": "qco0zgaskjuu4s",
   "podCleanup": "2026-09-07: six unused Pods deleted, then the redundant A100 y9ts66clj5wml6, all on the operator's instruction and all through the four-condition guard. Remaining: nkiurl6132qe5t (active, RTX 6000 Ada $0.84/hr) and ufhtfdg9ulv3fj (backup). Network volume olmj77x4pc (200GB, US-WA-1) verified present after every deletion.",
   "gpuVerified": false,
   "gpuVerifiedFor": null,
@@ -77,7 +78,7 @@
     "note": "2026-09-07 stable checkpoint: read back from GET /pods rather than assumed. Four Pods exist, all EXITED, all mounting olmj77x4pc at $0.84/hr: qco0zgaskjuu4s (newest, and the podId this repo points at -- the Studio's actual target), ufhtfdg9ulv3fj (the original baseline Pod, kept as backup), and nkiurl6132qe5t / pf6hrwqcpjjhss (superseded by qco0zgaskjuu4s, stopped, not deleted). The previous podRoles block still named nkiurl6132qe5t as active, which two later Pod creations had made untrue. Nothing was started, stopped or deleted to correct it.",
     "policy": "A Pod is disposable; the network volume is the environment. Delete only when EXITED, not active, mounting olmj77x4pc and carrying no volume of its own (studio.runpod_ctl.delete_pod enforces all four). The volume is never deleted."
   },
-  "endpoint_pod_id": null,
+  "endpoint_pod_id": "4rnvt6xl3l7dwg",
   "gpuVerifiedLifetime": null,
-  "endpoint_started_at": null
+  "endpoint_started_at": "2026-09-18 11:19:35.306 +0000 UTC"
 }
