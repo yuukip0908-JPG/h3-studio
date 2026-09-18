@@ -37,6 +37,7 @@ import tempfile
 import threading
 import time
 import types
+import importlib.util
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -6171,6 +6172,107 @@ class DeadManSwitchTests(unittest.TestCase):
         for forbidden in ("delete_pod", "networkvolume", "terminate"):
             self.assertNotIn(forbidden, code.lower())
         self.assertIn("runpod_ctl.stop(", code)
+
+
+class DeadManAgentTests(unittest.TestCase):
+    """The copy launchd actually runs.
+
+    scripts/gpu_deadman.py is correct and was never once executed: it lives
+    under ~/Downloads, which macOS TCC closes to a launchd agent, so every run
+    from 2026-09-08 to 2026-09-18 died with "Operation not permitted" -- 1,908
+    times, 6.6 days, no automatic stop behind a Pod billing $0.84/hour. These
+    tests are about the two ways that outage could come back: the agent
+    reaching into this checkout again, or its decisions drifting from the
+    original's.
+    """
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = io.open(os.path.join(cls.ROOT, "scripts", "gpu_deadman_agent.py"),
+                          encoding="utf-8").read()
+        cls.code = re.sub(r'""".*?"""', "", cls.src, flags=re.S)
+        spec = importlib.util.spec_from_file_location(
+            "gpu_deadman_agent", os.path.join(cls.ROOT, "scripts", "gpu_deadman_agent.py"))
+        cls.agent = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.agent)
+        cls.installer = io.open(os.path.join(cls.ROOT, "scripts", "install_deadman.sh"),
+                                encoding="utf-8").read()
+
+    def test_it_imports_nothing_from_this_checkout(self):
+        """The whole point. One `from studio import ...` and it is dead again."""
+        for forbidden in ("from studio", "import studio", "sys.path"):
+            self.assertNotIn(forbidden, self.code)
+
+    def test_it_reads_its_pulse_from_outside_downloads(self):
+        home = os.path.expanduser("~")
+        for path in (self.agent.HEARTBEAT, self.agent.LOG):
+            self.assertTrue(path.startswith(os.path.join(home, "Library")), path)
+            self.assertNotIn("Downloads", path)
+
+    def test_launchd_is_pointed_at_the_installed_copy(self):
+        self.assertIn("Application Support/H3Studio", self.installer)
+        self.assertIn("<string>$AGENT</string>", self.installer)
+        self.assertNotIn("$ROOT/scripts/gpu_deadman.py", self.installer)
+
+    def test_it_sends_the_user_agent_cloudflare_demands(self):
+        """Measured: the stdlib default gets 403 error 1010 from rest.runpod.io.
+        Without this header it reads the pulse and then stops nothing."""
+        self.assertIn("User-Agent", self.code)
+
+    def test_it_never_deletes_and_never_touches_the_volume(self):
+        for forbidden in ("delete_pod", "networkvolume", "terminate"):
+            self.assertNotIn(forbidden, self.code.lower())
+        self.assertIn("/pods/%s/stop", self.code)
+
+    def test_it_proves_the_pod_stopped_instead_of_trusting_the_call(self):
+        self.assertIn("EXITED", self.code)
+
+    def test_its_decisions_match_the_original(self):
+        """Two copies of one rule is a drift risk; this is the guard against it."""
+        now = time.time()
+        for busy in (False, True):
+            for age_min in (0, 5, 19, 21, 30, 89, 91, 600):
+                beat = {"t": now - age_min * 60, "busy": busy}
+                self.assertEqual(
+                    self.agent.decide(beat, now, 20.0, 90.0)[0],
+                    gpu_deadman.decide(beat, now, 20.0, 90.0)[0],
+                    "disagreement at busy=%s age=%d min" % (busy, age_min))
+        self.assertEqual(self.agent.decide(None, now, 20.0, 90.0)[0],
+                         gpu_deadman.decide(None, now, 20.0, 90.0)[0])
+
+    def test_a_broken_pulse_is_not_read_as_an_old_one(self):
+        tmp = tempfile.mkdtemp(prefix="h3-agent-")
+        try:
+            path = os.path.join(tmp, "hb.json")
+            for junk in ("", "{", "[]", '{"t": "soon"}', '{"busy": true}'):
+                io.open(path, "w", encoding="utf-8").write(junk)
+                self.assertIsNone(self.agent.read_heartbeat(path))
+            self.assertIsNone(self.agent.read_heartbeat(os.path.join(tmp, "absent")))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_the_pulse_is_written_where_the_agent_can_see_it(self):
+        """The Studio writes both copies, and reports failure if either is lost."""
+        self.assertNotIn("Downloads", deadman.agent_heartbeat_path())
+        tmp = tempfile.mkdtemp(prefix="h3-agent-")
+        primary = os.path.join(tmp, "results", "studio", "studio_heartbeat.json")
+        mirror = os.path.join(tmp, "agent", "studio_heartbeat.json")
+        real_primary, real_mirror = deadman.heartbeat_path, deadman.agent_heartbeat_path
+        try:
+            deadman.heartbeat_path = lambda: primary
+            deadman.agent_heartbeat_path = lambda: mirror
+            self.assertTrue(deadman.write_heartbeat(pod_id="p1", busy=True))
+            self.assertEqual(self.agent.read_heartbeat(mirror)["pod_id"], "p1")
+            self.assertEqual(deadman.read_heartbeat(primary)["t"],
+                             self.agent.read_heartbeat(mirror)["t"])
+            deadman.clear()
+            self.assertIsNone(self.agent.read_heartbeat(mirror))
+            self.assertIsNone(deadman.read_heartbeat(primary))
+        finally:
+            deadman.heartbeat_path, deadman.agent_heartbeat_path = real_primary, real_mirror
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class SettingsMemoryTests(unittest.TestCase):

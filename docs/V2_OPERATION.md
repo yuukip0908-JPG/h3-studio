@@ -199,6 +199,45 @@ GPU 起動時に `scripts/gpu_watchdog.sh` を**別プロセス**として切り
 その間 Pod は課金され続ける。RunPod 側に絶対期限を設定する API は
 REST v1 に存在しない（OpenAPI で確認済み）ので、Mac 側でできるのはここまで。
 
+### 4.6 デッドマンスイッチ（launchd, 2026-09-18 修理）
+
+4.5 のウォッチドッグは GPU 起動時にしか立ち上がらない。Studio ごと巻き込まれて
+消えた場合に備え、launchd が **5分ごと**に独立したデッドマンを回す。
+Studio が書く pulse が冷えたら Pod を停止する（idle 20分 / busy 90分）。
+**stop のみ。Pod の削除も Network Volume への操作もしない。**
+
+```bash
+bash scripts/install_deadman.sh            # 導入 / 再導入
+bash scripts/install_deadman.sh --status   # 稼働確認とログ末尾
+```
+
+**重要：エージェントはこのリポジトリから動かない。**
+`~/Downloads` は macOS の TCC で保護されており、launchd 配下のプロセスは
+その中のファイルを一切開けない。旧構成（plist が `$ROOT/scripts/gpu_deadman.py`
+を直接指す）は **2026-09-08〜09-18 の 6.6 日間、1,908 回連続で
+`Operation not permitted` だけを出し、一度も成功していなかった** ——
+$0.84/時 の Pod に対して自動停止が存在しない状態だった。
+
+そのため現在の構成は：
+
+| もの | 置き場所 |
+|---|---|
+| エージェント本体（`studio` を import しない自己完結版） | `~/Library/Application Support/H3Studio/gpu_deadman.py` |
+| pulse（Studio が正副2箇所へ同時に書く） | 同ディレクトリ + `results/studio/` |
+| ログ | `~/Library/Application Support/H3Studio/gpu_deadman.log` |
+| 元ソース | `scripts/gpu_deadman_agent.py` |
+
+`scripts/gpu_deadman.py` は手動 `--check` 用に残してある（人が実行する分には
+TCC に当たらない）。
+
+**もう一つの罠：`User-Agent` は必須。** `rest.runpod.io` は Cloudflare の背後に
+あり、stdlib 既定の `Python-urllib/3.x` には **403 error code 1010** を返す
+（実測）。これが無いと pulse は正しく読めるのに停止だけが失敗する——
+動いていないのと同じ結果になる。`studio/runpod_ctl.py` と同じ
+`H3Studio/2.0` を送る。
+
+**限界は 4.5 と同じ。** Mac がスリープすれば launchd も止まる。
+
 ## 5. 状態確認## 5. 状態確認
 
 | 目的 | コマンド |

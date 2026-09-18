@@ -24,25 +24,54 @@ import time
 HEARTBEAT_FILE = "studio_heartbeat.json"
 INTERVAL_SECONDS = 30.0
 
+# The pulse is written twice, to the same name in two places.
+#
+# The copy under results/studio/ is the one a person reads. The copy here is the
+# one the launchd agent can actually open: this checkout lives under ~/Downloads,
+# and macOS TCC refuses a launchd agent every path inside it. That is not a
+# theory -- scripts/gpu_deadman.py failed with "Operation not permitted" 1,908
+# times in a row over 6.6 days in September 2026, which is 6.6 days of a Pod
+# billing at $0.84/hour with nothing left to stop it. ~/Library/Application
+# Support is not TCC-protected, so the mirror is what makes the switch real.
+AGENT_DIR = os.path.join(os.path.expanduser("~"), "Library",
+                         "Application Support", "H3Studio")
+
 
 def heartbeat_path():
     from . import config
     return os.path.join(config.STUDIO_DATA_DIR, HEARTBEAT_FILE)
 
 
-def write_heartbeat(pod_id=None, busy=False, path=None):
-    """One small file, replaced atomically. Never raises: this runs on a timer."""
-    path = path or heartbeat_path()
+def agent_heartbeat_path():
+    return os.path.join(AGENT_DIR, HEARTBEAT_FILE)
+
+
+def _write_one(path, beat):
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         staging = path + ".part"
         with open(staging, "w", encoding="utf-8") as f:
-            json.dump({"t": time.time(), "pid": os.getpid(),
-                       "pod_id": pod_id, "busy": bool(busy)}, f)
+            json.dump(beat, f)
         os.replace(staging, path)
         return True
     except OSError:
         return False
+
+
+def write_heartbeat(pod_id=None, busy=False, path=None):
+    """One small file, replaced atomically. Never raises: this runs on a timer.
+
+    Written to both locations unless an explicit `path` overrides that, and
+    reported as written only if both landed -- a pulse the agent cannot see is
+    the failure this mirroring exists to prevent, not a partial success.
+    """
+    beat = {"t": time.time(), "pid": os.getpid(),
+            "pod_id": pod_id, "busy": bool(busy)}
+    if path is not None:
+        return _write_one(path, beat)
+    primary = _write_one(heartbeat_path(), beat)
+    mirror = _write_one(agent_heartbeat_path(), beat)
+    return primary and mirror
 
 
 def read_heartbeat(path=None):
@@ -99,8 +128,14 @@ def stop_beating():
 
 
 def clear(path=None):
-    """Remove the pulse, so a clean shutdown is not read as a crash."""
-    try:
-        os.unlink(path or heartbeat_path())
-    except OSError:
-        pass
+    """Remove the pulse, so a clean shutdown is not read as a crash.
+
+    Both copies go. A mirror left behind would go cold on its own and the agent
+    would stop a Pod that was started by hand after the Studio was closed.
+    """
+    for p in ([path] if path is not None
+              else [heartbeat_path(), agent_heartbeat_path()]):
+        try:
+            os.unlink(p)
+        except OSError:
+            pass

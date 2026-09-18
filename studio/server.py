@@ -1276,8 +1276,10 @@ def build_app(comfy=None):
 
     # A pulse on disk. The cost guard above dies with this process, which is
     # useless in the one case that bills all night -- the Studio crashing, or
-    # the Mac sleeping and not coming back. scripts/gpu_deadman.py watches this
-    # file from outside and stops the Pod once it goes cold.
+    # the Mac sleeping and not coming back. The launchd agent installed by
+    # scripts/install_deadman.sh watches the pulse from outside and stops the
+    # Pod once it goes cold. It reads the mirrored copy, not this one: a
+    # launchd agent is refused every path under ~/Downloads.
     deadman.start(is_busy=lambda: MANAGER.is_busy() or MANAGER.has_active_long_draft(),
                   pod_id=config.pod_id)
 
@@ -1293,6 +1295,7 @@ def main():
     print("H3 Studio on %s  (ComfyUI: %s)" % (url, MANAGER.client.base))
     print("auto-stop: %s" % ("OFF" if not GUARD.idle_minutes else "%d min" % GUARD.idle_minutes))
     print("dead-man switch: pulse at %s" % deadman.heartbeat_path())
+    print("                  agent reads %s" % deadman.agent_heartbeat_path())
     rec = gpu_plan.recommended()
     if rec:
         print("recommended GPU: %s  $%.2f/hr (30min ~$%.2f)"

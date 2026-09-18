@@ -86,6 +86,9 @@ GPU ON後に環境修理をしない / 状態をユーザーへ見せる / 終�
 - MISS成功・cacheなし → persistence/write
 - cacheあり・restart後MISS → fingerprint/environment drift（encoderのctime、ComfyUI版）
 - HIT成功・sampling失敗 → downstream H3
+- GPUが自動停止しない → deadmanのTCC。`bash scripts/install_deadman.sh --status`。
+  launchdは`~/Downloads`配下を開けない（2026-09-18に判明、6.6日間1908回失敗）。
+  エージェントは`~/Library/Application Support/H3Studio/`から動かす
 
 ## ロールバック
 - ローカル: `scripts/rollback_v1.sh`（タグ `v1-baseline`）/ `~/Downloads/H3_CLOUD_REPRO_BACKUPS/*.tar.gz`
