@@ -43,7 +43,22 @@ ROOT="$STAGE/H3_STUDIO_DATA_${STAMP}"
 mkdir -p "$ROOT"
 
 # stat format: size + mtime + path, stable enough to prove "unmodified".
-manifest() { find "$SRC" -type f -print0 | sort -z | xargs -0 stat -f '%z %m %N'; }
+#
+# SQLite's -wal and -shm are excluded, and not as a convenience. Reading the
+# database to take the consistent snapshot below is itself what touches them:
+# opening the file maps -shm and stamps its mtime, so "the source changed"
+# became the normal outcome and this script stopped producing an archive at
+# all. The last one it managed was 2026-09-08.
+#
+# Nothing is lost by leaving them out. Both are still copied into the archive
+# byte-for-byte with the database, and what a restore actually uses is
+# history_snapshot.sqlite3 -- a point-in-time copy taken through SQLite's
+# online backup API and verified here by integrity check and row count. The
+# sidecars are scratch: their exact bytes are not what makes the backup valid.
+manifest() {
+  find "$SRC" -type f ! -name '*.sqlite3-wal' ! -name '*.sqlite3-shm' -print0 \
+    | sort -z | xargs -0 stat -f '%z %m %N'
+}
 
 echo "== source manifest (before) =="
 manifest > "$STAGE/before.txt"
@@ -178,7 +193,11 @@ if diff -q "$STAGE/before.txt" "$STAGE/after.txt" >/dev/null; then
   MODIFIED=false
 else
   echo "   WARN source changed while backing up:" >&2
-  diff "$STAGE/before.txt" "$STAGE/after.txt" | head -20 >&2
+  # `|| true`: diff exits 1 when it finds differences, and under `set -e` with
+  # pipefail that status ended the script here -- so this warning branch killed
+  # the run instead of warning. The report below has always been able to say
+  # unmodified=NO; until now it could never reach the line that prints it.
+  { diff "$STAGE/before.txt" "$STAGE/after.txt" | head -20 >&2; } || true
   MODIFIED=true
 fi
 
