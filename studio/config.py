@@ -17,7 +17,10 @@ STUDIO_DIR = os.path.join(PROJECT_DIR, "studio")
 TEMPLATE_DIR = os.path.join(STUDIO_DIR, "templates")
 STATIC_DIR = os.path.join(STUDIO_DIR, "static")
 RESULTS_DIR = os.path.join(PROJECT_DIR, "results")
-STUDIO_DATA_DIR = os.path.join(RESULTS_DIR, "studio")
+# Overridable so a test that launches the real Studio as a subprocess can point
+# it somewhere harmless: that child gets no monkeypatching, and it writes a
+# heartbeat and a history database wherever this says.
+STUDIO_DATA_DIR = os.environ.get("H3_STUDIO_DATA_DIR", os.path.join(RESULTS_DIR, "studio"))
 # Where the launchd dead-man agent lives and looks for the pulse. Outside this
 # checkout on purpose: ~/Downloads is TCC-protected and a launchd agent cannot
 # open anything inside it. Overridable so the tests can redirect it -- a test

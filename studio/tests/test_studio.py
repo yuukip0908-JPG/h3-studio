@@ -94,6 +94,14 @@ class StudioTestCase(unittest.TestCase):
             self.manager.shutdown()
         self.server.shutdown()
         self.server.server_close()
+        # Before the paths are put back. build_app() starts a heartbeat thread,
+        # deadman.start() refuses to start a second one, and nothing stopped the
+        # first -- so one thread kept beating for the rest of the suite, writing
+        # to whatever config pointed at once this line restored it. That is how
+        # a test run left a live pulse in the real agent directory: cold twenty
+        # minutes later, and fatal to the next Pod started by hand.
+        deadman.stop_beating()
+        deadman.clear()
         for k, v in self._saved.items():
             setattr(config, k, v)
         history._LOCAL = type(history._LOCAL)()
@@ -3683,9 +3691,16 @@ class StudioLauncherTests(unittest.TestCase):
             "H3_STUDIO_PORT": str(self.port),
             "H3_STUDIO_PID_FILE": self.pid_file,
             "H3_STUDIO_LOG": os.path.join(self.tmp, "studio.log"),
-            # Never let a test touch the operator's real valve files.
+            # Never let a test touch the operator's real valve files. This is a
+            # real Studio in a real subprocess: nothing in this process can
+            # redirect it, so every path it writes has to be named here. The
+            # dead-man pulse was missing, and each run left one in the live
+            # agent directory -- cold twenty minutes later, and fatal to the
+            # next Pod started by hand.
             "H3_WATCHDOG_HEARTBEAT": os.path.join(self.tmp, "heartbeat"),
             "H3_WATCHDOG_PULSE": os.path.join(self.tmp, "pulse"),
+            "H3_STUDIO_DATA_DIR": os.path.join(self.tmp, "studio-data"),
+            "H3_AGENT_DATA_DIR": os.path.join(self.tmp, "agent-data"),
             "H3_STUDIO_OPEN": "0",
         })
         return e
@@ -3706,6 +3721,21 @@ class StudioLauncherTests(unittest.TestCase):
     def _pid(self):
         with open(self.pid_file, "r", encoding="utf-8") as f:
             return int(f.read().strip())
+
+    def test_it_cannot_write_a_pulse_the_dead_man_switch_will_act_on(self):
+        """The child honours no monkeypatch. If these are not in its
+        environment, every run of this class arms the switch for real."""
+        env = self._env()
+        for key in ("H3_STUDIO_DATA_DIR", "H3_AGENT_DATA_DIR"):
+            self.assertTrue(env.get(key, "").startswith(self.tmp), key)
+        saved = (config.STUDIO_DATA_DIR, config.AGENT_DATA_DIR)
+        try:
+            config.STUDIO_DATA_DIR = env["H3_STUDIO_DATA_DIR"]
+            config.AGENT_DATA_DIR = env["H3_AGENT_DATA_DIR"]
+            for path in (deadman.heartbeat_path(), deadman.agent_heartbeat_path()):
+                self.assertTrue(path.startswith(self.tmp), path)
+        finally:
+            config.STUDIO_DATA_DIR, config.AGENT_DATA_DIR = saved
 
     def test_the_studio_outlives_the_shell_that_launched_it(self):
         r = self._start()
@@ -6259,6 +6289,36 @@ class DeadManAgentTests(unittest.TestCase):
             self.assertIsNone(self.agent.read_heartbeat(os.path.join(tmp, "absent")))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_the_heartbeat_thread_does_not_outlive_the_test_that_started_it(self):
+        """deadman.start() is a singleton. Unstopped, one thread beat through
+        the whole suite and wrote to the real paths after teardown restored
+        them."""
+        import threading
+        beating = lambda: any(t.name == "studio-heartbeat" and t.is_alive()
+                              for t in threading.enumerate())
+        deadman.stop_beating()
+        # The thread beats immediately and writes through config, and this class
+        # is not a StudioTestCase -- without redirecting, the test that exists to
+        # keep pulses off the real paths would put one there itself.
+        tmp = tempfile.mkdtemp(prefix="h3-beat-")
+        saved = (config.STUDIO_DATA_DIR, config.AGENT_DATA_DIR)
+        try:
+            config.STUDIO_DATA_DIR = os.path.join(tmp, "studio")
+            config.AGENT_DATA_DIR = os.path.join(tmp, "agent")
+            deadman.start(is_busy=lambda: False, pod_id=lambda: "p1", interval=0.05)
+            self.assertTrue(beating())
+            deadman.stop_beating()
+            deadline = time.time() + 5
+            while beating() and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertFalse(beating(), "the heartbeat thread outlived stop_beating()")
+        finally:
+            deadman.stop_beating()
+            config.STUDIO_DATA_DIR, config.AGENT_DATA_DIR = saved
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertFalse(os.path.exists(deadman.agent_heartbeat_path()))
+        self.assertFalse(os.path.exists(deadman.heartbeat_path()))
 
     def test_a_test_run_cannot_arm_the_switch(self):
         """The mirror follows config, so a redirected run never touches the
