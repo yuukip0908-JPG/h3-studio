@@ -18,6 +18,14 @@ TEMPLATE_DIR = os.path.join(STUDIO_DIR, "templates")
 STATIC_DIR = os.path.join(STUDIO_DIR, "static")
 RESULTS_DIR = os.path.join(PROJECT_DIR, "results")
 STUDIO_DATA_DIR = os.path.join(RESULTS_DIR, "studio")
+# Where the launchd dead-man agent lives and looks for the pulse. Outside this
+# checkout on purpose: ~/Downloads is TCC-protected and a launchd agent cannot
+# open anything inside it. Overridable so the tests can redirect it -- a test
+# run that writes a real pulse here would arm the switch against a Pod started
+# by hand.
+AGENT_DATA_DIR = os.environ.get(
+    "H3_AGENT_DATA_DIR",
+    os.path.join(os.path.expanduser("~"), "Library", "Application Support", "H3Studio"))
 DB_PATH = os.path.join(STUDIO_DATA_DIR, "history.sqlite3")
 OUTPUT_DIR = os.path.join(STUDIO_DATA_DIR, "outputs")
 UPLOAD_DIR = os.path.join(STUDIO_DATA_DIR, "uploads")

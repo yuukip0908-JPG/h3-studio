@@ -72,8 +72,15 @@ class StudioTestCase(unittest.TestCase):
         self.server, self.url = mock_comfy.serve()
         self.tmp = tempfile.mkdtemp(prefix="h3studio-test-")
         self._saved = {k: getattr(config, k) for k in
-                       ("STUDIO_DATA_DIR", "DB_PATH", "OUTPUT_DIR", "UPLOAD_DIR", "LOG_PATH")}
+                       ("STUDIO_DATA_DIR", "DB_PATH", "OUTPUT_DIR", "UPLOAD_DIR", "LOG_PATH",
+                        "AGENT_DATA_DIR")}
         config.STUDIO_DATA_DIR = self.tmp
+        # Not decoration. build_app() starts the heartbeat, and the pulse is
+        # written to this directory as well as STUDIO_DATA_DIR. Left pointing
+        # at the real one, a test run drops a pulse that nothing refreshes, it
+        # goes cold, and the launchd agent stops the next Pod somebody starts
+        # by hand -- which is the one thing the switch must never do.
+        config.AGENT_DATA_DIR = os.path.join(self.tmp, "agent")
         config.DB_PATH = os.path.join(self.tmp, "history.sqlite3")
         config.OUTPUT_DIR = os.path.join(self.tmp, "outputs")
         config.UPLOAD_DIR = os.path.join(self.tmp, "uploads")
@@ -6252,6 +6259,21 @@ class DeadManAgentTests(unittest.TestCase):
             self.assertIsNone(self.agent.read_heartbeat(os.path.join(tmp, "absent")))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_a_test_run_cannot_arm_the_switch(self):
+        """The mirror follows config, so a redirected run never touches the
+        real agent directory. This escaped once: a suite run wrote a live pulse
+        into ~/Library/Application Support/H3Studio, where nothing would ever
+        refresh it."""
+        real = config.AGENT_DATA_DIR
+        tmp = tempfile.mkdtemp(prefix="h3-agent-")
+        try:
+            config.AGENT_DATA_DIR = tmp
+            self.assertTrue(deadman.agent_heartbeat_path().startswith(tmp))
+        finally:
+            config.AGENT_DATA_DIR = real
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertNotIn("Downloads", real)
 
     def test_the_pulse_is_written_where_the_agent_can_see_it(self):
         """The Studio writes both copies, and reports failure if either is lost."""

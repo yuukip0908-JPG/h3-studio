@@ -33,8 +33,6 @@ INTERVAL_SECONDS = 30.0
 # times in a row over 6.6 days in September 2026, which is 6.6 days of a Pod
 # billing at $0.84/hour with nothing left to stop it. ~/Library/Application
 # Support is not TCC-protected, so the mirror is what makes the switch real.
-AGENT_DIR = os.path.join(os.path.expanduser("~"), "Library",
-                         "Application Support", "H3Studio")
 
 
 def heartbeat_path():
@@ -43,7 +41,8 @@ def heartbeat_path():
 
 
 def agent_heartbeat_path():
-    return os.path.join(AGENT_DIR, HEARTBEAT_FILE)
+    from . import config
+    return os.path.join(config.AGENT_DATA_DIR, HEARTBEAT_FILE)
 
 
 def _write_one(path, beat):

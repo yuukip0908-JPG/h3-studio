@@ -38,8 +38,9 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_DIR = os.path.join(os.path.expanduser("~"), "Library",
-                         "Application Support", "H3Studio")
+AGENT_DIR = os.environ.get(
+    "H3_AGENT_DATA_DIR",
+    os.path.join(os.path.expanduser("~"), "Library", "Application Support", "H3Studio"))
 HEARTBEAT = os.path.join(AGENT_DIR, "studio_heartbeat.json")
 LOG = os.path.join(AGENT_DIR, "gpu_deadman.log")
 LOG_MAX_BYTES = 256 * 1024
