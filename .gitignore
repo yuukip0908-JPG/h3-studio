@@ -10,3 +10,6 @@ results/*.pid
 results/gpu_watchdog_heartbeat
 results/gpu_watchdog_pulse
 results/logs/gpu_watchdog.log
+
+# Claude Code personal settings: grants that spend money must not be committed
+.claude/settings.local.json
