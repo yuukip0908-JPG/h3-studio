@@ -32,7 +32,7 @@ from studio import config, runpod_ctl  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MEASURE = os.path.join(ROOT, "scripts", "measure_storage_pod.sh")
 KEY = os.path.expanduser("~/.ssh/runpod_h3_ed25519")
-VOLUME = "olmj77x4pc"
+VOLUME = "qnql9m7onb"
 DATACENTER = "US-WA-1"
 GPU = "NVIDIA RTX 6000 Ada Generation"
 # CPU Pod pricing is in neither the REST API nor the docs, and CLAUDE.md counts

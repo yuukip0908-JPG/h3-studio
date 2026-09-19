@@ -21,11 +21,14 @@
 - git pull / blanket pip upgrade / CUDA・torchの不用意な更新
 - baseline workflow (`workflows/READY_TO_USE_*`, `H3_STOCK_*`) の破壊的上書き
 - 同じcache directoryを複数ComfyUI processで共有
-- Network Volume (`olmj77x4pc`) の削除 — **無条件禁止**
+- Network Volume (`qnql9m7onb`) の削除 — **無条件禁止**
+  （旧 `olmj77x4pc` は 2026-09-19、ユーザーの明示指示で削除済み。US-WA-1 が新規ボリューム
+  受け入れを停止したため US-IL-1 へ移行。200GB→120GB、$14.00→$8.40/月）
 - Pod の terminate — **ユーザーの明示指示がある場合を除き禁止**
-  （2026-09-07、ユーザー指示で不要な6基を削除。永続データは全て `/workspace`
-  ＝共有ボリューム上なので、Pod自体は使い捨てられる。現存は
-  `y9ts66clj5wml6`（現行）と `ufhtfdg9ulv3fj`（初代・保険）の2基）
+  （2026-09-07に6基、2026-09-19に12基を指示により削除。永続データは全て `/workspace`
+  ＝共有ボリューム上なので、Pod自体は使い捨てられる。**ボリュームを削除するには、それを
+  参照する全Podを先に terminate する必要がある**（RunPodが拒否する）。現存は
+  `3n5v8i33skly85`（US-IL-1）の1基）
 - secret（RunPod API key / SSH private key）のログ出力・ファイル書き込み・commit
 - ユーザーへのターミナル操作要求（ssh / pip / git clone / bash の代行はこちらで行う）
 
@@ -70,7 +73,16 @@ GPU ON後に環境修理をしない / 状態をユーザーへ見せる / 終�
 - 自動起動してよいのは **価格が既知で $1.00/時以下、かつ baseline 実測済み**のカードのみ
   （現状 RTX 6000 Ada 48GB $0.84 だけ）。価格不明は高額扱い
 - START GPU 1回につき restart 1回・create 1回・**5分**まで。背景で探し続けない
-- **本体は Network Volume `olmj77x4pc`**。Pod は使い捨て。コードに Pod ID を書かない
+- **本体は Network Volume `qnql9m7onb`（120GB / US-IL-1）**。Pod は使い捨て。コードに Pod ID を書かない
+- **US-WA-1 は新規ボリュームを受け付けない**（17DCのリストに無い）。ボリュームを作れるDCのうち
+  RTX 6000 Ada があるのは **US-CA-2 と US-IL-1 だけ**。AP-JP-1 にGPUは無い
+- DCにカードがあるかは**無料で調べられる**: `gpuCount: 8` で要求すると必ず確保に失敗し、
+  「could not find any pods with required specifications」＝カード無し、
+  「no instances currently available」＝有るが満杯、とエラー文で区別できる。Podは作られない
+- **CPU Pod は $0.06/時**（`computeType: "CPU"`, `vcpuCount: 2`）。GPUが全滅している時でも
+  取れることがある。サンプリング以外（df / du / ファイル救出 / 調査）は全部これで足りる
+- **cache はボリューム間で移送できない**。fingerprint に encoder の `ctime_ns` が入る
+  （`nodes.py:501`）。ctime は設定不能なので、再ダウンロードしたencoderでは必ずMISSになる
 - RUNNING な Pod が1つでもあれば新規起動を拒否（同一ボリューム二重起動の禁止）
 - 課金は `GET /billing/pods` / `/billing/networkvolumes` が実データ。
   推定値には必ず「推定」と書く。取得できないときは「取得できません」と書く

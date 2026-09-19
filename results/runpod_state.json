@@ -10,10 +10,10 @@
   "plannedGpuUsdPerHour": 0.74,
   "plannedDataCenterId": "US-IL-1",
   "plannedNetworkVolume": {
-    "name": "h3-clipcached-baseline",
-    "sizeGb": 200,
-    "dataCenterId": "US-WA-1",
-    "usdPerMonth": 14.0
+    "name": "h3-clipcached-ca",
+    "sizeGb": 120,
+    "dataCenterId": "US-IL-1",
+    "usdPerMonth": 8.4
   },
   "plannedPod": {
     "name": "h3-clipcached-baseline",
@@ -25,7 +25,7 @@
   },
   "podId": "3n5v8i33skly85",
   "networkVolumeId": "qnql9m7onb",
-  "status": "MIGRATING_TO_US-IL-1",
+  "status": "MIGRATED_US-IL-1",
   "lastUpdated": "2026-09-19",
   "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
   "note_allowedCudaVersions": "omitted: requiring 13.0 returned \"no instances currently available\"",
@@ -49,20 +49,7 @@
     "missMatrix": "3/3 PASS",
     "doctor": "FAIL=0 WARN=0"
   },
-  "previousPods": [
-    "ufhtfdg9ulv3fj",
-    "nkiurl6132qe5t",
-    "pf6hrwqcpjjhss",
-    "qco0zgaskjuu4s",
-    "18v8pmf0fpm4ym",
-    "ffw0tip8217ep0",
-    "9e4742fx6vlhqv",
-    "63zwtjnt82nid4",
-    "4g4zkc5c89sxt4",
-    "l5rih7kh3rdxn6",
-    "wu98ylaz5rp7k9",
-    "4rnvt6xl3l7dwg"
-  ],
+  "previousPods": [],
   "previousPodId": "qco0zgaskjuu4s",
   "podCleanup": "2026-09-07: six unused Pods deleted, then the redundant A100 y9ts66clj5wml6, all on the operator's instruction and all through the four-condition guard. Remaining: nkiurl6132qe5t (active, RTX 6000 Ada $0.84/hr) and ufhtfdg9ulv3fj (backup). Network volume olmj77x4pc (200GB, US-WA-1) verified present after every deletion.",
   "gpuVerified": false,

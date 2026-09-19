@@ -225,8 +225,18 @@ print("  pod_state=%s volume=%s" % (g.get("pod_state"), g.get("network_volume"))
 sys.exit(0 if g.get("pod_state") in ("EXITED","STOPPED") else 1)' | tee -a "$LOG"
   [[ "${PIPESTATUS[0]}" == 0 ]] && ok "Pod stopped (billing halted)" || no "Pod did not stop"
 
-  bash "$DIR/scripts/runpod_status.sh" 2>&1 | grep -qi "olmj77x4pc" \
-    && ok "Network Volume preserved" || no "could not confirm the Network Volume"
+  # Read the volume id from the state file rather than hardcoding one. The
+  # hardcoded olmj77x4pc outlived the volume itself: it was deleted on
+  # 2026-09-19 when US-WA-1 stopped accepting new volumes and everything moved
+  # to US-IL-1, and this check would have failed for the rest of the project's
+  # life while reporting it as a missing volume.
+  VOL="$(python3 -c "import json;print(json.load(open('$DIR/results/runpod_state.json')).get('networkVolumeId',''))" 2>/dev/null)"
+  if [[ -z "$VOL" ]]; then
+    no "no networkVolumeId in results/runpod_state.json"
+  else
+    bash "$DIR/scripts/runpod_status.sh" 2>&1 | grep -qi "$VOL" \
+      && ok "Network Volume preserved ($VOL)" || no "could not confirm the Network Volume ($VOL)"
+  fi
 fi
 
 say

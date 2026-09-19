@@ -39,7 +39,7 @@ GPU = "NVIDIA RTX 6000 Ada Generation"
 IMAGE = "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404"
 # The live baseline. Nothing in this file may touch it; CLAUDE.md forbids its
 # deletion unconditionally and the migration does not need to write to it.
-PROTECTED_VOLUME = "olmj77x4pc"
+PROTECTED_VOLUME = "qnql9m7onb"
 # CLAUDE.md caps an unattended start at $1.00/hr. The Ada is the only card with
 # a price this project has measured, so it is asked for first in both data
 # centers; only when neither has one does this fall back to whatever is free,
