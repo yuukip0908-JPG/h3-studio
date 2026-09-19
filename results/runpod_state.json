@@ -29,8 +29,8 @@
   "lastUpdated": "2026-09-19",
   "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
   "note_allowedCudaVersions": "omitted: requiring 13.0 returned \"no instances currently available\"",
-  "publicIp": "203.57.40.186",
-  "sshPort": 10147,
+  "publicIp": null,
+  "sshPort": null,
   "costPerHrTotal": 0.84,
   "gpuUsdPerHour": 1.59,
   "comfyUrl": "https://3n5v8i33skly85-8188.proxy.runpod.net",
@@ -78,7 +78,7 @@
     "note": "2026-09-07 stable checkpoint: read back from GET /pods rather than assumed. Four Pods exist, all EXITED, all mounting olmj77x4pc at $0.84/hr: qco0zgaskjuu4s (newest, and the podId this repo points at -- the Studio's actual target), ufhtfdg9ulv3fj (the original baseline Pod, kept as backup), and nkiurl6132qe5t / pf6hrwqcpjjhss (superseded by qco0zgaskjuu4s, stopped, not deleted). The previous podRoles block still named nkiurl6132qe5t as active, which two later Pod creations had made untrue. Nothing was started, stopped or deleted to correct it.",
     "policy": "A Pod is disposable; the network volume is the environment. Delete only when EXITED, not active, mounting olmj77x4pc and carrying no volume of its own (studio.runpod_ctl.delete_pod enforces all four). The volume is never deleted."
   },
-  "endpoint_pod_id": "3n5v8i33skly85",
+  "endpoint_pod_id": null,
   "gpuVerifiedLifetime": null,
-  "endpoint_started_at": "2026-09-19 03:02:49.224 +0000 UTC"
+  "endpoint_started_at": null
 }
