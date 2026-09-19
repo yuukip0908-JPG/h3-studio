@@ -1,0 +1,49 @@
+[  1.5s] 11 stopped Pods across 11 host machines -- trying one per host
+[  1.5s] restart wu98ylaz5rp7k9 (host wu98ylaz5rp7k9)
+[  2.5s]   refused: RunPod POST /pods/wu98ylaz5rp7k9/start -> HTTP 500: {"error":"start pod: There are not enough free GPUs on the host mach
+[  2.5s] restart l5rih7kh3rdxn6 (host l5rih7kh3rdxn6)
+[  3.4s]   refused: RunPod POST /pods/l5rih7kh3rdxn6/start -> HTTP 500: {"error":"start pod: This machine does not have the resources to dep
+[  3.4s] restart 4g4zkc5c89sxt4 (host 4g4zkc5c89sxt4)
+[ 40.1s] RUNNING ip=195.26.233.13 port=54760
+[ 41.8s] ssh up
+[ 41.8s] measuring
+
+==================================================================
+MEASUREMENT
+==================================================================
+=== 1. volume real usage (the number that decides shrinking) ===
+  size=615T used=481T avail=134T use%=79%
+=== 2. where it goes ===
+512	/workspace/dl_ref2va.py
+512	/workspace/h3_vram_sampler.sh
+512	/workspace/h3vram.sh
+1.0K	/workspace/h3_1mp_sampler.sh
+21K	/workspace/h3_ab_vram.csv
+25K	/workspace/logs
+48M	/workspace/H3_CLOUD_REPRO
+11G	/workspace/pose-app
+87G	/workspace/ComfyUI
+  -- models --
+512	/workspace/ComfyUI/models/unet
+512	/workspace/ComfyUI/models/upscale_models
+512	/workspace/ComfyUI/models/vae_approx
+1004K	/workspace/ComfyUI/models/configs
+1.9G	/workspace/ComfyUI/models/loras
+5.5G	/workspace/ComfyUI/models/vae
+26G	/workspace/ComfyUI/models/text_encoders
+40G	/workspace/ComfyUI/models/diffusion_models
+  -- CLIPCached cache --
+2.7G	/workspace/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache
+=== 3. container disk (can 74.9GB of models live here instead?) ===
+  size=60G used=16M avail=60G
+=== 4. volume READ throughput (docs claim 200-400 MB/s) ===
+  4294967296 bytes (4.3 GB, 4.0 GiB) copied, 11.457 s, 375 MB/s
+=== 5. HuggingFace DOWNLOAD throughput (the number that decides the volume) ===
+  downloaded 3221225472 bytes in 39.151607s -> 82275689 B/s
+=== done ===
+
+stderr: Warning: Permanently added '[195.26.233.13]:54760' (ED25519) to the list of known hosts.
+
+[103.6s] stopping 4g4zkc5c89sxt4
+[108.4s] stop verified
+[109.1s] FINAL desiredStatus=EXITED  elapsed 1.8 min
