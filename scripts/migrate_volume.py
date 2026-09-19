@@ -29,13 +29,24 @@ from studio import runpod_ctl  # noqa: E402
 
 VOLUME_NAME = "h3-clipcached-ca"
 VOLUME_GB = 120
-DATACENTER = "US-CA-2"
+# Both data centers that can hold a network volume AND carry the RTX 6000 Ada,
+# nearest to Japan first. US-WA-1, where the current volume lives, takes no new
+# volumes at all; AP-JP-1 carries no GPU this project can use.
+DATACENTERS = ["US-CA-2", "US-IL-1"]
+DATACENTER = DATACENTERS[0]
 POD_NAME = "h3-ca-1"
 GPU = "NVIDIA RTX 6000 Ada Generation"
 IMAGE = "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404"
 # The live baseline. Nothing in this file may touch it; CLAUDE.md forbids its
 # deletion unconditionally and the migration does not need to write to it.
 PROTECTED_VOLUME = "olmj77x4pc"
+# CLAUDE.md caps an unattended start at $1.00/hr. The Ada is the only card with
+# a price this project has measured, so it is asked for first in both data
+# centers; only when neither has one does this fall back to whatever is free,
+# and then the price is read the moment the Pod exists and anything above the
+# cap is stopped before it can do any work. Nothing here needs a fast GPU --
+# the migration is a download and an install.
+PRICE_CAP = 1.00
 
 
 def volumes():
@@ -91,48 +102,69 @@ def discard(vol):
 
 
 def create():
-    vol = find_volume()
-    made_volume = False
-    if vol:
-        print("volume exists: %s" % vol["id"])
-    else:
-        vol = runpod_ctl._call("POST", "/networkvolumes",
-                               {"name": VOLUME_NAME, "size": VOLUME_GB,
-                                "dataCenterId": DATACENTER})
-        made_volume = True
-        print("created volume %s  %dGB %s  $%.2f/mo"
-              % (vol["id"], VOLUME_GB, DATACENTER, VOLUME_GB * 0.07))
-    if vol["id"] == PROTECTED_VOLUME:
-        raise SystemExit("refusing: that is the protected volume")
-
-    pod = find_pod()
-    if pod:
-        print("pod already exists: %s" % pod["id"])
-        pod_id = pod["id"]
-    else:
-        try:
-            info = runpod_ctl._call("POST", "/pods", {
-                "name": POD_NAME, "imageName": IMAGE,
-                "gpuTypeIds": [GPU], "gpuTypePriority": "availability", "gpuCount": 1,
-                "dataCenterIds": [DATACENTER], "cloudType": "SECURE",
-                "networkVolumeId": vol["id"], "volumeMountPath": "/workspace",
-                "containerDiskInGb": 60, "ports": ["8188/http", "22/tcp"]})
-        except Exception as e:  # noqa: BLE001
-            print("no Pod: %s" % str(e)[:160])
-            if made_volume or not find_pod():
+    """Cheapest and nearest first, and never leave a volume behind."""
+    attempts = ([(dc, [GPU]) for dc in DATACENTERS] +
+                [(dc, None) for dc in DATACENTERS])
+    for dc, cards in attempts:
+        label = cards[0] if cards else "any available GPU"
+        print("-- %s / %s" % (dc, label))
+        vol = find_volume()
+        if vol and vol.get("dataCenterId") != dc:
+            if not [p for p in runpod_ctl.list_pods()
+                    if p.get("networkVolumeId") == vol["id"]]:
                 discard(vol)
-            return 1
-        pod_id = info["id"]
-        print("created pod %s  costPerHr=%s  (billing has started)"
-              % (pod_id, info.get("costPerHr")))
+            vol = None
+        if not vol:
+            vol = runpod_ctl._call("POST", "/networkvolumes",
+                                   {"name": VOLUME_NAME, "size": VOLUME_GB,
+                                    "dataCenterId": dc})
+            print("   volume %s %dGB %s" % (vol["id"], VOLUME_GB, dc))
+        if vol["id"] == PROTECTED_VOLUME:
+            raise SystemExit("refusing: that is the protected volume")
 
-    for _ in range(40):
-        info = runpod_ctl.describe(pod_id)
-        if info.get("desiredStatus") == "RUNNING" and info.get("publicIp"):
-            print("RUNNING  ip=%s ssh=%s" % (info["publicIp"], info["sshPort"]))
-            return 0
-        time.sleep(8)
-    print("did not reach RUNNING; run --status, and --stop if it is billing")
+        body = {"name": POD_NAME, "imageName": IMAGE, "gpuCount": 1,
+                "gpuTypePriority": "availability",
+                "dataCenterIds": [dc], "cloudType": "SECURE",
+                "networkVolumeId": vol["id"], "volumeMountPath": "/workspace",
+                "containerDiskInGb": 60, "ports": ["8188/http", "22/tcp"]}
+        if cards:
+            body["gpuTypeIds"] = cards
+        try:
+            info = runpod_ctl._call("POST", "/pods", body)
+        except Exception as e:  # noqa: BLE001
+            print("   no Pod: %s" % str(e)[:120])
+            continue
+
+        pod_id, price = info["id"], info.get("costPerHr")
+        print("   created %s costPerHr=%s" % (pod_id, price))
+        try:
+            too_dear = float(price) > PRICE_CAP
+        except (TypeError, ValueError):
+            too_dear = True          # an unknown price counts as expensive
+        if too_dear:
+            print("   over the $%.2f cap -- stopping it untouched" % PRICE_CAP)
+            try:
+                runpod_ctl.stop(pod_id)
+            except Exception as e:  # noqa: BLE001
+                print("   STOP FAILED: %s -- CHECK THE CONSOLE" % str(e)[:120])
+            continue
+
+        for _ in range(40):
+            info = runpod_ctl.describe(pod_id)
+            if info.get("desiredStatus") == "RUNNING" and info.get("publicIp"):
+                print("   RUNNING ip=%s ssh=%s  $%s/hr on %s"
+                      % (info["publicIp"], info["sshPort"], price, dc))
+                return 0
+            time.sleep(8)
+        print("   never reached RUNNING; run --status, and --stop if it bills")
+        return 1
+
+    vol = find_volume()
+    if vol and not [p for p in runpod_ctl.list_pods()
+                    if p.get("networkVolumeId") == vol["id"]]:
+        discard(vol)
+    print("no capacity in %s right now. Nothing created, nothing billed."
+          % " or ".join(DATACENTERS))
     return 1
 
 
@@ -154,10 +186,11 @@ def main():
     ap.add_argument("--stop", action="store_true")
     a = ap.parse_args()
     if a.plan or not (a.create or a.status or a.stop):
-        print("would create %s (%dGB, %s, $%.2f/mo) and one %s Pod on it,\n"
-              "leaving %s untouched."
-              % (VOLUME_NAME, VOLUME_GB, DATACENTER, VOLUME_GB * 0.07, GPU,
-                 PROTECTED_VOLUME))
+        print("would try %s, the Ada first and then any GPU under $%.2f/hr,\n"
+              "creating a %dGB volume ($%.2f/mo) in whichever answers and\n"
+              "deleting it again if no Pod comes. %s is never touched."
+              % (" then ".join(DATACENTERS), PRICE_CAP, VOLUME_GB,
+                 VOLUME_GB * 0.07, PROTECTED_VOLUME))
         return 0
     if a.status:
         show(); return 0

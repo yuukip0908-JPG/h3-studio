@@ -54,7 +54,7 @@ do_push(){
 
 do_build(){
   require_pod
-  if pod "pgrep -f 'bash scripts/bootstrap.sh' >/dev/null" 2>/dev/null; then
+  if pod "pgrep -f '[b]ash scripts/bootstrap.sh' >/dev/null" 2>/dev/null; then
     echo "既に走っています。進捗は: bash scripts/setup_new_pod.sh status"; return 0
   fi
   say "ComfyUI + モデル 53.9GB を入れます（数時間。Pod 側で裏で走ります）"
@@ -69,7 +69,7 @@ do_build(){
 do_status(){
   require_pod
   local running
-  running="$(pod "pgrep -f 'bash scripts/bootstrap.sh' >/dev/null && echo RUNNING || echo STOPPED" 2>/dev/null || echo UNKNOWN)"
+  running="$(pod "pgrep -f '[b]ash scripts/bootstrap.sh' >/dev/null && echo RUNNING || echo STOPPED" 2>/dev/null || echo UNKNOWN)"
   say "bootstrap: $running"
   pod "tail -n 12 $LOG 2>/dev/null || echo '  ログがまだありません'"
   pod "df -h /workspace | tail -1 | awk '{print \"  volume: \"\$3\" used, \"\$4\" free\"}'" 2>/dev/null || true
@@ -79,7 +79,7 @@ do_watch(){
   require_pod
   say "bootstrap の終了を待ちます（60 秒ごと。Ctrl-C で抜けても Pod 側は走り続けます）"
   while :; do
-    if ! pod "pgrep -f 'bash scripts/bootstrap.sh' >/dev/null" 2>/dev/null; then
+    if ! pod "pgrep -f '[b]ash scripts/bootstrap.sh' >/dev/null" 2>/dev/null; then
       pod "tail -n 6 $LOG 2>/dev/null" || true
       if pod "grep -q 'STOCK BASELINE READY' $LOG" 2>/dev/null; then
         say "bootstrap 完了"

@@ -8,7 +8,7 @@
   "plannedGpuTypeId": "NVIDIA RTX 6000 Ada Generation",
   "plannedGpuVramGb": 48,
   "plannedGpuUsdPerHour": 0.74,
-  "plannedDataCenterId": "US-WA-1",
+  "plannedDataCenterId": "US-IL-1",
   "plannedNetworkVolume": {
     "name": "h3-clipcached-baseline",
     "sizeGb": 200,
@@ -23,17 +23,17 @@
     "containerDiskInGb": 60,
     "cloudType": "SECURE"
   },
-  "podId": "qco0zgaskjuu4s",
-  "networkVolumeId": "olmj77x4pc",
-  "status": "BASELINE_READY",
-  "lastUpdated": "2026-09-18",
+  "podId": "3n5v8i33skly85",
+  "networkVolumeId": "qnql9m7onb",
+  "status": "MIGRATING_TO_US-IL-1",
+  "lastUpdated": "2026-09-19",
   "imageName": "runpod/pytorch:1.1.0-cu1300-torch291-ubuntu2404",
   "note_allowedCudaVersions": "omitted: requiring 13.0 returned \"no instances currently available\"",
-  "publicIp": null,
-  "sshPort": null,
+  "publicIp": "203.57.40.186",
+  "sshPort": 10147,
   "costPerHrTotal": 0.84,
   "gpuUsdPerHour": 1.59,
-  "comfyUrl": "https://qco0zgaskjuu4s-8188.proxy.runpod.net",
+  "comfyUrl": "https://3n5v8i33skly85-8188.proxy.runpod.net",
   "accountSpendRatePerHr": 0.867,
   "comfyuiCommit": "169fcf35a2fc163fec31338b816503ddac0d3fcf",
   "clipcachedCommit": "f17ba8f369740a02a2138031517f853eb67b9d43",
@@ -78,7 +78,7 @@
     "note": "2026-09-07 stable checkpoint: read back from GET /pods rather than assumed. Four Pods exist, all EXITED, all mounting olmj77x4pc at $0.84/hr: qco0zgaskjuu4s (newest, and the podId this repo points at -- the Studio's actual target), ufhtfdg9ulv3fj (the original baseline Pod, kept as backup), and nkiurl6132qe5t / pf6hrwqcpjjhss (superseded by qco0zgaskjuu4s, stopped, not deleted). The previous podRoles block still named nkiurl6132qe5t as active, which two later Pod creations had made untrue. Nothing was started, stopped or deleted to correct it.",
     "policy": "A Pod is disposable; the network volume is the environment. Delete only when EXITED, not active, mounting olmj77x4pc and carrying no volume of its own (studio.runpod_ctl.delete_pod enforces all four). The volume is never deleted."
   },
-  "endpoint_pod_id": "4rnvt6xl3l7dwg",
+  "endpoint_pod_id": "3n5v8i33skly85",
   "gpuVerifiedLifetime": null,
-  "endpoint_started_at": "2026-09-18 11:19:35.306 +0000 UTC"
+  "endpoint_started_at": "2026-09-19 03:02:49.224 +0000 UTC"
 }
