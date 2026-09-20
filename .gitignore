@@ -13,3 +13,7 @@ results/logs/gpu_watchdog.log
 
 # Claude Code personal settings: grants that spend money must not be committed
 .claude/settings.local.json
+
+# backup bookkeeping, not source
+results/autobackup_state.json
+results/.autobackup.lock/

@@ -29,11 +29,12 @@
     "gpuTypePriority": "availability",
     "gpuCount": 1,
     "dataCenterIds": [
-      "US-WA-1"
+      "US-IL-1",
+      "US-CA-2"
     ],
     "dataCenterIds_note": "forced: network volume olmj77x4pc lives in US-WA-1 and can only attach to a pod in the same data center.",
     "cloudType": "SECURE",
-    "networkVolumeId": "olmj77x4pc",
+    "networkVolumeId": "qnql9m7onb",
     "volumeMountPath": "/workspace",
     "containerDiskInGb": 60,
     "ports": [
@@ -86,5 +87,8 @@
       "verdict": "fallback - 80 GB is ample, sm_80 is supported by torch cu130, but it is a different architecture than the one the baseline was measured on"
     }
   ],
-  "rejected_candidates": "Every other GPU type in US-WA-1 SECURE returned no price and no stock, i.e. not purchasable right now. Community cloud has none. Anything under 48 GB was excluded on the measured 47.3 GiB peak."
+  "rejected_candidates": "Every other GPU type in US-WA-1 SECURE returned no price and no stock, i.e. not purchasable right now. Community cloud has none. Anything under 48 GB was excluded on the measured 47.3 GiB peak.",
+  "notes": {
+    "datacenter_2026_09_19": "US-WA-1 no longer accepts network volumes and the old volume olmj77x4pc was deleted there. US-IL-1 holds the replacement; US-CA-2 is the only other data center that both takes volumes and carries the RTX 6000 Ada."
+  }
 }

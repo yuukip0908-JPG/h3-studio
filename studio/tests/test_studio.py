@@ -42,7 +42,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from studio import (comfy_client, config, deadman, graph, history,  # noqa: E402
+from studio import (autobackup, comfy_client, config, deadman, graph, history,  # noqa: E402
                     jobs, longdraft, mediaprobe, postprocess, premiere,
                     runpod_ctl, startup)
 from studio.tests import mock_comfy  # noqa: E402
@@ -53,6 +53,15 @@ sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "scripts"))
 import gpu_deadman  # noqa: E402
+
+# Read the volume and data center from the checked-in recreate spec instead of
+# naming them. They used to be written out as literals, and the day the volume
+# moved from US-WA-1 to US-IL-1 that took 21 tests down with it -- none of
+# which was about a volume id. v2_validate.sh had the same bug: it grepped for
+# the literal to prove the volume still existed.
+_SPEC = config.recreate_spec()
+VOLUME_ID = _SPEC.get("networkVolumeId") or "no-volume-in-recreate-spec"
+DATACENTER_ID = (_SPEC.get("dataCenterIds") or ["no-datacenter-in-recreate-spec"])[0]
 
 
 def wait_until(pred, timeout=25.0, interval=0.15):
@@ -81,6 +90,12 @@ class StudioTestCase(unittest.TestCase):
         # goes cold, and the launchd agent stops the next Pod somebody starts
         # by hand -- which is the one thing the switch must never do.
         config.AGENT_DATA_DIR = os.path.join(self.tmp, "agent")
+        # build_app() starts the auto-backup, and its shutdown path launches a
+        # detached one. Left on, a test run would build 192MB archives of the
+        # operator's real work and push them to GitHub. Same shape of mistake
+        # as the heartbeat that escaped into the live agent directory.
+        self._autobackup = autobackup.ENABLED
+        autobackup.ENABLED = False
         config.DB_PATH = os.path.join(self.tmp, "history.sqlite3")
         config.OUTPUT_DIR = os.path.join(self.tmp, "outputs")
         config.UPLOAD_DIR = os.path.join(self.tmp, "uploads")
@@ -102,6 +117,8 @@ class StudioTestCase(unittest.TestCase):
         # minutes later, and fatal to the next Pod started by hand.
         deadman.stop_beating()
         deadman.clear()
+        autobackup.stop_backups()
+        autobackup.ENABLED = self._autobackup
         for k, v in self._saved.items():
             setattr(config, k, v)
         history._LOCAL = type(history._LOCAL)()
@@ -1595,7 +1612,7 @@ class FakeCtl:
     rules can be tested without a card, an account or a bill.
     """
 
-    def __init__(self, pods=None, start=None, create=None, volume_id="olmj77x4pc"):
+    def __init__(self, pods=None, start=None, create=None, volume_id=VOLUME_ID):
         from studio import runpod_ctl
         self.RunPodError = runpod_ctl.RunPodError
         self.pods = pods if pods is not None else []
@@ -1617,7 +1634,7 @@ class FakeCtl:
         return list(self.pods)
 
     def volume(self, volume_id=None):
-        return {"id": self.volume_id, "size": 200, "dataCenterId": "US-WA-1"}
+        return {"id": self.volume_id, "size": 200, "dataCenterId": DATACENTER_ID}
 
     def have_api_key(self):
         return True
@@ -1673,7 +1690,7 @@ class FakeCtl:
 
 
 def _pod(pid, status="EXITED", gpu="NVIDIA RTX 6000 Ada Generation", price=0.84,
-         volume="olmj77x4pc", created="2026-09-06"):
+         volume=VOLUME_ID, created="2026-09-06"):
     return {"id": pid, "name": "h3", "desiredStatus": status, "gpuTypeIds": [gpu] if gpu else None,
             "costPerHr": price, "networkVolumeId": volume, "createdAt": created}
 
@@ -1686,7 +1703,7 @@ def _ready_info(pid="p", gpu="NVIDIA RTX 6000 Ada Generation", price=0.84):
     silently asserting the behaviour that caused the 2026-09-07 incident.
     """
     return {"podId": pid, "desiredStatus": "RUNNING", "gpu": gpu, "costPerHr": price,
-            "networkVolumeId": "olmj77x4pc", "volumeMountPath": "/workspace",
+            "networkVolumeId": VOLUME_ID, "volumeMountPath": "/workspace",
             "publicIp": "203.0.113.7", "sshPort": 40000, "lastStartedAt": "2026-09-07T14:10:00Z",
             "comfyUrl": "http://127.0.0.1:8188"}
 
@@ -1779,7 +1796,7 @@ class GpuStartSequenceTests(unittest.TestCase):
         self._saved_state = config.RUNPOD_STATE
         config.RUNPOD_STATE = os.path.join(self.tmp, "runpod_state.json")
         with open(config.RUNPOD_STATE, "w", encoding="utf-8") as f:
-            json.dump({"networkVolumeId": "olmj77x4pc"}, f)
+            json.dump({"networkVolumeId": VOLUME_ID}, f)
 
     def tearDown(self):
         config.RUNPOD_STATE = self._saved_state
@@ -1903,7 +1920,7 @@ class PreflightTests(unittest.TestCase):
         from studio import preflight
         summary = preflight.summarize(preflight.offline_checks(
             list_pods=lambda: [], get_volume=lambda vid: {"id": vid, "size": 200,
-                                                          "dataCenterId": "US-WA-1"},
+                                                          "dataCenterId": DATACENTER_ID},
             have_api_key=lambda: True))
         self.assertTrue(summary["ok"], summary["blocking"])
         self.assertEqual(summary["fail"], 0)
@@ -2107,12 +2124,12 @@ class PodDeletionGuardTests(unittest.TestCase):
     def test_refuses_a_running_pod(self):
         from studio import runpod_ctl
         call, calls = self._fake({"id": "x", "desiredStatus": "RUNNING",
-                                  "networkVolumeId": "olmj77x4pc", "volumeInGb": 0})
+                                  "networkVolumeId": VOLUME_ID, "volumeInGb": 0})
         orig = runpod_ctl._call
         try:
             runpod_ctl._call = call
             with self.assertRaises(runpod_ctl.RunPodError):
-                runpod_ctl.delete_pod("x", active_pod_id="other", volume_id="olmj77x4pc")
+                runpod_ctl.delete_pod("x", active_pod_id="other", volume_id=VOLUME_ID)
         finally:
             runpod_ctl._call = orig
         self.assertNotIn(("DELETE", "/pods/x"), calls)
@@ -2120,12 +2137,12 @@ class PodDeletionGuardTests(unittest.TestCase):
     def test_refuses_a_pod_with_its_own_volume(self):
         from studio import runpod_ctl
         call, calls = self._fake({"id": "x", "desiredStatus": "EXITED",
-                                  "networkVolumeId": "olmj77x4pc", "volumeInGb": 40})
+                                  "networkVolumeId": VOLUME_ID, "volumeInGb": 40})
         orig = runpod_ctl._call
         try:
             runpod_ctl._call = call
             with self.assertRaises(runpod_ctl.RunPodError):
-                runpod_ctl.delete_pod("x", active_pod_id="other", volume_id="olmj77x4pc")
+                runpod_ctl.delete_pod("x", active_pod_id="other", volume_id=VOLUME_ID)
         finally:
             runpod_ctl._call = orig
         self.assertNotIn(("DELETE", "/pods/x"), calls)
@@ -2133,15 +2150,15 @@ class PodDeletionGuardTests(unittest.TestCase):
     def test_deletes_a_disposable_pod_and_keeps_the_volume(self):
         from studio import runpod_ctl
         call, calls = self._fake({"id": "x", "desiredStatus": "EXITED",
-                                  "networkVolumeId": "olmj77x4pc", "volumeInGb": 0})
+                                  "networkVolumeId": VOLUME_ID, "volumeInGb": 0})
         orig = runpod_ctl._call
         try:
             runpod_ctl._call = call
-            out = runpod_ctl.delete_pod("x", active_pod_id="other", volume_id="olmj77x4pc")
+            out = runpod_ctl.delete_pod("x", active_pod_id="other", volume_id=VOLUME_ID)
         finally:
             runpod_ctl._call = orig
         self.assertEqual(out["deleted"], "x")
-        self.assertEqual(out["networkVolumePreserved"], "olmj77x4pc")
+        self.assertEqual(out["networkVolumePreserved"], VOLUME_ID)
         self.assertIn(("DELETE", "/pods/x"), calls)
 
 
@@ -2157,7 +2174,7 @@ class PodMigrationTests(unittest.TestCase):
         with open(cfg.RUNPOD_STATE, "w") as f:
             json.dump({"podId": "oldpod", "comfyUrl": "https://oldpod-8188.proxy.runpod.net",
                        "publicIp": "1.1.1.1", "sshPort": 25061,
-                       "networkVolumeId": "olmj77x4pc"}, f)
+                       "networkVolumeId": VOLUME_ID}, f)
         self.cfg = cfg
 
     def tearDown(self):
@@ -2190,19 +2207,19 @@ class PodMigrationTests(unittest.TestCase):
             if method == "POST" and path == "/pods":
                 return {"id": "newpod"}
             return {"id": "newpod", "desiredStatus": "RUNNING", "publicIp": "2.2.2.2",
-                    "portMappings": {"22": 30000}, "networkVolumeId": "olmj77x4pc",
+                    "portMappings": {"22": 30000}, "networkVolumeId": VOLUME_ID,
                     "volumeMountPath": "/workspace", "costPerHr": 0.84, "gpuCount": 1}
 
         orig = runpod_ctl._call
         try:
             runpod_ctl._call = fake_call
-            info = runpod_ctl.create_pod({"name": "x", "networkVolumeId": "olmj77x4pc",
+            info = runpod_ctl.create_pod({"name": "x", "networkVolumeId": VOLUME_ID,
                                           "imageName": "img", "note_ignored_note": "drop me"})
         finally:
             runpod_ctl._call = orig
         self.assertEqual(info["podId"], "newpod")
         self.assertEqual(info["sshPort"], 30000)
-        self.assertEqual(info["networkVolumeId"], "olmj77x4pc")
+        self.assertEqual(info["networkVolumeId"], VOLUME_ID)
         self.assertNotIn("DELETE", [m for m, _ in seen])
         self.assertEqual(seen[0], ("POST", "/pods"))
 
@@ -2237,9 +2254,13 @@ class PodMigrationTests(unittest.TestCase):
                     "cloudType", "networkVolumeId", "volumeMountPath",
                     "containerDiskInGb", "ports"):
             self.assertIn(key, r, key)
-        self.assertEqual(r["networkVolumeId"], "olmj77x4pc")
+        self.assertEqual(r["networkVolumeId"], config.network_volume_id())
         self.assertEqual(r["volumeMountPath"], "/workspace")
-        self.assertEqual(r["dataCenterIds"], ["US-WA-1"])
+        # A list, and the first entry is where the volume lives. More than one
+        # is allowed and wanted: US-WA-1 refused Pods ~40 times in a day, so a
+        # second data center is what gets a GPU at all.
+        self.assertTrue(r["dataCenterIds"], "no data center in the spec")
+        self.assertEqual(r["dataCenterIds"][0], DATACENTER_ID)
         # the image must match the old pod: the venv on the volume depends on it
         old = json.load(open(os.path.join(os.path.dirname(path), "old_pod_full.json")))
         self.assertEqual(r["imageName"], old["imageName"])
@@ -4927,7 +4948,7 @@ class EndpointOwnershipTests(unittest.TestCase):
         self._saved = config.RUNPOD_STATE
         config.RUNPOD_STATE = os.path.join(self.tmp, "runpod_state.json")
         self._write({"podId": "A", "publicIp": "1.1.1.1", "sshPort": 1111,
-                     "endpoint_pod_id": "A", "networkVolumeId": "olmj77x4pc"})
+                     "endpoint_pod_id": "A", "networkVolumeId": VOLUME_ID})
 
     def tearDown(self):
         config.RUNPOD_STATE = self._saved
@@ -5067,7 +5088,7 @@ class StartCancellationTests(unittest.TestCase):
         self._saved = config.RUNPOD_STATE
         config.RUNPOD_STATE = os.path.join(self.tmp, "runpod_state.json")
         with open(config.RUNPOD_STATE, "w", encoding="utf-8") as f:
-            json.dump({"networkVolumeId": "olmj77x4pc"}, f)
+            json.dump({"networkVolumeId": VOLUME_ID}, f)
 
     def tearDown(self):
         config.RUNPOD_STATE = self._saved
@@ -5163,7 +5184,7 @@ class AcquisitionAcceptanceTests(unittest.TestCase):
         self._saved = config.RUNPOD_STATE
         config.RUNPOD_STATE = os.path.join(self.tmp, "runpod_state.json")
         with open(config.RUNPOD_STATE, "w", encoding="utf-8") as f:
-            json.dump({"networkVolumeId": "olmj77x4pc"}, f)
+            json.dump({"networkVolumeId": VOLUME_ID}, f)
 
     def tearDown(self):
         config.RUNPOD_STATE = self._saved
@@ -5375,7 +5396,7 @@ class StartStopSerializationTests(unittest.TestCase):
         self._saved = config.RUNPOD_STATE
         config.RUNPOD_STATE = os.path.join(self.tmp, "runpod_state.json")
         with open(config.RUNPOD_STATE, "w", encoding="utf-8") as f:
-            json.dump({"networkVolumeId": "olmj77x4pc"}, f)
+            json.dump({"networkVolumeId": VOLUME_ID}, f)
         self.manager = jobs.JobManager(comfy=comfy_client.ComfyClient("http://127.0.0.1:1"))
 
     def tearDown(self):
@@ -6209,6 +6230,99 @@ class DeadManSwitchTests(unittest.TestCase):
         for forbidden in ("delete_pod", "networkvolume", "terminate"):
             self.assertNotIn(forbidden, code.lower())
         self.assertIn("runpod_ctl.stop(", code)
+
+
+class AutoBackupTests(unittest.TestCase):
+    """The backup that runs itself, and the two ways it could go wrong quietly.
+
+    It exists because studio_data_backup.sh exited 1 and produced nothing for
+    ten days without anyone noticing. A backup nobody watches is not a backup,
+    so what is tested here is that it runs, that it refuses to run twice at
+    once, and above all that a test run cannot fire it at the operator's real
+    data.
+    """
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sh = io.open(os.path.join(cls.ROOT, "scripts", "studio_autobackup.sh"),
+                         encoding="utf-8").read()
+        cls.srv = io.open(os.path.join(cls.ROOT, "studio", "server.py"),
+                          encoding="utf-8").read()
+        cls.start_h3 = io.open(os.path.join(cls.ROOT, "scripts", "start_h3.sh"),
+                               encoding="utf-8").read()
+
+    def test_a_test_run_cannot_fire_it(self):
+        """StudioTestCase turns it off. Without that, the suite would archive
+        and upload the operator's real work every time it ran build_app."""
+        base = io.open(os.path.join(self.ROOT, "studio", "tests", "test_studio.py"),
+                       encoding="utf-8").read()
+        self.assertIn("autobackup.ENABLED = False", base)
+        self.assertIn("autobackup.stop_backups()", base)
+
+    def test_it_takes_a_lock(self):
+        """Two runs at once each build a 192MB archive and interleave on the
+        release -- measured: one left a .sha256 for an asset still uploading."""
+        self.assertIn("mkdir \"$LOCK\"", self.sh)
+        self.assertIn("kill -0", self.sh)          # stale locks are recovered
+
+    def test_it_does_not_use_bash_4_builtins(self):
+        """macOS ships bash 3.2; mapfile would kill the script mid-run. Checked
+        against the code, not the comments -- the comment explaining why it is
+        absent naturally contains the word."""
+        code = "\n".join(l for l in self.sh.splitlines()
+                         if not l.lstrip().startswith("#"))
+        for builtin in ("mapfile", "readarray", "declare -A"):
+            self.assertNotIn(builtin, code)
+
+    def test_the_fingerprint_ignores_sqlite_sidecars(self):
+        """Reading the database touches -shm, so including it would report
+        'changed' on every single run and back up forever."""
+        self.assertIn("! -name '*.sqlite3-wal'", self.sh)
+        self.assertIn("! -name '*.sqlite3-shm'", self.sh)
+
+    def test_a_failure_is_recorded_and_loud(self):
+        for marker in ("status_write failed", "BACKUP FAILED", "exit 1"):
+            self.assertIn(marker, self.sh)
+
+    def test_it_prunes_both_copies(self):
+        """Each snapshot is a whole 182MB copy. Trimming only the release let
+        five of them reach 1.4GB in the local backups folder."""
+        self.assertIn("pruned local", self.sh)
+        self.assertIn("pruned $a", self.sh)
+        # Local pruning must come after a successful upload, never before it.
+        self.assertLess(self.sh.index("gh release upload"),
+                        self.sh.index("pruned local"))
+
+    def test_an_upload_failure_is_a_failure(self):
+        """The point is a copy that is not on this Mac. A local archive with a
+        failed upload is not that, and must not report success."""
+        self.assertIn("the only copy is on this Mac", self.sh)
+
+    def test_the_studio_starts_it_and_leaves_one_running_at_shutdown(self):
+        self.assertIn("autobackup.start(", self.srv)
+        self.assertIn("autobackup.run_detached()", self.srv)
+
+    def test_run_once_never_raises(self):
+        ok, msg = autobackup.run_once(timeout=1)
+        self.assertIsInstance(ok, bool)
+        self.assertTrue(msg)
+
+    def test_status_survives_a_missing_file(self):
+        real = autobackup.STATE
+        try:
+            autobackup.STATE = os.path.join(tempfile.mkdtemp(), "absent.json")
+            self.assertEqual(autobackup.status().get("last_state"), "never run")
+        finally:
+            autobackup.STATE = real
+
+    def test_comfyui_writes_its_output_to_the_container_disk(self):
+        """The Studio downloads every output and nothing on the Pod reads them
+        again, so a copy on the billed volume was pure duplication."""
+        self.assertIn("--output-directory", self.start_h3)
+        self.assertIn("COMFY_OUTPUT_DIR", self.start_h3)
+        self.assertNotIn('COMFY_OUTPUT_DIR="${COMFY_OUTPUT_DIR:-/workspace', self.start_h3)
 
 
 class DeadManAgentTests(unittest.TestCase):

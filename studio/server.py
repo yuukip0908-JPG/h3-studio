@@ -22,7 +22,7 @@ if __package__ in (None, ""):  # allow `python3 studio/server.py`
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "studio"
 
-from . import (comfy_client, config, deadman, gpu_plan, graph, history,  # noqa: E402
+from . import (autobackup, comfy_client, config, deadman, gpu_plan, graph, history,  # noqa: E402
                jobs, longdraft, mediaprobe, postprocess, preflight, premiere,
                runpod_ctl, startup)
 
@@ -1283,6 +1283,12 @@ def build_app(comfy=None):
     deadman.start(is_busy=lambda: MANAGER.is_busy() or MANAGER.has_active_long_draft(),
                   pod_id=config.pod_id)
 
+    # And a verified copy of the generated work, off this Mac, on a timer.
+    # This runs here rather than from launchd because launchd cannot read
+    # ~/Downloads at all -- see studio/autobackup.py. The Studio is also the
+    # only writer, so its uptime is the only time a backup has work to do.
+    autobackup.start(log=lambda m: print(m, flush=True))
+
     global STARTER
     STARTER = _build_starter()
     return MANAGER, GUARD
@@ -1296,6 +1302,10 @@ def main():
     print("auto-stop: %s" % ("OFF" if not GUARD.idle_minutes else "%d min" % GUARD.idle_minutes))
     print("dead-man switch: pulse at %s" % deadman.heartbeat_path())
     print("                  agent reads %s" % deadman.agent_heartbeat_path())
+    _bk = autobackup.status()
+    print("auto-backup: %s (last %s: %s)"
+          % ("every %d min" % (autobackup.INTERVAL_SECONDS / 60) if autobackup.ENABLED else "OFF",
+             _bk.get("last_state"), _bk.get("last_success") or _bk.get("last_message")))
     rec = gpu_plan.recommended()
     if rec:
         print("recommended GPU: %s  $%.2f/hr (30min ~$%.2f)"
@@ -1316,6 +1326,9 @@ def main():
         # dead-man switch reading a pulse that went cold weeks ago.
         deadman.stop_beating()
         deadman.clear()
+        # Detached: a final backup must not hold shutdown for minutes.
+        autobackup.stop_backups()
+        autobackup.run_detached()
         httpd.server_close()
 
 

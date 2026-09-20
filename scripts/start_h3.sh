@@ -11,7 +11,21 @@ fi
 rm -f "$PID_FILE"
 bash "$PROJECT_DIR/scripts/install_workflows.sh" >/dev/null 2>&1 || echo "note: install_workflows.sh failed (non-fatal)"
 cd "$COMFYUI_DIR"
-CMD=("$VPY" main.py --listen "$COMFY_HOST" --port "$COMFY_PORT" --disable-auto-launch)
+# Generated videos go to the container disk, not the network volume.
+#
+# The Studio downloads every output to the Mac (studio/jobs.py -> download_view)
+# and nothing on the Pod reads them again, so the copy under /workspace was a
+# second copy of a file we already have -- on the storage that is billed by the
+# gigabyte and never cleaned. The container disk is free while the Pod is
+# stopped and wiped when it stops, which is exactly the lifetime this data
+# wants. Verified present at the pinned ComfyUI commit 169fcf35.
+#
+# Override COMFY_OUTPUT_DIR to put them back on the volume if a run ever needs
+# to outlive the Pod.
+COMFY_OUTPUT_DIR="${COMFY_OUTPUT_DIR:-/comfy-output}"
+mkdir -p "$COMFY_OUTPUT_DIR" 2>/dev/null || true
+CMD=("$VPY" main.py --listen "$COMFY_HOST" --port "$COMFY_PORT" --disable-auto-launch
+     --output-directory "$COMFY_OUTPUT_DIR")
 # shellcheck disable=SC2206
 [[ -n "$COMFY_EXTRA_ARGS" ]] && CMD+=($COMFY_EXTRA_ARGS)
 echo "[$(date '+%F %T')] START: ${CMD[*]}" >> "$COMFY_LOG"
