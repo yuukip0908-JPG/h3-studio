@@ -103,7 +103,7 @@ stock が通る前に CLIPCached を入れない理由: 失敗したとき「H3 
 ## 6. 検証
 
 ```bash
-bash scripts/start_studio.sh     # http://127.0.0.1:8010/ が開く
+bash scripts/start_studio.sh     # http://127.0.0.1:8020/ が開く
 bash scripts/v2_validate.sh      # 3モードを実機で通す
 ```
 

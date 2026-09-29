@@ -5,7 +5,7 @@
 ```
 Mac（コントロールプレーン）                  RunPod Pod（GPU のみ）
 ┌───────────────────────────────┐          ┌──────────────────────────────┐
-│ H3 Studio  127.0.0.1:8010     │          │ ComfyUI v0.34.2  :8188       │
+│ H3 Studio  127.0.0.1:8020     │          │ ComfyUI v0.34.2  :8188       │
 │  ├ static UI (vanilla JS)     │  HTTPS   │  ├ MiniMax H3 INT8 ConvRot   │
 │  ├ /api/*                     │─────────▶│  ├ Qwen3-VL INT8 ConvRot     │
 │  ├ job queue + progress       │  proxy   │  ├ CLIPCached f17ba8f        │

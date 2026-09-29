@@ -197,16 +197,18 @@ def list_pods():
     return _call("GET", "/pods")
 
 
-def running_pods(exclude=None):
-    """Pods that are RUNNING (or on their way), excluding one id if given."""
-    out = []
-    for pod in list_pods():
-        if exclude and pod.get("id") == exclude:
-            continue
-        if pod.get("desiredStatus") == "RUNNING":
-            out.append({"id": pod.get("id"), "name": pod.get("name"),
-                        "costPerHr": pod.get("costPerHr")})
-    return out
+def h3_running(pods, volume_id):
+    """RUNNING Pods that are this project's: the ones on our network volume.
+
+    The RunPod account is shared with C_STUDIO, whose Pods never mount this
+    volume and so can never put a second ComfyUI on our cache directory. When
+    the volume is unknown we cannot tell whose a Pod is, and every RUNNING Pod
+    counts -- for a double-start guard, that is the safe direction.
+    """
+    running = [p for p in pods if p.get("desiredStatus") == "RUNNING"]
+    if not volume_id:
+        return running
+    return [p for p in running if p.get("networkVolumeId") == volume_id]
 
 
 def volume(volume_id=None):

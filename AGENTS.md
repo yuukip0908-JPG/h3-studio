@@ -37,7 +37,7 @@ enter_cache_phase → MISS → 完全再起動 → HIT → matrix → snapshot_e
 
 ## v2 の構造
 ```
-Mac: studio/ (H3 Studio, 標準ライブラリのみ, 127.0.0.1:8010)
+Mac: studio/ (H3 Studio, 標準ライブラリのみ, 127.0.0.1:8020)
         │ HTTP/WS ──▶ Pod: ComfyUI :8188（無改変の baseline）
         └ RunPod REST ──▶ Pod start/stop（terminateは指示があるときだけ）
 ```
@@ -71,7 +71,11 @@ GPU ON後に環境修理をしない / 状態をユーザーへ見せる / 終�
   （現状 RTX 6000 Ada 48GB $0.84 だけ）。価格不明は高額扱い
 - START GPU 1回につき restart 1回・create 1回・**5分**まで。背景で探し続けない
 - **本体は Network Volume `olmj77x4pc`**。Pod は使い捨て。コードに Pod ID を書かない
-- RUNNING な Pod が1つでもあれば新規起動を拒否（同一ボリューム二重起動の禁止）
+- H3 のボリュームに RUNNING な Pod が1つでもあれば新規起動を拒否（同一ボリューム二重起動の禁止）。
+  ボリュームが分からないときは、アカウント内の全 RUNNING Pod を対象にする
+- **RunPod アカウントは C_STUDIO と共有**している。自動停止・起動前確認・二重起動の禁止は
+  **H3 のボリュームに載った Pod だけ**を対象にする。C_STUDIO の Pod（`cstudio-` で始まる、
+  別ボリュームか無し）は止めない・数えない。Studio は `127.0.0.1:8020`（8010 は C_STUDIO）
 - 課金は `GET /billing/pods` / `/billing/networkvolumes` が実データ。
   推定値には必ず「推定」と書く。取得できないときは「取得できません」と書く
 

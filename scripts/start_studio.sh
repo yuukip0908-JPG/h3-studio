@@ -16,7 +16,7 @@ fi
 PID_FILE="${H3_STUDIO_PID_FILE:-$DIR/results/studio.pid}"
 LOG="${H3_STUDIO_LOG:-$DIR/results/logs/studio.log}"
 mkdir -p "$(dirname "$LOG")"
-PORT="${H3_STUDIO_PORT:-8010}"
+PORT="${H3_STUDIO_PORT:-8020}"
 
 if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
   echo "H3 Studio already running (pid $(cat "$PID_FILE")) -> http://127.0.0.1:$PORT/"

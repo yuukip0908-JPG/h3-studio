@@ -513,7 +513,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _hostname(self, value):
         value = (value or "").strip()
-        if value.startswith("["):                       # [::1]:8010
+        if value.startswith("["):                       # [::1]:8020
             return value.split("]")[0] + "]"
         return value.rsplit(":", 1)[0] if ":" in value else value
 

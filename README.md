@@ -13,7 +13,7 @@ MiniMax H3 + ComfyUI-MiniMaxH3-CLIPCached をクラウドGPUで再現した base
 bash scripts/start_studio.sh
 ```
 
-`http://127.0.0.1:8010/` が開く。Studio 自体は GPU を使わないので**この時点では課金されない**。
+`http://127.0.0.1:8020/` が開く。Studio 自体は GPU を使わないので**この時点では課金されない**。
 UI 右上の **START GPU** で Pod 起動 → ComfyUI 起動 → READY まで自動。
 終わったら **STOP GPU** で課金停止（Network Volume は保持）。
 

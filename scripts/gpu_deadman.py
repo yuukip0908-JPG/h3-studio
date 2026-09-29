@@ -13,6 +13,9 @@ studio_heartbeat.json.
                               Pod and throwing away GPU time is its own cost
     no pulse at all        -> the Studio has never run here; do nothing
 
+Only H3's Pods: the ones on the volume the pulse names, or the Pod it was
+driving. The RunPod account is shared with C_STUDIO, whose Pods are not ours.
+
 It stops. It never deletes a Pod and never touches the Network Volume: those
 are refused by the project's own rules, and a program that runs unattended is
 the last place to make an exception.
@@ -58,6 +61,19 @@ def decide(beat, now, idle_minutes, busy_minutes):
         age / 60.0, what, limit / 60.0)
 
 
+def pods_to_stop(pods, beat):
+    """RUNNING Pods this switch may stop: the ones on the volume the pulse
+    names, or the Pod the Studio was driving. Nothing else.
+
+    The RunPod account is shared with C_STUDIO. A cold H3 pulse is no reason to
+    stop its LoRA training, so a pulse that names neither stops nothing.
+    """
+    vid = (beat or {}).get("volume_id")
+    pid = (beat or {}).get("pod_id")
+    return [p for p in (pods or []) if p.get("desiredStatus") == "RUNNING"
+            and ((vid and p.get("networkVolumeId") == vid) or (pid and p.get("id") == pid))]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--idle-minutes", type=float, default=20.0)
@@ -74,11 +90,13 @@ def main():
         log("WOULD STOP (%s) but there is no RunPod API key available here" % why)
         return 1
     try:
-        running = runpod_ctl.running_pods()
+        running = pods_to_stop(runpod_ctl.list_pods(), beat)
     except Exception as e:  # noqa: BLE001 - a transient API failure is not a reason to act
         log("cannot list Pods (%s); doing nothing" % str(e)[:120])
         return 1
     if not running:
+        if args.check:
+            log("pulse is cold (%s) but no H3 Pod is RUNNING" % why)
         return 0
 
     for pod in running:

@@ -9,7 +9,7 @@
 bash scripts/start_studio.sh
 ```
 
-ブラウザで `http://127.0.0.1:8010/` が開く。Studio 自体は GPU を使わないので
+ブラウザで `http://127.0.0.1:8020/` が開く。Studio 自体は GPU を使わないので
 **この時点では課金されない**。
 
 1. 右上 **START GPU** → Pod 起動 → ComfyUI 起動 → health check → `READY`（3〜6 分）
@@ -243,7 +243,7 @@ TCC に当たらない）。
 | 目的 | コマンド |
 |---|---|
 | Pod の状態と課金 | `bash scripts/runpod_status.sh` |
-| Studio 側の健全性 | `http://127.0.0.1:8010/api/doctor` |
+| Studio 側の健全性 | `http://127.0.0.1:8020/api/doctor` |
 | Pod 側 baseline の健全性 | `bash scripts/pod_ssh.sh 'bash /workspace/H3_CLOUD_REPRO/scripts/doctor.sh'` |
 | 実験の導入状況 | `bash scripts/install_experiment.sh --status` |
 | 3モードまとめて実機検証 | `bash scripts/v2_validate.sh`（GPU を使う。PASS 時のみ `results/V2_READY` 作成） |

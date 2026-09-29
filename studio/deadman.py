@@ -65,12 +65,22 @@ def write_heartbeat(pod_id=None, busy=False, path=None):
     the failure this mirroring exists to prevent, not a partial success.
     """
     beat = {"t": time.time(), "pid": os.getpid(),
-            "pod_id": pod_id, "busy": bool(busy)}
+            "pod_id": pod_id, "volume_id": _volume_id(), "busy": bool(busy)}
     if path is not None:
         return _write_one(path, beat)
     primary = _write_one(heartbeat_path(), beat)
     mirror = _write_one(agent_heartbeat_path(), beat)
     return primary and mirror
+
+
+def _volume_id():
+    """Which Pods are ours. The RunPod account is shared with C_STUDIO, so the
+    switch stops only Pods on this volume -- never somebody else's run."""
+    try:
+        from . import config
+        return config.network_volume_id() or None
+    except Exception:  # noqa: BLE001 - a heartbeat must not die
+        return None
 
 
 def read_heartbeat(path=None):

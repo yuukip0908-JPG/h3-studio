@@ -18,7 +18,7 @@ ok=None means "could not be determined", which is never reported as a pass.
 import json
 import os
 
-from . import config, graph
+from . import config, graph, runpod_ctl
 
 # A refused SSH is a known-bad answer, not an unknown one. rc 125 means the
 # Studio declined to dial because the recorded endpoint does not provably
@@ -90,10 +90,16 @@ def offline_checks(list_pods=None, get_volume=None, have_api_key=None):
     if list_pods:
         try:
             pods = list_pods()
-            running = [p for p in pods if p.get("desiredStatus") == "RUNNING"]
-            out.append(_check("no_double_start", "他に動いている Pod が無い", not running,
-                              "RUNNING: " + ", ".join(p.get("id", "?") for p in running)
-                              if running else "RUNNING な Pod は無い（%d基すべて停止）" % len(pods)))
+            running = runpod_ctl.h3_running(pods, vid)
+            others = [p for p in pods if p.get("desiredStatus") == "RUNNING"
+                      and p not in running]
+            ours = [p for p in pods if p.get("networkVolumeId") == vid] if vid else pods
+            detail = ("RUNNING: " + ", ".join(p.get("id", "?") for p in running)
+                      if running else "RUNNING な H3 の Pod は無い（%d基すべて停止）" % len(ours))
+            if others:
+                # C_STUDIO shares the account. Shown, never counted.
+                detail += "／別プロジェクトの RUNNING %d基は対象外" % len(others)
+            out.append(_check("no_double_start", "他に動いている Pod が無い", not running, detail))
         except Exception as e:  # noqa: BLE001
             out.append(_check("no_double_start", "他に動いている Pod が無い", None, str(e)[:200]))
     else:

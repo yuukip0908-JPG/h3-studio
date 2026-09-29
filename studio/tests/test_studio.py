@@ -1812,6 +1812,27 @@ class GpuStartSequenceTests(unittest.TestCase):
         self.assertEqual(ctl.start_calls, [])
         self.assertEqual(ctl.create_calls, [])
 
+    def test_another_projects_running_pod_does_not_block_a_start(self):
+        """C_STUDIO shares the RunPod account. A Pod of its own, on no volume or
+        on its own volume, is not a second ComfyUI on our cache directory."""
+        from studio import startup
+        ctl = FakeCtl(pods=[_pod("cstudio-a", status="RUNNING", volume=None),
+                            _pod("cstudio-b", status="RUNNING", volume="their-volume"),
+                            _pod("p")],
+                      start=lambda pod_id: _ready_info(pod_id))
+        st = _run_starter(ctl)
+        self.assertEqual(st.state, startup.READY, st.error)
+        self.assertEqual(ctl.start_calls, ["p"])
+        self.assertNotIn("cstudio-a", ctl.stopped)
+        self.assertNotIn("cstudio-b", ctl.stopped)
+
+    def test_an_unknown_volume_still_blocks_on_any_running_pod(self):
+        """If we cannot tell which Pods are ours, the safe answer is all of them."""
+        from studio import runpod_ctl
+        pods = [_pod("x", status="RUNNING", volume="their-volume"), _pod("y")]
+        self.assertEqual([p["id"] for p in runpod_ctl.h3_running(pods, "")], ["x"])
+        self.assertEqual(runpod_ctl.h3_running(pods, VOLUME_ID), [])
+
     def test_no_free_gpu_is_reported_as_retryable_not_as_a_fault(self):
         """RunPod answers HTTP 500 when the Pod's host is fully allocated.
 
@@ -1926,10 +1947,43 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(summary["fail"], 0)
 
     def test_a_running_pod_is_a_preflight_failure(self):
-        from studio import preflight
+        from studio import config, preflight
         checks = preflight.offline_checks(
-            list_pods=lambda: [{"id": "x", "desiredStatus": "RUNNING"}],
+            list_pods=lambda: [{"id": "x", "desiredStatus": "RUNNING",
+                                "networkVolumeId": config.network_volume_id()}],
             get_volume=lambda vid: {"id": vid}, have_api_key=lambda: True)
+        guard = [c for c in checks if c["key"] == "no_double_start"][0]
+        self.assertFalse(guard["ok"])
+
+    def test_the_studio_does_not_listen_where_c_studio_does(self):
+        """C_STUDIO's backend owns 127.0.0.1:8010. Sharing it meant whichever
+        started first won, and the browser saw both as one site."""
+        from studio import config
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self.assertNotEqual(config.STUDIO_PORT, 8010)
+        for script in ("start_studio.sh", "v2_validate.sh", "ab_acquire_and_run.sh"):
+            src = io.open(os.path.join(root, "scripts", script), encoding="utf-8").read()
+            self.assertIn("H3_STUDIO_PORT:-%d" % config.STUDIO_PORT, src, script)
+
+    def test_another_projects_running_pod_is_not_a_preflight_failure(self):
+        """The RunPod account is shared with C_STUDIO. Its Pods never mount this
+        volume, so they cannot put a second ComfyUI on this cache directory --
+        which is the only thing this check exists to prevent."""
+        from studio import config, preflight
+        vid = config.network_volume_id()
+        if not vid:
+            self.skipTest("no network volume configured")
+        checks = preflight.offline_checks(
+            list_pods=lambda: [{"id": "cstudio-1", "desiredStatus": "RUNNING"},
+                               {"id": "cstudio-2", "desiredStatus": "RUNNING",
+                                "networkVolumeId": "someone-elses-volume"}],
+            get_volume=lambda v: {"id": v}, have_api_key=lambda: True)
+        guard = [c for c in checks if c["key"] == "no_double_start"][0]
+        self.assertTrue(guard["ok"], guard["detail"])
+        self.assertIn("2", guard["detail"])      # still says they exist
+        checks = preflight.offline_checks(
+            list_pods=lambda: [{"id": "h3", "desiredStatus": "RUNNING", "networkVolumeId": vid}],
+            get_volume=lambda v: {"id": v}, have_api_key=lambda: True)
         guard = [c for c in checks if c["key"] == "no_double_start"][0]
         self.assertFalse(guard["ok"])
 
@@ -6221,13 +6275,33 @@ class DeadManSwitchTests(unittest.TestCase):
         self.assertEqual(beat["pod_id"], "pod9")
         self.assertTrue(beat["busy"])
         self.assertEqual(beat["pid"], os.getpid())
+        # Which Pods are ours: the switch must not stop C_STUDIO's.
+        self.assertIn("volume_id", beat)
+        self.assertEqual(beat["volume_id"], config.network_volume_id())
+
+    def test_the_switch_stops_only_pods_on_our_volume(self):
+        """The RunPod account is shared with C_STUDIO. A cold H3 pulse is no
+        reason to stop a LoRA training run somebody else started."""
+        pods = [{"id": "h3", "desiredStatus": "RUNNING", "networkVolumeId": "vol"},
+                {"id": "cstudio-a", "desiredStatus": "RUNNING"},
+                {"id": "cstudio-b", "desiredStatus": "RUNNING", "networkVolumeId": "theirs"},
+                {"id": "old", "desiredStatus": "EXITED", "networkVolumeId": "vol"}]
+        pick = lambda beat: [p["id"] for p in gpu_deadman.pods_to_stop(pods, beat)]
+        self.assertEqual(pick({"volume_id": "vol"}), ["h3"])
+        # The Pod the Studio was driving counts even if the volume is unknown.
+        self.assertEqual(pick({"volume_id": "", "pod_id": "cstudio-a"}), ["cstudio-a"])
+        # A pulse that names nothing is not a licence to stop everything.
+        self.assertEqual(pick({}), [])
+        self.assertEqual(pick({"volume_id": None, "pod_id": None}), [])
 
     def test_the_switch_never_deletes_and_never_touches_the_volume(self):
         src = io.open(os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
             "scripts", "gpu_deadman.py"), encoding="utf-8").read()
         code = re.sub(r'""".*?"""', "", src, flags=re.S)
-        for forbidden in ("delete_pod", "networkvolume", "terminate"):
+        # Reading a Pod's networkVolumeId is how it tells ours from C_STUDIO's;
+        # what must never appear is the /networkvolumes endpoint itself.
+        for forbidden in ("delete_pod", "/networkvolumes", "terminate"):
             self.assertNotIn(forbidden, code.lower())
         self.assertIn("runpod_ctl.stop(", code)
 
@@ -6373,7 +6447,9 @@ class DeadManAgentTests(unittest.TestCase):
         self.assertIn("User-Agent", self.code)
 
     def test_it_never_deletes_and_never_touches_the_volume(self):
-        for forbidden in ("delete_pod", "networkvolume", "terminate"):
+        # Reading a Pod's networkVolumeId is how it tells ours from C_STUDIO's;
+        # what must never appear is the /networkvolumes endpoint itself.
+        for forbidden in ("delete_pod", "/networkvolumes", "terminate"):
             self.assertNotIn(forbidden, self.code.lower())
         self.assertIn("/pods/%s/stop", self.code)
 
@@ -6392,6 +6468,20 @@ class DeadManAgentTests(unittest.TestCase):
                     "disagreement at busy=%s age=%d min" % (busy, age_min))
         self.assertEqual(self.agent.decide(None, now, 20.0, 90.0)[0],
                          gpu_deadman.decide(None, now, 20.0, 90.0)[0])
+
+    def test_it_picks_the_same_pods_as_the_original(self):
+        """The shared account made "which Pods" a rule of its own, so it gets
+        the same drift guard as "when"."""
+        pods = [{"id": "h3", "desiredStatus": "RUNNING", "networkVolumeId": "vol"},
+                {"id": "cstudio-a", "desiredStatus": "RUNNING"},
+                {"id": "cstudio-b", "desiredStatus": "RUNNING", "networkVolumeId": "theirs"},
+                {"id": "old", "desiredStatus": "EXITED", "networkVolumeId": "vol"}]
+        for beat in ({"volume_id": "vol"}, {"pod_id": "cstudio-a"},
+                     {"volume_id": "vol", "pod_id": "h3"}, {}, {"volume_id": ""}):
+            self.assertEqual(self.agent.pods_to_stop(pods, beat),
+                             gpu_deadman.pods_to_stop(pods, beat), beat)
+        self.assertEqual([p["id"] for p in self.agent.pods_to_stop(pods, {"volume_id": "vol"})],
+                         ["h3"])
 
     def test_a_broken_pulse_is_not_read_as_an_old_one(self):
         tmp = tempfile.mkdtemp(prefix="h3-agent-")

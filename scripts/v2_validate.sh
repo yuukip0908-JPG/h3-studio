@@ -13,7 +13,7 @@
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KEEP_UP=0; [[ "${1:-}" == "--keep-up" ]] && KEEP_UP=1
-PORT="${H3_STUDIO_PORT:-8010}"
+PORT="${H3_STUDIO_PORT:-8020}"
 BASE="http://127.0.0.1:$PORT"
 OUT="$DIR/results/v2_validation"
 mkdir -p "$OUT"

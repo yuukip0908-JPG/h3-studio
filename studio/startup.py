@@ -268,7 +268,7 @@ class GpuStarter:
             pods = self.ctl.list_pods()
         except Exception as e:  # noqa: BLE001
             return self._fail("guard", "RunPod に接続できません: %s" % str(e)[:200])
-        running = [p for p in pods if p.get("desiredStatus") == "RUNNING"]
+        running = runpod_ctl.h3_running(pods, config.network_volume_id())
         if running:
             names = ", ".join("%s ($%.2f/時)" % (p.get("id"), p.get("costPerHr") or 0) for p in running)
             return self._fail("guard",

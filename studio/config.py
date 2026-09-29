@@ -38,7 +38,7 @@ RUNPOD_STATE = os.path.join(RESULTS_DIR, "runpod_state.json")
 # Studio HTTP server (localhost only -- this is a single-operator tool and it
 # holds RunPod control; it must never be exposed on a public interface).
 STUDIO_HOST = os.environ.get("H3_STUDIO_HOST", "127.0.0.1")
-STUDIO_PORT = int(os.environ.get("H3_STUDIO_PORT", "8010"))
+STUDIO_PORT = int(os.environ.get("H3_STUDIO_PORT", "8020"))
 
 # ComfyUI endpoint. Default is derived from the Pod id in runpod_state.json;
 # H3_COMFY_URL overrides it (used by the offline test harness).

@@ -2805,7 +2805,7 @@ function renderSettingsScreen(s) {
     ])
     + grp("保存先", [
       ["書き出し先", cfg.output_dir || "—"],
-      ["Studio", "このMac（127.0.0.1:8010）"],
+      ["Studio", "このMac（" + location.host + "）"],
     ])
     + grp("このアプリ", [
       ["バージョン", s && s.studio_version ? s.studio_version : "—"],

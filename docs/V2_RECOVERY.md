@@ -36,7 +36,7 @@ bash scripts/rollback_stable.sh             # 実行（'rollback' と入力し�
 | 5 | config 確認 | `git diff h3-studio-v2-stable -- config studio/config.py` | 差分なし |
 | 6 | Network Volume 確認 | `bash -c 'source scripts/runpod_env.sh; rp GET /networkvolumes'` | `olmj77x4pc` 200GB US-WA-1 が存在 |
 | 7 | tests | `/opt/homebrew/bin/python3.12 -m unittest discover -s studio/tests -t . -q` | **Ran 150 / OK** |
-| 8 | Studio 起動 | `bash scripts/start_studio.sh` | `http://127.0.0.1:8010/` が開く |
+| 8 | Studio 起動 | `bash scripts/start_studio.sh` | `http://127.0.0.1:8020/` が開く |
 | 9 | GPU | **何もしない** | 課金は人が START GPU を押すまで始まらない |
 
 git ごと失った場合:
@@ -63,7 +63,7 @@ cat H3_CLOUD_REPRO/STABLE_CHECKPOINT.json    # 解決済みの commit hash
 | Studio は開くが GPU 情報が UNKNOWN | RunPod API / Keychain | `bash scripts/runpod_status.sh` |
 | START GPU が「Pod did not reach RUNNING」 | RunPod 側 | RunPod コンソールで在庫・課金状態を確認 |
 | START GPU が「ComfyUI did not become healthy」 | Pod 側 ComfyUI | §3 |
-| 生成が 400 で弾かれる | グラフ / ノード未登録 | `http://127.0.0.1:8010/api/doctor` |
+| 生成が 400 で弾かれる | グラフ / ノード未登録 | `http://127.0.0.1:8020/api/doctor` |
 | 生成は通るが常に MISS | fingerprint / encoder drift | §4 |
 | Reference Strength が効かない | 追加ノード未導入 | `bash scripts/install_h3studio_node.sh` |
 | baseline の doctor が FAIL | Pod venv | §5 |

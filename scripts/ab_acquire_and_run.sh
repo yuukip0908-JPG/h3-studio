@@ -19,7 +19,7 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR"
 PY=/opt/homebrew/bin/python3.12
-PORT="${H3_STUDIO_PORT:-8010}"
+PORT="${H3_STUDIO_PORT:-8020}"
 BASE="http://127.0.0.1:$PORT"
 MAX_MINUTES="${MAX_MINUTES:-90}"
 PAYLOAD="${AB_PAYLOAD:-$PY scripts/ab_quality.py --run}"
