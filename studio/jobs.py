@@ -264,6 +264,11 @@ class LongDraftRun:
                 if self._cancelled.is_set():
                     break
                 self._run_segment(seg)
+                if self.manager._stop.is_set():
+                    # The Studio is shutting down. Leave every row as it is --
+                    # the next start collects what is still on ComfyUI -- and
+                    # above all do not queue the next segment from a dead process.
+                    return
                 if seg.status == "error":
                     self.error = seg.error
                     break
@@ -275,6 +280,64 @@ class LongDraftRun:
             self._persist_parent("error")
             self.status = "error"
             self.manager.notice("error", "長尺Draft %s: %s" % (self.id, self.error[:200]))
+
+    def reattach(self):
+        """Pick a crashed run back up after a restart -- collecting, never spending.
+
+        On 2026-09-07 a segment ran 524 s on the Pod while the restarted Studio
+        knew nothing about it; it was recovered by hand and then submitted a
+        second time on resume. Here, a segment whose generation finished while
+        the Studio was down is recorded as done, and one still on ComfyUI
+        (recover_from_history() has already adopted it) is watched to the end.
+        Nothing is submitted: the segments after it wait for the operator.
+        """
+        in_flight = None
+        for seg in self.segments:
+            if seg.status == "done":
+                continue
+            rows = history.generations_for_segment(self.id, seg.index)
+            if not rows:
+                continue
+            row = rows[0]
+            live = self.manager.generation(row["id"])
+            if live is not None and live.status in ACTIVE_STATES:
+                seg.batch_id, seg.generation_id = live.batch_id, live.id
+                live.expected_seconds = live.expected_seconds or seg.expected_seconds
+                in_flight = (seg, live)
+                continue
+            status = live.status if live is not None else row.get("status")
+            if status == "done":
+                done = self.manager._finished_generation(row)
+                if done is not None:
+                    seg.batch_id, seg.generation_id = done.batch_id, done.id
+                    self._record(seg, done)
+            elif status == "error":
+                # Failed while the Studio was down. Say so, rather than letting
+                # _finish() sweep it to a silent "cancelled".
+                seg.batch_id, seg.generation_id = row["batch_id"], row["id"]
+                seg.status = "error"
+                seg.error = (live.error if live is not None else None) or row.get("error")
+                history.update_long_draft_segment(
+                    self.id, seg.index, status="error", error=seg.error,
+                    batch_id=seg.batch_id, generation_id=seg.generation_id)
+        if in_flight is None:
+            self._finish()
+            return self
+        self.status = "running"
+        self._thread = threading.Thread(target=self._collect, args=in_flight, daemon=True,
+                                        name="long-draft-collect-%s" % self.id)
+        self._thread.start()
+        return self
+
+    def _collect(self, seg, gen):
+        try:
+            self._watch(seg, gen)
+            if not self.manager._stop.is_set():
+                self._finish()
+        except Exception as e:            # noqa: BLE001 - same rule as _run
+            self.error = str(e)[:2000]
+            self._persist_parent("error")
+            self.status = "error"
 
     # ComfyUI's worker is woken by set_flag() and acts on the unload before it
     # takes the next queue item -- but only if the item is not already there.
@@ -317,7 +380,9 @@ class LongDraftRun:
             return
         if self._cancelled.wait(self.FREE_SETTLE_SECONDS):
             return
-        if self._cancelled.is_set():
+        if self._cancelled.is_set() or self.manager._stop.is_set():
+            # A Studio shutting down in these seconds must not queue minutes of
+            # GPU time from a process that is on its way out.
             return
 
         # Has this segment already been handed to ComfyUI? A resume after a
@@ -343,6 +408,8 @@ class LongDraftRun:
             self._watch(seg, adopted)
             return
 
+        if self.manager._stop.is_set():
+            return
         try:
             batch = self.manager.submit_batch(
                 mode=graph.MODE_MOTION_TRACE,
@@ -396,7 +463,10 @@ class LongDraftRun:
                 return
             seg.status = gen.status
             time.sleep(0.2)
+        self._record(seg, gen)
 
+    def _record(self, seg, gen):
+        """Write down what one terminal generation did for its segment."""
         seg.status = gen.status
         seg.cache_result = gen.cache_result
         seg.error = gen.error
@@ -1030,11 +1100,17 @@ class JobManager:
         Returns an in-memory Generation to watch, or None to submit normally.
         """
         for row in history.generations_for_segment(long_draft_id, segment_index):
-            if row.get("status") in ("done", "error", "cancelled"):
-                # A finished attempt is not a reason to skip: the operator asked
-                # for this segment again. Only work still in flight is adopted.
-                if row.get("status") == "done":
-                    return None
+            if row.get("status") == "done":
+                # A segment is only re-run while it is not done, so a finished
+                # attempt here is one whose result this Studio never recorded --
+                # a crash between the generation finishing and the segment row
+                # hearing about it. Take the video; do not pay for it twice.
+                gen = self._finished_generation(row)
+                if gen is not None:
+                    self.notice("info", "この segment は生成済みでした。作り直さず、その結果を使います（%s）。"
+                                % row["id"])
+                return gen
+            if row.get("status") in ("error", "cancelled"):
                 continue
             pid = row.get("prompt_id")
             if not pid:
@@ -1054,6 +1130,22 @@ class JobManager:
                                     "重複投入せず、そちらを追跡します（%s）。" % row["id"])
                 return gen
         return None
+
+    def _finished_generation(self, row):
+        """A done generation with its video still on disk, or None."""
+        gen = self.generation(row["id"])
+        if gen is not None and gen.status != "done":
+            return None
+        path = (gen.output_path if gen is not None else None) or row.get("output_path")
+        if not path or not os.path.exists(path):
+            return None
+        if gen is None:
+            gen = self._adopt_generation_row(row)
+            gen.status = "done"
+            gen.output_path = path
+            gen.cache_result = row.get("cache_result")
+            gen.finished_at = row.get("finished_at")
+        return gen
 
     def _adopt_generation_row(self, row):
         """Rebuild an in-memory Generation from a history row and register it.
@@ -1077,6 +1169,15 @@ class JobManager:
         # ETA's history.
         gen.recovered = True
         gen.progress_text = "再接続して監視中"
+        if gen.status in ACTIVE_STATES:
+            brow = history.get_batch(row["batch_id"]) or {}
+            try:
+                gen.expected_seconds, gen.expected_source = self._estimate_seconds(
+                    brow.get("mode") or params.get("mode") or graph.MODE_MOTION_TRACE,
+                    brow.get("quality") or "draft", row.get("cache_expected"),
+                    dict(params, duration=brow.get("duration") or params.get("duration")))
+            except Exception:  # noqa: BLE001 - an estimate is display, never a reason to fail
+                pass
         with self.lock:
             self.generations[gen.id] = gen
             if gen.prompt_id:
@@ -1580,6 +1681,11 @@ class JobManager:
             seg.generation_seconds = r.get("generation_seconds")
             seg.cache_result = r.get("cache_result")
             seg.error = r.get("error")
+            # Estimates are not stored, so they are made again exactly as a new
+            # plan makes them. Without this a restored run said "約0分".
+            seg.expected_seconds, _src = self._estimate_seconds(
+                graph.MODE_MOTION_TRACE, inherit.get("quality") or "draft", "MISS",
+                {"duration": seg.duration, "megapixels": None, "steps": None})
             segments.append(seg)
         run = LongDraftRun(self, ld_id, segments, inherit, meta)
         run.status = row.get("status") or "cancelled"
@@ -1587,9 +1693,12 @@ class JobManager:
         run.finished_at = row.get("finished_at")
         run.preview_path = row.get("preview_path")
         run.preview_mode = row.get("preview_mode")
-        if run.status in ("planned", "running"):
-            # The process that was running it is gone; it is not running now.
-            run.status = "cancelled"
+        crashed = run.status in ("planned", "running")
+        if crashed:
+            # The process that was running it is gone. reattach() below decides
+            # what it is now; until it has, the run must read as active, or a
+            # resume arriving in between would start a second thread on it.
+            run.status = "running"
         with self.lock:
             # Restoring the same run twice (two page loads, say) must not stack
             # up duplicates that then diverge from each other.
@@ -1597,6 +1706,12 @@ class JobManager:
                 if existing.id == ld_id:
                     return existing
             self.long_draft_runs.append(run)
+        if crashed:
+            try:
+                run.reattach()
+            except Exception:  # noqa: BLE001 - never leave a run stuck "running"
+                run.status = "cancelled"
+                raise
         return run
 
     def submit_final(self, gen_id, *, finish_options=None, quality="final"):
@@ -1856,6 +1971,16 @@ class JobManager:
             # stored before the submit, so it is the handle that survived.
             prefix = (gen.params or {}).get("filename_prefix")
             found = comfy_client.ComfyClient.queue_find_by_prefix(snapshot, prefix)
+            finished = False
+            if not found:
+                # Not in flight. It may have finished while its id was lost, and
+                # then it is in /history -- collectable, not dead.
+                try:
+                    found = comfy_client.ComfyClient.history_find_by_prefix(
+                        self.client.recent_history(), prefix)
+                except comfy_client.ComfyError:
+                    found = None
+                finished = bool(found)
             if found:
                 gen.prompt_id = found
                 with self.lock:
@@ -1863,6 +1988,8 @@ class JobManager:
                 history.update_generation(gen.id, prompt_id=found)
                 self.notice("info", "投入済みだった生成を ComfyUI 側で見つけて追跡を再開しました（%s）。" % gen.id)
                 self._clear_misses(gen)
+                if finished:
+                    return self.reconcile_generation(gen)   # now has an id: collect it
                 return "live"
 
         now = time.time()

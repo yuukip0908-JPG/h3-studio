@@ -270,6 +270,9 @@ def run_job(prompt_id, prompt, state=None):
     node_id = save[0][0] if save else "0"
     with STATE.lock:
         STATE.history[prompt_id] = {
+            # Real ComfyUI keeps the submitted graph here, as the queue does:
+            # [number, prompt_id, prompt, extra_data, outputs_to_execute].
+            "prompt": [0, prompt_id, prompt, {}, []],
             "status": {"status_str": "success", "completed": True, "messages": []},
             "outputs": {node_id: {"images": [
                 {"filename": filename, "subfolder": subfolder, "type": "output"}]}},
@@ -408,6 +411,14 @@ class Handler(BaseHTTPRequestHandler):
             if rest:
                 return self._json({rest: describe(rest)} if rest in known else {})
             return self._json({n: describe(n) for n in known})
+        if path == "/history":
+            # GET /history?max_items=N -- every recent entry, newest last.
+            n = int((q.get("max_items") or ["0"])[0] or 0)
+            with STATE.lock:
+                items = list(STATE.history.items())
+            if n > 0:
+                items = items[-n:]
+            return self._json(dict(items))
         if path.startswith("/history/"):
             pid = path.rsplit("/", 1)[-1]
             with STATE.lock:

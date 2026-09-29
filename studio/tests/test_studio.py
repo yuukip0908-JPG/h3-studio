@@ -1168,6 +1168,22 @@ class ApiServerTests(StudioTestCase):
         with self.urllib.urlopen(req, timeout=60) as r:
             return json.loads(r.read())
 
+    def test_a_final_is_never_asked_for_in_bulk(self):
+        """Variations are a Draft tool. Final quality with variations=4 used to
+        run four Finals -- four times the GPU time for pictures nobody picked."""
+        for quality in ("final", "final_hq"):
+            req = self.urllib.Request(
+                self.base + "/api/generate",
+                data=json.dumps({"mode": "prompt_cinema", "prompt": "bulk final",
+                                 "quality": quality, "variations": 4, "duration": 2.0,
+                                 "aspect_ratio": graph.ASPECT_RATIOS[0]}).encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with self.assertRaises(self.urllib.HTTPError) as cm:
+                self.urllib.urlopen(req, timeout=30)
+            self.assertEqual(cm.exception.code, 400, quality)
+            self.assertIn("Final", cm.exception.read().decode("utf-8"))
+        self.assertEqual(mock_comfy.STATE.submitted, [])
+
     def test_index_and_config_are_served(self):
         with self.urllib.urlopen(self.base + "/", timeout=10) as r:
             self.assertIn(b"H3 STUDIO", r.read())
@@ -2737,6 +2753,22 @@ class LongDraftPlanTests(unittest.TestCase):
         single = longdraft.plan_notes(longdraft.plan_segments(5.0), 5.0, 6.0)
         self.assertTrue(any("1 segment" in n for n in single))
 
+    def test_notes_say_when_the_preview_runs_longer_than_the_source(self):
+        """Measured 2026-09-07: 18.2 s of source became a 474-frame, 19.78 s
+        preview, because every segment rounds up to H3's 17n+5 frame grid.
+        Shown, not trimmed -- trimming waits for a measurement."""
+        segs = longdraft.plan_segments(18.2, 6.0)
+        self.assertEqual(sum(s["frames"] for s in segs), 474)
+        notes = longdraft.plan_notes(segs, 18.2, 6.0)
+        longer = [n for n in notes if "プレビュー" in n]
+        self.assertEqual(len(longer), 1, notes)
+        self.assertIn("19.8", longer[0])
+        self.assertIn("同期", longer[0])
+        # A 24 fps source is cut by frames, so the preview matches what it used.
+        exact = longdraft.plan_segments(18.2, 6.0, source_fps=24.0)
+        self.assertFalse([n for n in longdraft.plan_notes(exact, 18.2, 6.0, 24.0)
+                          if "プレビュー" in n])
+
 
 class LongDraftSeedTests(unittest.TestCase):
     def test_derived_seeds_are_reproducible_and_distinct(self):
@@ -3268,10 +3300,18 @@ class LongDraftRunTests(StudioTestCase):
                          "adoption must not queue anything")
 
     def test_a_finished_segment_is_never_adopted_as_in_flight(self):
+        """The run never asks about a segment it has recorded as done, so a
+        finished attempt reaching this question is one whose result was never
+        recorded (2026-09-29). It comes back as finished -- not as work in
+        flight, and not as a reason to generate it again."""
         m = self.make_manager()
         run = self.wait_run(self.start_run(m))
-        self.assertIsNone(m.adopt_existing_segment(run.id, 0),
-                          "a completed segment must not block a deliberate rerun")
+        submitted = len(mock_comfy.STATE.submitted)
+        gen = m.adopt_existing_segment(run.id, 0)
+        self.assertIsNotNone(gen)
+        self.assertEqual(gen.status, "done")
+        self.assertEqual(gen.id, run.segments[0].generation_id)
+        self.assertEqual(len(mock_comfy.STATE.submitted), submitted)
 
     def test_two_long_drafts_cannot_run_at_once(self):
         m = self.make_manager()
@@ -3333,6 +3373,133 @@ class LongDraftRunTests(StudioTestCase):
         self.assertEqual(d["segments"][0]["status"], "done")
         self.assertEqual(d["segments"][0]["generation_id"], done_gen)
         self.assertTrue(d["resumable"])
+
+    def _crash_mid_segment(self, m, index=1):
+        """Stop the Studio while segment `index` is on ComfyUI, the way a crash
+        does: nothing is cancelled, the prompt keeps running on the Pod."""
+        run = self.start_run(m)
+        seg = run.segments[index]
+
+        def on_comfy():
+            g = m.generation(seg.generation_id) if seg.generation_id else None
+            return g is not None and g.prompt_id and g.status == "running"
+        self.assertTrue(wait_until(on_comfy, 60), [(s.index, s.status) for s in run.segments])
+        pid = m.generation(seg.generation_id).prompt_id
+        m.shutdown()
+        return run.id, seg.generation_id, pid
+
+    def _restart(self):
+        fresh = jobs.JobManager(comfy=comfy_client.ComfyClient(self.url))
+        self.manager = fresh
+        fresh.start()
+        return fresh
+
+    def test_a_segment_that_finished_while_the_studio_was_down_is_collected(self):
+        """2026-09-07: segment 3 ran 524 s on the Pod while the restarted Studio
+        knew nothing about it. It was recovered by hand, and resume submitted it
+        a second time. The restored run must collect it instead -- for free."""
+        mock_comfy.STATE.job_seconds = 2.0
+        m = self.make_manager()
+        ld_id, gen_id, pid = self._crash_mid_segment(m)
+        self.assertTrue(wait_until(lambda: pid in mock_comfy.STATE.history, 30))
+        submitted = len(mock_comfy.STATE.submitted)
+
+        fresh = self._restart()
+        run = fresh.long_draft(ld_id)
+        self.assertIsNotNone(run)
+        self.assertTrue(wait_until(lambda: run.segments[1].status == "done", 30),
+                        [(s.index, s.status) for s in run.segments])
+        self.wait_run(run)
+        seg = run.segments[1]
+        self.assertEqual(seg.generation_id, gen_id)
+        self.assertTrue(seg.output_path and os.path.exists(seg.output_path))
+        self.assertIsNone(seg.generation_seconds, "the Studio was not timing it")
+        row = history.get_long_draft(ld_id)["segments"][1]
+        self.assertEqual(row["status"], "done")
+        self.assertEqual(len(mock_comfy.STATE.submitted), submitted,
+                         "starting the Studio must never spend GPU time")
+        # The segment after it never ran; the run is resumable, not "running".
+        self.assertEqual(run.segments[2].status, "cancelled")
+        self.assertEqual(run.status, "cancelled")
+
+        resumed = fresh.resume_long_draft(ld_id)
+        # A restored run used to say "about 0 minutes left": its segments came
+        # back with no estimate at all.
+        self.assertGreater(resumed.as_dict()["remaining_seconds"], 0)
+        self.wait_run(resumed)
+        self.assertEqual(resumed.status, "done")
+        self.assertEqual(resumed.segments[1].generation_id, gen_id,
+                         "the collected segment was generated again")
+        self.assertEqual(len(mock_comfy.STATE.submitted) - submitted, 1)
+
+    def test_a_segment_still_running_after_a_restart_is_watched_to_the_end(self):
+        mock_comfy.STATE.job_seconds = 4.0
+        m = self.make_manager()
+        ld_id, gen_id, pid = self._crash_mid_segment(m)
+        submitted = len(mock_comfy.STATE.submitted)
+
+        fresh = self._restart()
+        run = fresh.long_draft(ld_id)
+        self.assertIsNotNone(run)
+        self.assertTrue(run.is_active(), "a segment on the GPU is a run that is running")
+        with self.assertRaises(longdraft.LongDraftError):
+            fresh.resume_long_draft(ld_id)       # one thread per run, never two
+        self.assertGreater(run.as_dict()["remaining_seconds"], 0,
+                           "a watched segment still has an estimate")
+        self.wait_run(run)
+        self.assertEqual(run.segments[1].status, "done")
+        self.assertEqual(run.segments[1].generation_id, gen_id)
+        # Watched, not continued: the next segment is the operator's decision.
+        self.assertEqual(run.segments[2].status, "cancelled")
+        self.assertEqual(len(mock_comfy.STATE.submitted), submitted)
+
+    def test_a_shutdown_between_segments_submits_nothing(self):
+        """The seconds between two segments (model unload, settle) were not
+        covered: a shutdown there still queued the next segment."""
+        mock_comfy.STATE.job_seconds = 0.5
+        m = self.make_manager()
+        saved = jobs.LongDraftRun.FREE_SETTLE_SECONDS
+        jobs.LongDraftRun.FREE_SETTLE_SECONDS = 3.0
+        try:
+            run = self.start_run(m)
+            self.assertTrue(wait_until(lambda: run.segments[0].status == "done", 30))
+            m.shutdown()
+            time.sleep(4.5)
+        finally:
+            jobs.LongDraftRun.FREE_SETTLE_SECONDS = saved
+        self.assertEqual(len(mock_comfy.STATE.submitted), 1,
+                         "a Studio that was shutting down queued the next segment")
+
+    def test_a_shut_down_studio_submits_no_further_segment(self):
+        mock_comfy.STATE.job_seconds = 1.0
+        m = self.make_manager()
+        ld_id, gen_id, pid = self._crash_mid_segment(m, index=0)
+        self.assertTrue(wait_until(lambda: pid in mock_comfy.STATE.history, 30))
+        time.sleep(1.5)
+        self.assertEqual(len(mock_comfy.STATE.submitted), 1,
+                         "a Studio that was shut down queued the next segment")
+
+    def test_resume_adopts_a_finished_attempt_the_studio_never_recorded(self):
+        """The generation finished; the segment row never heard. Resuming must
+        take the finished video, not pay for it again."""
+        m = self.make_manager()
+        run = self.start_run(m)
+        self.assertTrue(wait_until(lambda: run.segments[0].status == "done", 60))
+        m.cancel_all()
+        self.wait_run(run)
+        seg = run.segments[0]
+        keep = seg.generation_id
+        seg.status, seg.output_path = "running", None
+        history.update_long_draft_segment(run.id, 0, status="running", output_path=None)
+        submitted = len(mock_comfy.STATE.submitted)
+
+        resumed = m.resume_long_draft(run.id)
+        self.wait_run(resumed)
+        self.assertEqual(resumed.segments[0].generation_id, keep)
+        self.assertEqual(resumed.segments[0].status, "done")
+        self.assertTrue(os.path.exists(resumed.segments[0].output_path))
+        self.assertEqual(len(mock_comfy.STATE.submitted) - submitted, 2,
+                         "only the two unfinished segments may be submitted")
 
     def test_a_finished_segment_is_not_generated_again_on_resume(self):
         m = self.make_manager()
@@ -4115,6 +4282,29 @@ class SubmitCrashWindowTests(StudioTestCase):
         self.wait_batch(batch)
         self.assertEqual(gen.status, "done", "and it still completes normally")
 
+    def test_a_lost_prompt_id_is_recovered_even_after_the_prompt_finished(self):
+        """The queue only holds work in flight. A prompt that finished while
+        its id was lost has moved to /history -- and is still ours to collect."""
+        m = self.make_manager()
+        mock_comfy.STATE.job_seconds = 0.5
+        batch = m.submit_batch(mode=graph.MODE_PROMPT_CINEMA, prompt_text="finished orphan",
+                               quality="draft", variations=1, duration=2.0,
+                               aspect_ratio=graph.ASPECT_RATIOS[0])
+        gen = batch.generations[0]
+        self.wait_batch(batch)
+        real_pid = gen.prompt_id
+        with m.lock:
+            m.by_prompt_id.pop(real_pid, None)
+        gen.prompt_id, gen.output_path = None, None
+        gen.status = "submitting"
+        history.update_generation(gen.id, status="submitting", prompt_id=None)
+
+        m.reconcile_generation(gen)
+        self.assertTrue(wait_until(lambda: gen.status == "done", 10), gen.status)
+        self.assertEqual(gen.prompt_id, real_pid)
+        self.assertEqual(history.get_generation(gen.id)["prompt_id"], real_pid)
+        self.assertTrue(gen.output_path)
+
     def test_a_generation_that_was_never_sent_is_not_hunted_for(self):
         """Between creating the rows and submitting them, a generation has no
         prompt on ComfyUI. Counting that as a miss starts a death streak
@@ -4820,6 +5010,32 @@ class VideoCacheTests(ApiServerTests):
                          "no-store forbids the cache this whole change is about")
         self.assertIn("private", head.get("cache-control", ""))
 
+    def test_video_is_streamed_not_read_whole(self):
+        """An 18 s Final is tens of MB; reading it into memory per request, per
+        tab, per seek is what the Studio did. Byte-for-byte the same answer,
+        including the ranges a <video> element asks for while seeking."""
+        gid = self._finished()
+        path = self.manager.generation(gid).output_path
+        with open(path, "wb") as f:              # bigger than one read chunk
+            f.write(os.urandom(3 * 1024 * 1024 + 17))
+        want = open(path, "rb").read()
+        status, body, _h = self._get("/api/video/" + gid)
+        self.assertEqual((status, body), (200, want))
+        status, body, head = self._get("/api/video/" + gid, {"Range": "bytes=1000-2000999"})
+        self.assertEqual(status, 206)
+        self.assertEqual(body, want[1000:2001000])
+        self.assertEqual(head["content-range"], "bytes 1000-2000999/%d" % len(want))
+        # A suffix range is "the last N bytes", not "bytes 0..N".
+        status, body, head = self._get("/api/video/" + gid, {"Range": "bytes=-500"})
+        self.assertEqual((status, body), (206, want[-500:]))
+        status, _b, head = self._get("/api/video/" + gid, {"Range": "bytes=%d-" % (len(want) + 5)})
+        self.assertEqual(status, 416)
+        src = io.open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                   "server.py"), encoding="utf-8").read()
+        video = src[src.index("    def _video("):]
+        video = video[:video.index("\ndef ")]
+        self.assertNotIn("f.read()", video)
+
     def test_a_matching_validator_answers_304_with_no_body(self):
         gid = self._finished()
         _s, _b, head = self._get("/api/video/" + gid)
@@ -4978,6 +5194,18 @@ class RenderReuseTests(unittest.TestCase):
             os.path.abspath(__file__)))), "studio", "static", "app.js")
         with open(path, "r", encoding="utf-8") as f:
             return f.read()
+
+    def test_the_gpu_panel_never_says_stopped_for_unknown(self):
+        """The chip already had three states; the detail row under it still
+        printed "停止中" for anything not live, so an unanswered probe during a
+        generation read as a dead ComfyUI."""
+        js = io.open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                  "static", "app.js"), encoding="utf-8").read()
+        self.assertNotIn('["ComfyUI", g.comfy_ready ? "準備OK" : "停止中"]', js)
+        # And a Final quality cannot be combined with several variations.
+        self.assertIn("syncVariationsToQuality", js[js.index("function applyPreset"):][:1500])
+        row = js[js.index('["ComfyUI",'):][:200]
+        self.assertIn("comfy_liveness", row)
 
     def test_the_results_grid_is_not_rebuilt_wholesale(self):
         body = self._src().split("function renderResults(")[1].split("\n}")[0]

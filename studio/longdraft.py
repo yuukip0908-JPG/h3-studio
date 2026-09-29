@@ -224,6 +224,16 @@ def plan_notes(segments, source_duration, segment_seconds=SEGMENT_SECONDS_DEFAUL
                             segments[0]["cut_seconds"]))
     if len(segments) < 2:
         notes.append("この動画は1 segmentにしかならないので、長尺Draftにする利点はありません。")
+    elif segments:
+        # H3 writes 24 fps and rounds every segment up to its 17n+5 frame grid.
+        # Measured 2026-09-07: 18.2 s of source -> 474 frames / 19.78 s.
+        preview = sum(s["frames"] for s in segments) / 24.0
+        used = segments[-1]["end"] - segments[0]["start"]
+        if preview - used > 0.1:
+            notes.append("結合プレビューは約 %.1f 秒になり、使う元動画 %.1f 秒より %.1f 秒長くなります。"
+                         "各 segment が H3 のフレーム単位（17n+5）に切り上がるためです。"
+                         "プレビューは元動画とフレーム同期していません。"
+                         % (preview, used, preview - used))
     short = [s for s in segments if s["duration"] + _EPS < MIN_SEGMENT_SECONDS]
     if short:
         notes.append("segment %s が %g 秒未満です。H3 の参照動画の下限は %g 秒なので拒否される可能性があります。"

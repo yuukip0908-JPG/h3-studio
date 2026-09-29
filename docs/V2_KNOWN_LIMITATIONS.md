@@ -2,6 +2,10 @@
 
 ## テストスイートが負荷で落ちる（2026-09-10 更新・未解決）
 
+> **2026-09-29 の実行:** 543件で1回 OK（809秒）。559件で1回、失敗1件（889秒）。その1件は
+> 負荷ではなく、仕様変更（完了済みの試行を作り直さずに採用する）に古いテストが合わなかったもので、
+> テストを直して単体で OK。この日の2回では、負荷による失敗は出ていない。解決とはまだ言わない。
+
 `LongDraftRunTests` を中心に、**同一コードで実行ごとに失敗数が変わる**。
 
 | 実行 | 失敗 |
@@ -106,6 +110,9 @@ Face Refine / SageAttention / RTX VSR、および `docs/V2_AB_TESTS.md` の A/B 
 
 ## 1.5 US-WA-1 の GPU 在庫が枯れることがある（2026-09-06 実測）
 
+> **2026-09-19 以降は過去の記録。** ボリュームは US-IL-1 の `qnql9m7onb` に移り、`olmj77x4pc` は
+> 削除済み。在庫の有無は `gpuCount: 8` で要求したときのエラー文で無料で見分けられる（CLAUDE.md）。
+
 Network Volume `olmj77x4pc` は **US-WA-1 に固定**されており、Pod は同じデータセンター
 にしか作れない。そのデータセンターの在庫が尽きると、**起動も新規作成もできない**。
 
@@ -146,7 +153,7 @@ RTX 6000 Ada / A100 とも `stockStatus: "Low"`（=購入可能に見える）�
 | 穴 | 状態 |
 |---|---|
 | **Mac がスリープするとウォッチドッグも眠る** | 未解決。RunPod REST v1 に Pod の絶対期限を設定するAPIが無い（OpenAPI で確認）。Mac 側の対策はここが限界 |
-| **GPU の在庫は事前に問い合わせられない** | RunPod REST v1 に GPU カタログが無く、GraphQL の `stockStatus` は当てにならない。**実際に `POST /pods` するまで空きは分からない**。UI が提示する高額カードも「押せば取れる」保証はない |
+| **GPU の在庫は事前に問い合わせられない** | GraphQL の `stockStatus` は当てにならない。ただし `gpuCount: 8` で `POST /pods` すると必ず失敗し、そのエラー文で「カードが無い」と「満杯」を無料で見分けられる（2026-09-19 に判明、CLAUDE.md）。UI が提示する高額カードも「押せば取れる」保証はない |
 | **未知のカードは価格が分からない** | このアカウントで走らせた実績のあるカード（RTX 6000 Ada / A100 SXM4 80GB）以外は価格不明。仕様上「高額扱い」で自動起動しない |
 | **課金は日次バケット** | `GET /billing/pods` は日単位。進行中セッションの実額は翌日まで出ない。UI はその分を「推定」と明示する |
 | **`describe()` は GPU 名を偽る** | RUNNING Pod の payload に GPU 名が無く、作成時の記録にフォールバックするため。起動後に nvidia-smi で確認して記録を上書きする。名前と実価格が食い違う場合は UI に「記録名」と出す |
@@ -180,14 +187,13 @@ keyframe が width×height に resize されて fingerprint に入るため。
 ## 6. Variations は Draft 前提
 
 VARIATIONS は Draft でのみ意味がある。Final は常に 1 本。
-UI 上で Quality=Final のまま Variations=4 を選ぶと Final が 4 本走ってしまう。
-現状これをブロックしていない — Final は SELECT → FINALIZE 経由で使うのが正しい導線。
+Quality=Final のまま Variations=4 を選ぶと、**2026-09-29 から API が 400 で断る**
+（以前は Final が 4 本走っていた）。Final は SELECT → FINALIZE 経由で使うのが正しい導線。
 
-## 7. サムネイルは生成していない
+## 7. サムネイル（ポスター画像）
 
-`<video preload="metadata">` をそのまま並べている。Mac 側に ffmpeg 依存を
-持ち込まないための判断。4〜8 本程度なら実用上問題ないが、
-History から過去バッチをグリッド表示する機能は未実装。
+**この節は古かった。** 今は生成ごとにポスター画像を作り（`postprocess.poster`）、
+`<video>` の `poster` に使っている。過去分は `scripts/backfill_posters.py` で作れる。
 
 ## 8. 単一オペレータ前提
 

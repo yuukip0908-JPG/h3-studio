@@ -638,7 +638,8 @@ function renderGpu(g) {
     ["Pod", g.pod_id], ["状態", JP_STATE[st] || st], ["GPU", g.gpu],
     ["保存領域", g.network_volume || g.network_volume_id],
     ["データセンター", g.datacenter],
-    ["ComfyUI", g.comfy_ready ? "準備OK" : "停止中"],
+    ["ComfyUI", { live: "準備OK", dead: "停止中", unknown: "状態不明" }[g.comfy_liveness]
+                || (g.comfy_ready ? "準備OK" : "状態不明")],
     ["進捗の受信", g.ws_connected ? "接続済み" : "ポーリング"],
     ["実行中", g.active_jobs + " 本"],
   ];
@@ -1351,10 +1352,21 @@ $("quality-seg").addEventListener("click", (e) => {
   const b = e.target.closest("button"); if (!b) return;
   state.quality = b.dataset.quality;
   [...$("quality-seg").children].forEach((c) => c.classList.toggle("on", c === b));
+  syncVariationsToQuality();
   renderModeHints();
 });
+/* Variations are for choosing among Drafts; the server refuses a Final in bulk.
+   So a Final quality sets one and locks the choice instead of failing on click. */
+function syncVariationsToQuality() {
+  const final = String(state.quality || "").startsWith("final");
+  if (final) state.variations = 1;
+  [...$("var-seg").children].forEach((c) => {
+    c.disabled = final && Number(c.dataset.var) !== 1;
+    c.classList.toggle("on", Number(c.dataset.var) === state.variations);
+  });
+}
 $("var-seg").addEventListener("click", (e) => {
-  const b = e.target.closest("button"); if (!b) return;
+  const b = e.target.closest("button"); if (!b || b.disabled) return;
   state.variations = Number(b.dataset.var);
   [...$("var-seg").children].forEach((c) => c.classList.toggle("on", c === b));
   renderCacheHint();
@@ -2225,6 +2237,7 @@ function applyPreset(key) {
   document.querySelectorAll("#quality-seg button").forEach((b) =>
     b.classList.toggle("on", b.dataset.quality === p.quality));
   $("megapixels").value = p.megapixels == null ? "" : String(p.megapixels);
+  syncVariationsToQuality();
   renderPresetEcho();
   renderCacheHint();
   renderDurationHint();

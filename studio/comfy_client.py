@@ -267,6 +267,39 @@ class ComfyClient:
             raise ComfyError("no prompt_id in /prompt response: %r" % (resp,))
         return resp["prompt_id"]
 
+    def recent_history(self, max_items=64):
+        """The last `max_items` finished prompts, {prompt_id: entry}."""
+        return self._json("/history?max_items=%d" % int(max_items)) or {}
+
+    @staticmethod
+    def history_find_by_prefix(entries, filename_prefix):
+        """The prompt id of a finished job that wrote `filename_prefix`.
+
+        queue_find_by_prefix() only sees work still in flight. A prompt whose id
+        was lost and which then finished has moved here, and is still ours to
+        collect. Matched on the submitted graph when ComfyUI kept it, else on
+        the output file names, which SaveVideo derives from the prefix.
+        """
+        if not filename_prefix or not isinstance(entries, dict):
+            return None
+        base = os.path.basename(filename_prefix)
+        sub = os.path.dirname(filename_prefix)
+        for pid, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            for graph_obj in [x for x in (entry.get("prompt") or []) if isinstance(x, dict)]:
+                for node in graph_obj.values():
+                    inputs = node.get("inputs") if isinstance(node, dict) else None
+                    if isinstance(inputs, dict) and inputs.get("filename_prefix") == filename_prefix:
+                        return pid
+            for out in (entry.get("outputs") or {}).values():
+                for files in (out or {}).values() if isinstance(out, dict) else ():
+                    for f in files if isinstance(files, list) else ():
+                        if (isinstance(f, dict) and (f.get("subfolder") or "") == sub
+                                and str(f.get("filename") or "").startswith(base + "_")):
+                            return pid
+        return None
+
     def history(self, prompt_id):
         h = self._json("/history/%s" % prompt_id) or {}
         return h.get(prompt_id)

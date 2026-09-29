@@ -509,6 +509,8 @@ class Handler(BaseHTTPRequestHandler):
     #
     # Both are refusals, not sanitisation: there is no legitimate request from
     # another origin to a single-operator local tool.
+    VIDEO_CHUNK = 256 * 1024
+
     ALLOWED_HOSTNAMES = frozenset(["127.0.0.1", "localhost", "::1", "[::1]"])
 
     def _hostname(self, value):
@@ -862,6 +864,11 @@ class Handler(BaseHTTPRequestHandler):
         if variations not in (1, 4, 8):
             raise ValueError("variations must be 1, 4 or 8")
         quality = data.get("quality", "draft")
+        if variations > 1 and str(quality).startswith("final"):
+            # Variations are for choosing among Drafts. Four Finals is four
+            # times the GPU time for pictures nobody has picked yet.
+            raise ValueError("Final は1本ずつ作ります。本数を1にするか、Draft で選んでから"
+                             " SELECT → FINALIZE で仕上げてください。")
         ref = data.get("reference_strength")
 
         # A Motion Trace prompt with no reference tags does not fail. It
@@ -1065,30 +1072,59 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         rng = self.headers.get("Range")
-        with open(path, "rb") as f:
-            if rng and rng.startswith("bytes="):
-                start_s, _, end_s = rng[6:].partition("-")
-                start = int(start_s or 0)
-                end = int(end_s) if end_s else size - 1
-                end = min(end, size - 1)
-                f.seek(start)
-                chunk = f.read(end - start + 1)
-                self.send_response(206)
-                self.send_header("Content-Type", ctype)
-                self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
-                self.send_header("Accept-Ranges", "bytes")
-                self.send_header("ETag", etag)
-                self.send_header("Cache-Control", "private, must-revalidate")
-                self.send_header("Content-Length", str(len(chunk)))
+        start, end, status = 0, size - 1, 200
+        if rng and rng.startswith("bytes="):
+            start_s, _, end_s = rng[6:].split(",")[0].strip().partition("-")
+            try:
+                if start_s:
+                    start = int(start_s)
+                    end = min(int(end_s), size - 1) if end_s else size - 1
+                else:                            # "bytes=-N": the last N bytes
+                    start, end = max(0, size - int(end_s)), size - 1
+            except ValueError:
+                start, end = 0, size - 1         # unparseable: serve it whole
+            else:
+                status = 206
+            if status == 206 and (start >= size or start > end):
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */%d" % size)
+                self.send_header("Content-Length", "0")
                 self.end_headers()
-                # HEAD must not carry a body: this connection is keep-alive
-                # (HTTP/1.1), so writing one would desync the next request.
-                if self.command != "HEAD":
-                    self.wfile.write(chunk)
                 return
-            self._send(200, f.read(), ctype,
-                       {"Accept-Ranges": "bytes", "ETag": etag,
-                        "Cache-Control": "private, must-revalidate"})
+        length = end - start + 1
+        # Opened before the headers: a Content-Length the body cannot keep
+        # would leave a keep-alive client waiting for bytes that never come.
+        try:
+            f = open(path, "rb")
+        except OSError:
+            return self._error(404, "not found")
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        if status == 206:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("ETag", etag)
+        # private, not immutable: see the 304 branch above.
+        self.send_header("Cache-Control", "private, must-revalidate")
+        self.send_header("Content-Length", str(length))
+        self.end_headers()
+        # HEAD must not carry a body: this connection is keep-alive (HTTP/1.1),
+        # so writing one would desync the next request.
+        # Streamed in chunks, never read whole: an 18 s Final is tens of MB,
+        # and a <video> element asks again for every seek.
+        with f:
+            if self.command == "HEAD":
+                return
+            f.seek(start)
+            while length > 0:
+                chunk = f.read(min(self.VIDEO_CHUNK, length))
+                if not chunk:
+                    # Truncated under us: the promised length cannot be met, so
+                    # end the connection instead of leaving the client waiting.
+                    self.close_connection = True
+                    break
+                self.wfile.write(chunk)
+                length -= len(chunk)
 
 
 def _parse_single_file(body, boundary):
