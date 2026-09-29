@@ -17,3 +17,6 @@ results/logs/gpu_watchdog.log
 # backup bookkeeping, not source
 results/autobackup_state.json
 results/.autobackup.lock/
+
+# the dead-man switch logs outside the repo now; this is the 2026-09-08..18 outage log
+results/logs/gpu_deadman*

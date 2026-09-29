@@ -526,7 +526,15 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin:
             parsed = urllib.parse.urlparse(origin)
-            if self._hostname(parsed.netloc) not in self.ALLOWED_HOSTNAMES:
+            # The port is part of the origin. C_STUDIO serves its own page from
+            # this same Mac (127.0.0.1:8010), and loopback alone would let that
+            # page start a GPU here.
+            try:
+                port = parsed.port or {"http": 80, "https": 443}.get(parsed.scheme)
+            except ValueError:
+                port = None
+            if (self._hostname(parsed.netloc) not in self.ALLOWED_HOSTNAMES
+                    or port != self.server.server_address[1]):
                 return "cross-origin request from %s is refused" % origin
         if method == "POST":
             ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()

@@ -1416,6 +1416,22 @@ class LocalOnlyGuardTests(ApiServerTests):
             "/api/gpu/start", "POST",
             {"Content-Type": "application/json", "Origin": "https://evil.example"}, b"{}"), 403)
 
+    def test_another_local_app_is_a_different_origin(self):
+        """C_STUDIO's page lives on this same Mac at 127.0.0.1:8010 (and its
+        dev server on localhost:5173). Same host, different port: to a browser
+        that is another site, and it must not be able to start a GPU here."""
+        for origin in ("http://127.0.0.1:8010", "http://localhost:5173",
+                       "http://[::1]:8010"):
+            self.assertEqual(self._request(
+                "/api/gpu/start", "POST",
+                {"Content-Type": "application/json", "Origin": origin}, b"{}"), 403, origin)
+        import urllib.parse
+        port = urllib.parse.urlparse(self.base).port
+        for origin in ("http://localhost:%d" % port, "http://127.0.0.1:%d" % port):
+            self.assertEqual(self._request(
+                "/api/motion_prompt", "POST",
+                {"Content-Type": "application/json", "Origin": origin}, b"{}"), 200, origin)
+
     def test_a_simple_request_cannot_dodge_the_preflight(self):
         """text/plain needs no preflight, so the content type has to be checked."""
         self.assertEqual(self._request(
