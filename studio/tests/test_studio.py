@@ -5236,6 +5236,21 @@ class RenderReuseTests(unittest.TestCase):
         with open(path, "r", encoding="utf-8") as f:
             return f.read()
 
+    def test_the_history_and_assets_screens_are_gone(self):
+        """Removed at the operator's request (2026-09-29): the 履歴 and 素材 tabs
+        were not used and made the page heavier. Only the screens go; the data
+        and the studio page's own shelf of past takes stay."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        html = io.open(os.path.join(root, "static", "index.html"), encoding="utf-8").read()
+        js = io.open(os.path.join(root, "static", "app.js"), encoding="utf-8").read()
+        for gone in ('data-nav="history"', 'data-nav="assets"',
+                     'data-screen="history"', 'data-screen="assets"'):
+            self.assertNotIn(gone, html)
+        for gone in ("loadHistoryScreen", "renderAssets", '"hist-grid"', '"asset-grid"'):
+            self.assertNotIn(gone, js)
+        self.assertIn('const SCREENS = ["studio", "gpu", "settings"];', js)
+        self.assertIn('id="history"', html)          # the shelf on the studio page
+
     def test_the_gpu_panel_never_says_stopped_for_unknown(self):
         """The chip already had three states; the detail row under it still
         printed "停止中" for anything not live, so an unanswered probe during a

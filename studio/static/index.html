@@ -19,8 +19,6 @@
 
   <nav class="nav" id="nav">
     <button data-nav="studio" class="on">生成<span class="sub">Studio</span></button>
-    <button data-nav="history">履歴<span class="sub">History</span></button>
-    <button data-nav="assets">素材<span class="sub">Assets</span></button>
     <button data-nav="gpu">GPU<span class="sub">GPU</span></button>
     <button data-nav="settings">設定<span class="sub">Settings</span></button>
   </nav>
@@ -341,81 +339,6 @@
     </section>
 
   </div><!-- /studio-bottom -->
-</section>
-
-<!-- ══════════════════════ 2. HISTORY ═════════════════════ -->
-<section class="screen hist" data-screen="history" hidden>
-  <section class="panel col" id="panel-hist-filter">
-    <h2>絞り込み</h2>
-    <div class="pane-body">
-      <div class="field">
-        <label>検索</label>
-        <input type="text" id="hist-q" placeholder="プロンプトで探す">
-      </div>
-      <div class="field">
-        <label>生成モード</label>
-        <div class="facet" id="hist-modes"></div>
-      </div>
-      <div class="field">
-        <label>状態</label>
-        <div class="facet" id="hist-states"></div>
-      </div>
-      <div class="field">
-        <label>並び</label>
-        <select id="hist-sort">
-          <option value="new">新しい順</option>
-          <option value="old">古い順</option>
-          <option value="long">長い順</option>
-        </select>
-      </div>
-      <p class="hint" id="hist-count"></p>
-    </div>
-  </section>
-
-  <section class="panel col" id="panel-hist-list">
-    <h2>生成履歴</h2>
-    <div class="pane-body"><div id="hist-grid" class="hgrid"></div></div>
-  </section>
-
-  <section class="panel col" id="panel-hist-detail">
-    <h2>この生成について</h2>
-    <div class="pane-body" id="hist-detail">
-      <p class="hint">左のサムネイルを選んでください。</p>
-    </div>
-  </section>
-</section>
-
-<!-- ══════════════════════ 3. ASSETS ══════════════════════ -->
-<section class="screen assets" data-screen="assets" hidden>
-  <section class="panel col" id="panel-asset-nav">
-    <h2>素材</h2>
-    <div class="pane-body">
-      <div class="seg seg-stack" id="asset-kinds">
-        <button data-kind="all" class="on">すべて<span class="sub" id="ac-all"></span></button>
-        <button data-kind="image">人物画像<span class="sub" id="ac-image"></span></button>
-        <button data-kind="video">参照動画<span class="sub" id="ac-video"></span></button>
-      </div>
-      <p class="hint">
-        ここに出るのは、過去の生成で実際に使った素材です。履歴から組み立てているので、
-        別の保存場所は増えていません。
-      </p>
-      <p class="hint warn">
-        素材の削除はまだできません（消すAPIがありません）。使わない素材はそのまま残ります。
-      </p>
-    </div>
-  </section>
-
-  <section class="panel col" id="panel-asset-list">
-    <h2>使った素材</h2>
-    <div class="pane-body"><div id="asset-grid" class="agrid"></div></div>
-  </section>
-
-  <section class="panel col" id="panel-asset-detail">
-    <h2>この素材について</h2>
-    <div class="pane-body" id="asset-detail">
-      <p class="hint">左の素材を選んでください。</p>
-    </div>
-  </section>
 </section>
 
 <!-- ══════════════════════ 4. GPU ═════════════════════════ -->
