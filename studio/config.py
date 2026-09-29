@@ -32,6 +32,13 @@ AGENT_DATA_DIR = os.environ.get(
 DB_PATH = os.path.join(STUDIO_DATA_DIR, "history.sqlite3")
 OUTPUT_DIR = os.path.join(STUDIO_DATA_DIR, "outputs")
 UPLOAD_DIR = os.path.join(STUDIO_DATA_DIR, "uploads")
+
+# C_STUDIO's Character Pack root. Read, never written (agreed 2026-09-29): H3
+# cannot load C_STUDIO's LoRAs -- they are image-model LoRAs and H3 is a video
+# model -- so the link between the two studios is the images those LoRAs made.
+CSTUDIO_CHARACTERS_DIR = os.environ.get(
+    "H3_CSTUDIO_CHARACTERS",
+    os.path.join(os.path.expanduser("~"), "Downloads", "C_STUDIO", "CHARACTERS"))
 LOG_PATH = os.path.join(RESULTS_DIR, "logs", "studio.log")
 RUNPOD_STATE = os.path.join(RESULTS_DIR, "runpod_state.json")
 

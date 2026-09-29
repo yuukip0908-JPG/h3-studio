@@ -4055,6 +4055,19 @@ class StudioLauncherTests(unittest.TestCase):
         self.assertIn("already running", again.stdout)
         self.assertEqual(self._pid(), first, "the pid file was overwritten by a second start")
 
+    def test_a_normal_stop_takes_the_pulse_with_it(self):
+        """stop_studio.sh sends SIGTERM. The pulse was only cleared on Ctrl-C,
+        so every ordinary stop left one behind -- cold twenty minutes later, and
+        read by the dead-man switch as a crash when a Pod was next started by
+        hand. Found 2026-09-29 when a stopped Studio left its pulse."""
+        self.assertIn("READY", self._start().stdout)
+        agent_pulse = os.path.join(self._env()["H3_AGENT_DATA_DIR"], "studio_heartbeat.json")
+        self.assertTrue(wait_until(lambda: os.path.exists(agent_pulse), 15))
+        pid = self._pid()
+        self._stop()
+        self.assertTrue(wait_until(lambda: not _alive(pid), 15))
+        self.assertFalse(os.path.exists(agent_pulse), "the pulse outlived a deliberate stop")
+
     def test_the_pid_file_is_removed_on_stop_and_the_process_is_gone(self):
         self.assertIn("READY", self._start().stdout)
         pid = self._pid()
@@ -6284,8 +6297,12 @@ class GettingBackOutTests(unittest.TestCase):
 
     def test_a_second_click_lets_go_of_a_tile(self):
         """Shelf and material grids: the same click that picks one releases it."""
-        self.assertIn("histSel === t.dataset.hb ? null : t.dataset.hb", self.code)
-        self.assertIn("assetSel === t.dataset.asset ? null : t.dataset.asset", self.code)
+        # The 履歴 and 素材 screens are gone (2026-09-29); the rule moved to the
+        # two grids that replaced them on the studio page.
+        self.assertIn('if (b.dataset.asset === state.characterAsset) { clearMaterial("image"); return; }',
+                      self.code)
+        self.assertIn('if (t.dataset.clip === state.sourceVideo) { clearMaterial("video"); return; }',
+                      self.code)
 
     def test_nothing_restores_a_panel_that_was_emptied_on_purpose(self):
         """Made twice in one session, the same shape both times.
@@ -7467,3 +7484,234 @@ class ValidatorScriptTests(unittest.TestCase):
         with open(self.SCRIPT, encoding="utf-8") as fh:
             src = fh.read()
         self.assertNotIn("nonce", src.lower())
+
+
+def _write_pack(root, char_id, name, assets):
+    """A C_STUDIO Character Pack as C_STUDIO writes it (schema 1.3)."""
+    d = os.path.join(root, char_id)
+    os.makedirs(d, exist_ok=True)
+    listing = {}
+    for kind, items in assets.items():
+        listing[kind] = []
+        for asset_id, state, rel, content in items:
+            if content is not None:
+                p = os.path.join(d, rel)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "wb") as f:
+                    f.write(content)
+            listing[kind].append({"asset_id": asset_id, "kind": kind, "state": state,
+                                  "path": rel, "label": "", "created_at": "2026-09-25T12:00:00Z"})
+    with open(os.path.join(d, "character.json"), "w", encoding="utf-8") as f:
+        json.dump({"schema_version": "1.3", "character_id": char_id, "name": name,
+                   "status": "active", "assets": listing}, f, ensure_ascii=False)
+    return d
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+
+
+class CharacterLibraryTests(ApiServerTests):
+    """H3 starts from a character, and the characters live in C_STUDIO.
+
+    Agreed 2026-09-29: H3 READS C_STUDIO's Character Pack and never writes to
+    it. H3 cannot load C_STUDIO's LoRAs (image models, not this video model),
+    so the link is the images those LoRAs made.
+    """
+
+    for _name in [n for n in dir(ApiServerTests) if n.startswith("test_")]:
+        locals()[_name] = None
+    del _name
+
+    def setUp(self):
+        super().setUp()
+        self.root = os.path.join(self.tmp, "C_STUDIO", "CHARACTERS")
+        os.makedirs(os.path.join(self.root, "_template", "master"))
+        with open(os.path.join(self.root, "_template", "character.json"), "w") as f:
+            json.dump({"character_id": "_template", "assets": {}}, f)
+        os.makedirs(os.path.join(self.root, "char_nojson"))
+        self.pack = _write_pack(self.root, "char_a", "銀髪の女の子", {
+            "master": [("asset_m1", "accepted", "master/asset_m1.png", PNG),
+                       ("asset_m2", "rejected", "master/asset_m2.png", PNG),
+                       ("asset_gone", "accepted", "master/asset_gone.png", None)],
+            "outfits": [("asset_o1", "accepted", "outfits/asset_o1.png", PNG + b"o")],
+            "dataset": [("asset_esc", "accepted", "../../../escape.png", None)],
+        })
+        with open(os.path.join(self.tmp, "C_STUDIO", "escape.png"), "wb") as f:
+            f.write(PNG)
+        self._saved_root = config.CSTUDIO_CHARACTERS_DIR
+        config.CSTUDIO_CHARACTERS_DIR = self.root
+
+    def tearDown(self):
+        config.CSTUDIO_CHARACTERS_DIR = self._saved_root
+        super().tearDown()
+
+    def _snapshot(self):
+        out = {}
+        for dp, _dn, fns in os.walk(self.root):
+            for fn in fns:
+                p = os.path.join(dp, fn)
+                st = os.stat(p)
+                out[p] = (st.st_size, st.st_mtime_ns)
+        return out
+
+    def test_characters_are_listed_with_only_their_accepted_images(self):
+        got = self.get("/api/characters")
+        self.assertTrue(got["available"])
+        self.assertEqual([c["id"] for c in got["characters"]], ["char_a"])
+        c = got["characters"][0]
+        self.assertEqual(c["name"], "銀髪の女の子")
+        self.assertEqual(c["image_count"], 2)
+        imgs = self.get("/api/characters/char_a")["images"]
+        self.assertEqual(sorted(i["asset_id"] for i in imgs), ["asset_m1", "asset_o1"])
+        self.assertEqual({i["kind"] for i in imgs}, {"master", "outfits"})
+
+    def test_an_image_is_served_from_the_pack(self):
+        req = self.urllib.Request(self.base + "/api/characters/char_a/image/asset_o1")
+        with self.urllib.urlopen(req, timeout=10) as r:
+            self.assertEqual(r.read(), PNG + b"o")
+
+    def test_nothing_outside_a_pack_can_be_reached(self):
+        for path in ("/api/characters/char_a/image/asset_esc",
+                     "/api/characters/char_a/image/asset_m2",       # rejected
+                     "/api/characters/..%2F..%2Fetc/image/x",
+                     "/api/characters/_template",
+                     "/api/characters/char_nojson"):
+            with self.assertRaises(self.urllib.HTTPError, msg=path) as cm:
+                self.urllib.urlopen(self.base + path, timeout=10)
+            self.assertIn(cm.exception.code, (400, 404), path)
+
+    def test_using_an_image_makes_it_the_identity_photo_and_writes_nothing_there(self):
+        before = self._snapshot()
+        r = self.post("/api/characters/char_a/use", {"asset_id": "asset_o1"})
+        self.assertTrue(r["image"])
+        self.assertTrue(r["local_path"].startswith(config.UPLOAD_DIR))
+        with open(r["local_path"], "rb") as f:
+            self.assertEqual(f.read(), PNG + b"o")
+        self.assertEqual(r["character"], {"id": "char_a", "name": "銀髪の女の子"})
+        self.assertEqual(self._snapshot(), before, "H3 must never write into C_STUDIO")
+
+    def test_no_c_studio_is_an_answer_not_an_error(self):
+        config.CSTUDIO_CHARACTERS_DIR = os.path.join(self.tmp, "absent")
+        got = self.get("/api/characters")
+        self.assertFalse(got["available"])
+        self.assertEqual(got["characters"], [])
+
+    def test_the_module_opens_nothing_for_writing(self):
+        src = io.open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                   "characters.py"), encoding="utf-8").read()
+        code = re.sub(r'""".*?"""', "", src, flags=re.S)
+        for forbidden in ('"w"', "'w'", '"a"', "'a'", "remove(", "unlink(", "rename(",
+                          "makedirs(", "copy"):
+            self.assertNotIn(forbidden, code)
+
+
+class MotionShelfTests(ApiServerTests):
+    """量産候補: every 6-12 s Motion Trace that succeeded, one per source video.
+
+    Owner, 2026-09-29: 「トレースしたものは、６秒から１２秒は量産候補になる」. No
+    button makes a candidate; a finished trace is one. Taking one off the shelf
+    hides it and deletes nothing.
+    """
+
+    for _name in [n for n in dir(ApiServerTests) if n.startswith("test_")]:
+        locals()[_name] = None
+    del _name
+
+    def _clip(self, name, content=b"clip-a"):
+        p = os.path.join(config.UPLOAD_DIR, name)
+        with open(p, "wb") as f:
+            f.write(content)
+        return name
+
+    def _trace(self, bid, video, duration, status="done", mode=graph.MODE_MOTION_TRACE,
+               long_draft_id=None, prompt="Replace the person in <Video 1>."):
+        history.create_batch(bid, kind="draft", mode=mode, prompt=prompt, image="p.png",
+                             duration=duration, aspect_ratio="9:16", quality="draft",
+                             source_video=video,
+                             source_video_meta={"duration": duration, "fps": 30.0},
+                             long_draft_id=long_draft_id,
+                             segment_index=0 if long_draft_id else None)
+        history.create_generation("g_" + bid, bid, 0, 1, {"duration": duration})
+        history.update_generation("g_" + bid, status=status, finished_at=time.time(),
+                                  output_path=os.path.join(config.OUTPUT_DIR, bid + ".mp4"))
+
+    def setUp(self):
+        super().setUp()
+        self._trace("b1", self._clip("100_a.mp4"), 6.0)
+        self._trace("b2", self._clip("200_a.mp4"), 12.0)          # same bytes as 100_a
+        self._trace("b3", self._clip("300_b.mp4", b"clip-b"), 10.0)
+        self._trace("x_short", self._clip("400_c.mp4", b"c"), 2.0)
+        self._trace("x_long", self._clip("500_d.mp4", b"d"), 12.5)
+        self._trace("x_fail", self._clip("600_e.mp4", b"e"), 8.0, status="error")
+        self._trace("x_seg", self._clip("700_f.mp4", b"f"), 6.0, long_draft_id="ld_1")
+        self._trace("x_img", None, 6.0, mode=graph.MODE_IMAGE_TRACE)
+
+    def test_successful_six_to_twelve_second_traces_are_candidates(self):
+        got = self.get("/api/shelf")["candidates"]
+        self.assertEqual(len(got), 2, got)
+        a = [c for c in got if c["uses"] == 2]
+        self.assertEqual(len(a), 1, "the same clip uploaded twice is one candidate")
+        self.assertEqual(a[0]["source_video"], "200_a.mp4", "newest upload represents it")
+        b = [c for c in got if c["source_video"] == "300_b.mp4"][0]
+        self.assertEqual(b["duration"], 10.0)
+        self.assertEqual(b["generation_id"], "g_b3")
+        self.assertIn("<Video 1>", b["prompt"])
+
+    def test_taking_one_off_the_shelf_hides_it_and_deletes_nothing(self):
+        self.post("/api/shelf/hide", {"source_video": "300_b.mp4"})
+        got = self.get("/api/shelf")
+        self.assertEqual([c["source_video"] for c in got["candidates"]], ["200_a.mp4"])
+        self.assertEqual(got["hidden_count"], 1)
+        self.assertTrue(os.path.exists(os.path.join(config.UPLOAD_DIR, "300_b.mp4")))
+        self.post("/api/shelf/hide", {"source_video": "300_b.mp4", "hidden": False})
+        self.assertEqual(len(self.get("/api/shelf")["candidates"]), 2)
+
+    def test_hiding_the_newest_copy_hides_the_clip(self):
+        self.post("/api/shelf/hide", {"source_video": "200_a.mp4"})
+        got = [c["source_video"] for c in self.get("/api/shelf")["candidates"]]
+        self.assertEqual(got, ["300_b.mp4"])
+
+    def test_using_a_candidate_makes_it_the_reference_video(self):
+        src = _make_source_video(os.path.join(config.UPLOAD_DIR, "900_real.mp4"), seconds=6)
+        self._trace("b9", os.path.basename(src), 6.0)
+        r = self.post("/api/shelf/use", {"source_video": "900_real.mp4"})
+        self.assertTrue(r["video"])
+        self.assertEqual(r["local_path"], src)
+        self.assertAlmostEqual(r["probe"]["duration"], 6.0, places=0)
+        with self.assertRaises(self.urllib.HTTPError):
+            self.post("/api/shelf/use", {"source_video": "../../etc/passwd"})
+
+
+class CharacterFirstPageTests(unittest.TestCase):
+    """The studio page starts from a character and a motion (2026-09-29)."""
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = io.open(os.path.join(cls.ROOT, "static", "index.html"), encoding="utf-8").read()
+        cls.js = io.open(os.path.join(cls.ROOT, "static", "app.js"), encoding="utf-8").read()
+
+    def test_only_motion_trace_is_offered(self):
+        """Image Trace and Prompt Cinema were taken out of the plan."""
+        self.assertIn('data-mode="motion_trace"', self.html)
+        self.assertNotIn('data-mode="image_trace"', self.html)
+        self.assertNotIn('data-mode="prompt_cinema"', self.html)
+        self.assertIn('mode: "motion_trace",', self.js)
+
+    def test_the_identity_photo_can_come_from_a_character(self):
+        for el in ('id="char-pick"', 'id="char-select"', 'id="char-grid"'):
+            self.assertIn(el, self.html)
+        self.assertIn('"/api/characters"', self.js)
+        self.assertIn("/use`", self.js)
+
+    def test_the_reference_video_can_come_from_the_shelf(self):
+        for el in ('id="shelf"', 'id="shelf-grid"'):
+            self.assertIn(el, self.html)
+        self.assertIn('"/api/shelf"', self.js)
+        self.assertIn('"/api/shelf/use"', self.js)
+        self.assertIn('"/api/shelf/hide"', self.js)
+        # Refreshed with the page's own shelf of takes, so a finished trace
+        # shows up as a candidate without a reload.
+        body = self.js[self.js.index("async function loadHistory()"):]
+        self.assertIn("loadShelf()", body[:body.index("\n}\n")])

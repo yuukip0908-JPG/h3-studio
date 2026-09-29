@@ -11,6 +11,8 @@ import json
 import mimetypes
 import os
 import re
+import shutil
+import signal
 import sys
 import threading
 import time
@@ -22,9 +24,9 @@ if __package__ in (None, ""):  # allow `python3 studio/server.py`
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "studio"
 
-from . import (autobackup, comfy_client, config, deadman, gpu_plan, graph, history,  # noqa: E402
-               jobs, longdraft, mediaprobe, postprocess, preflight, premiere,
-               runpod_ctl, startup)
+from . import (autobackup, characters, comfy_client, config, deadman,  # noqa: E402
+               gpu_plan, graph, history, jobs, longdraft, mediaprobe, postprocess,
+               preflight, premiere, runpod_ctl, shelf, startup)
 
 STARTED_AT = time.time()
 MANAGER = None
@@ -585,6 +587,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._static(path)
         except (ValueError, graph.GraphError) as e:
             self._error(400, str(e))
+        except LookupError as e:
+            self._error(404, str(e).strip("'") or "not found")
         except comfy_client.ComfyUnavailable:
             self._error(503, "GPU が停止しています。右上の START GPU を押して、"
                              "ComfyUI が「準備OK」になってからもう一度お試しください。")
@@ -689,6 +693,24 @@ class Handler(BaseHTTPRequestHandler):
                     "finish_options": _finish_option_catalog(),
                     "output_dir": config.OUTPUT_DIR,
                 })
+            if path == "/api/characters":
+                return self._json({"available": characters.available(),
+                                   "characters": characters.characters()})
+            if path.startswith("/api/characters/"):
+                parts = path[len("/api/characters/"):].split("/")
+                if len(parts) == 1:
+                    return self._json(dict(characters.describe(parts[0]),
+                                           images=characters.images(parts[0])))
+                if len(parts) == 3 and parts[1] == "image":
+                    img = characters.image_path(parts[0], parts[2])
+                    return self._serve_file(
+                        img, mimetypes.guess_type(img)[0] or "application/octet-stream")
+                raise LookupError("unknown endpoint")
+            if path == "/api/shelf":
+                shown, hidden = shelf.candidates()
+                return self._json({"candidates": shown, "hidden_count": hidden,
+                                   "min_seconds": shelf.MIN_SECONDS,
+                                   "max_seconds": shelf.MAX_SECONDS})
             if path == "/api/last_inputs":
                 # Answered on page load so the source video the operator is
                 # working with is already in place. Verified against the disk,
@@ -744,6 +766,21 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/upload":
             return self._json(self._upload(kind=(query.get("kind") or ["image"])[0]))
         data = self._json_body()
+        if path.startswith("/api/characters/") and path.endswith("/use"):
+            return self._json(self._use_character_image(
+                path[len("/api/characters/"):-len("/use")], data.get("asset_id")))
+        if path == "/api/shelf/hide":
+            shelf.set_hidden(data.get("source_video"), bool(data.get("hidden", True)))
+            return self._json({"ok": True})
+        if path == "/api/shelf/use":
+            local = shelf.local_path(data.get("source_video"))
+            if not local:
+                raise LookupError("no such clip")
+            name, subfolder, meta = MANAGER.upload_source_video(local)
+            return self._json({"ok": True, "video": name, "subfolder": subfolder,
+                               "local_path": local, "bytes": os.path.getsize(local),
+                               "probe": meta,
+                               "sent_to_comfyui": MANAGER.inputs.get(name, {}).get("sent", False)})
         if path == "/api/generate":
             return self._json(self._generate(data))
         if path == "/api/select":
@@ -868,6 +905,25 @@ class Handler(BaseHTTPRequestHandler):
         sent = MANAGER.inputs.get(name, {}).get("sent", False)
         return {"ok": True, "image": name, "subfolder": subfolder, "local_path": local,
                 "bytes": len(content), "sent_to_comfyui": sent}
+
+    def _use_character_image(self, char_id, asset_id):
+        """Make one of a C_STUDIO character's images the identity photograph.
+
+        Copied into H3's own uploads first: ComfyUI is handed H3's file, and
+        C_STUDIO's pack is only ever read (characters.py opens nothing else).
+        """
+        src = characters.image_path(char_id, asset_id or "")
+        who = characters.describe(char_id)
+        ext = os.path.splitext(src)[1].lower()
+        local = os.path.join(config.UPLOAD_DIR, "%d_%s_%s%s" % (
+            int(time.time()), _SAFE_NAME.sub("_", char_id), _SAFE_NAME.sub("_", asset_id), ext))
+        os.makedirs(config.UPLOAD_DIR, exist_ok=True)
+        with open(src, "rb") as fin, open(local, "wb") as fout:
+            shutil.copyfileobj(fin, fout)
+        name, subfolder = MANAGER.upload_source_image(local)
+        return {"ok": True, "image": name, "subfolder": subfolder, "local_path": local,
+                "bytes": os.path.getsize(local), "character": who, "asset_id": asset_id,
+                "sent_to_comfyui": MANAGER.inputs.get(name, {}).get("sent", False)}
 
     def _generate(self, data):
         mode = data.get("mode")
@@ -1368,6 +1424,12 @@ def main():
     print("watchdog: %s" % ("OFF" if not config.WATCHDOG_MAX_MINUTES
                             else "%d min absolute, %d min stale"
                             % (config.WATCHDOG_MAX_MINUTES, config.WATCHDOG_STALE_MINUTES)))
+    # stop_studio.sh sends SIGTERM, and Python's default for it exits without
+    # running the finally below -- so an ordinary stop left the dead-man pulse
+    # behind, to be read later as a crash. Treat it exactly like Ctrl-C.
+    def _terminate(_signum, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _terminate)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

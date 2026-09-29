@@ -10,7 +10,8 @@ const JP_STATE = { RUNNING: "起動中", EXITED: "停止中", STOPPED: "停止�
 const JP_MODE = { image_trace: "画像から", motion_trace: "動きをまねる", prompt_cinema: "文章から" };
 const JP_KIND = { draft: "下書き", final: "仕上げ" };
 const state = {
-  mode: "image_trace",
+  mode: "motion_trace",
+  characterAsset: null,     // which C_STUDIO image is the identity photo
   quality: "draft",
   /* One take. 46 batches, 42 of them one take: generating four candidates is
      the exception, and at 22 minutes each it is an expensive default. */
@@ -1451,6 +1452,34 @@ function renderDurationHint() {
 }
 $("refstrength").addEventListener("input", (e) => { $("ref-value").textContent = e.target.value; });
 
+/* One way in for the reference video: a file from this Mac or a 量産候補. */
+function applyVideo(r, label, src, poster) {
+  state.sourceVideo = r.video;
+  state.sourceVideoMeta = r.probe;
+  state.sourceVideoLocal = r.local_path;
+  const p = r.probe || {};
+  /* label is what the operator chose; r.video is the name ComfyUI assigned
+     to it, which means nothing to them. Units in Japanese, like the rest. */
+  const bits = [label, (Math.round(r.bytes / 1024 / 1024 * 10) / 10) + " MB"];
+  if (p.duration) bits.push(p.duration + "秒");
+  if (p.fps) bits.push(p.fps + " fps");
+  if (p.frames) bits.push(p.frames + "フレーム");
+  if (!r.sent_to_comfyui) bits.push("GPU起動後に自動で転送します");
+  $("video-status").textContent = bits.join(" · ");
+  renderMaterialClears();
+  renderReadiness();
+  $("video-notes").textContent = (p.notes || []).join("\n");
+  if (p.ok === false) notice("warn", (p.notes || []).join(" / "));
+  const v = $("video-preview");
+  v.src = src;
+  if (poster) v.poster = poster; else v.removeAttribute("poster");
+  v.hidden = false;
+  renderCacheHint();
+  renderSourceBudget();
+  refreshLongDraftPlan();
+  markShelfPick();
+}
+
 $("video-file").addEventListener("change", async (e) => {
   const f = e.target.files[0]; if (!f) return;
   $("video-status").textContent = "アップロード中…";
@@ -1459,33 +1488,27 @@ $("video-file").addEventListener("change", async (e) => {
     const fd = new FormData();
     fd.append("image", f, f.name);
     const r = await api("/api/upload?kind=video", { method: "POST", body: fd });
-    state.sourceVideo = r.video;
-    state.sourceVideoMeta = r.probe;
-    state.sourceVideoLocal = r.local_path;
-    const p = r.probe || {};
-    /* f.name is what the operator chose; r.video is the name ComfyUI assigned
-       to it, which means nothing to them. Units in Japanese, like the rest. */
-    const bits = [f.name, (Math.round(r.bytes / 1024 / 1024 * 10) / 10) + " MB"];
-    if (p.duration) bits.push(p.duration + "秒");
-    if (p.fps) bits.push(p.fps + " fps");
-    if (p.frames) bits.push(p.frames + "フレーム");
-    if (!r.sent_to_comfyui) bits.push("GPU起動後に自動で転送します");
-    $("video-status").textContent = bits.join(" · ");
-    renderMaterialClears();
-    renderReadiness();
-    $("video-notes").textContent = (p.notes || []).join("\n");
-    if (p.ok === false) notice("warn", (p.notes || []).join(" / "));
-    const v = $("video-preview");
-    v.src = URL.createObjectURL(f);
-    v.hidden = false;
-    renderCacheHint();
-    renderSourceBudget();
-    refreshLongDraftPlan();
+    applyVideo(r, f.name, URL.createObjectURL(f), null);
   } catch (err) {
     $("video-status").textContent = "";
     notice("error", err.message);
   }
 });
+
+/* One way in for the identity photograph, whether it was a file from this Mac
+   or one of a character's images from C_STUDIO. */
+function applyImage(r, label, src) {
+  state.image = r.image;
+  state.localPath = r.local_path;
+  $("image-status").textContent = label +
+    (r.sent_to_comfyui ? "" : " · GPU起動後に自動で転送します");
+  renderReadiness();
+  renderMaterialClears();
+  const img = $("image-preview");
+  img.src = src;
+  img.hidden = false;
+  renderCacheHint();
+}
 
 $("image-file").addEventListener("change", async (e) => {
   const f = e.target.files[0]; if (!f) return;
@@ -1494,19 +1517,129 @@ $("image-file").addEventListener("change", async (e) => {
     const fd = new FormData();
     fd.append("image", f, f.name);
     const r = await api("/api/upload", { method: "POST", body: fd });
-    state.image = r.image;
-    state.localPath = r.local_path;
-    $("image-status").textContent =
-      `${f.name}（${Math.round(r.bytes / 1024)} KB）` +
-      (r.sent_to_comfyui ? "" : " · GPU起動後に自動で転送します");
-    renderReadiness();
-    renderMaterialClears();
-    const img = $("image-preview");
-    img.src = URL.createObjectURL(f);
-    img.hidden = false;
-    renderCacheHint();
+    state.characterAsset = null;
+    markCharacterPick();
+    applyImage(r, `${f.name}（${Math.round(r.bytes / 1024)} KB）`, URL.createObjectURL(f));
   } catch (err) {
     $("image-status").textContent = "";
+    notice("error", err.message);
+  }
+});
+
+/* ------------------------------------------------------------ characters
+   H3 starts from a character (owner, 2026-09-29). The characters, and the LoRAs
+   that draw them, live in C_STUDIO; H3 cannot load those LoRAs, so it reads the
+   images they made -- read only, through /api/characters. */
+async function loadCharacters() {
+  let r;
+  try { r = await api("/api/characters"); } catch (e) { return; }
+  const list = r.characters || [];
+  $("char-pick").hidden = !list.length;
+  if (!list.length) return;
+  const sel = $("char-select");
+  setHtml(sel, list.map((c) =>
+    `<option value="${esc(c.id)}">${esc(c.name)}（${c.image_count}枚）</option>`).join(""));
+  let last = null;
+  try { last = localStorage.getItem("h3.character"); } catch (e) { /* private window */ }
+  if (last && list.some((c) => c.id === last)) sel.value = last;
+  loadCharacterImages(sel.value);
+}
+
+async function loadCharacterImages(id) {
+  if (!id) return;
+  try { localStorage.setItem("h3.character", id); } catch (e) { /* private window */ }
+  let r;
+  try { r = await api("/api/characters/" + encodeURIComponent(id)); }
+  catch (err) { notice("error", err.message); return; }
+  const base = "/api/characters/" + encodeURIComponent(id) + "/image/";
+  setHtml($("char-grid"), (r.images || []).map((a) =>
+    `<button class="pick" data-asset="${esc(a.asset_id)}" title="${esc(a.label || a.kind)}">`
+    + `<img loading="lazy" src="${base}${encodeURIComponent(a.asset_id)}" alt=""></button>`).join(""));
+  markCharacterPick();
+}
+
+function markCharacterPick() {
+  [...$("char-grid").children].forEach((b) =>
+    b.classList.toggle("on", b.dataset.asset === state.characterAsset));
+}
+
+$("char-select").addEventListener("change", (e) => loadCharacterImages(e.target.value));
+$("char-grid").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-asset]"); if (!b) return;
+  if (b.dataset.asset === state.characterAsset) { clearMaterial("image"); return; }
+  const id = $("char-select").value;
+  setText($("image-status"), "読み込み中…");
+  try {
+    const r = await api(`/api/characters/${encodeURIComponent(id)}/use`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset_id: b.dataset.asset }),
+    });
+    state.characterAsset = b.dataset.asset;
+    markCharacterPick();
+    applyImage(r, `${r.character.name} の画像`, "/api/input/" + encodeURIComponent(r.image));
+  } catch (err) {
+    setText($("image-status"), "");
+    notice("error", err.message);
+  }
+});
+
+/* -------------------------------------------------------------- 量産候補
+   Every 6-12 s trace that finished is a candidate (owner, 2026-09-29), one per
+   clip. Taking one off the shelf hides it; nothing is deleted. */
+let shelfItems = [];
+
+async function loadShelf() {
+  let r;
+  try { r = await api("/api/shelf"); } catch (e) { return; }
+  shelfItems = r.candidates || [];
+  $("shelf").hidden = !shelfItems.length;
+  setText($("shelf-count"), shelfItems.length ? `（${shelfItems.length}本）` : "");
+  setHtml($("shelf-grid"), shelfItems.map((c) =>
+    `<span class="pick" data-clip="${esc(c.source_video)}" title="${esc(c.prompt || "")}">`
+    + `<img loading="lazy" src="/api/poster/${encodeURIComponent(c.generation_id)}" alt="">`
+    + `<span class="pick-meta">${c.duration}秒 · ${c.uses}回</span>`
+    + `<button class="thumb-x" data-hide="${esc(c.source_video)}" title="候補からしまう（消しません）">×</button>`
+    + "</span>").join(""));
+  markShelfPick();
+}
+
+function markShelfPick() {
+  [...$("shelf-grid").children].forEach((t) =>
+    t.classList.toggle("on", t.dataset.clip === state.sourceVideo));
+}
+
+$("shelf-grid").addEventListener("click", async (e) => {
+  const json = (body) => ({ method: "POST", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(body) });
+  const h = e.target.closest("[data-hide]");
+  if (h) {
+    try {
+      await api("/api/shelf/hide", json({ source_video: h.dataset.hide }));
+      notice("info", "量産候補からしまいました。動画は消していません。");
+    } catch (err) { notice("error", err.message); }
+    loadShelf();
+    return;
+  }
+  const t = e.target.closest("[data-clip]"); if (!t) return;
+  if (t.dataset.clip === state.sourceVideo) { clearMaterial("video"); return; }
+  const c = shelfItems.find((x) => x.source_video === t.dataset.clip);
+  setText($("video-status"), "読み込み中…");
+  try {
+    const r = await api("/api/shelf/use", json({ source_video: t.dataset.clip }));
+    const url = "/api/input/" + encodeURIComponent(r.video);
+    applyVideo(r, "量産候補", url, url + "?poster=1");
+    /* The candidate is a motion that already worked at this length and with
+       this prompt; start from both rather than from whatever was left here. */
+    if (c && c.duration) {
+      $("duration").value = c.duration;
+      $("duration").dispatchEvent(new Event("change"));
+    }
+    if (c && c.prompt && !$("prompt").value.trim()) {
+      $("prompt").value = c.prompt;
+      $("prompt").dispatchEvent(new Event("input"));
+    }
+  } catch (err) {
+    setText($("video-status"), "");
     notice("error", err.message);
   }
 });
@@ -1549,6 +1682,8 @@ function clearMaterial(kind) {
   if (kind === "image") {
     state.image = null;
     state.localPath = null;
+    state.characterAsset = null;
+    markCharacterPick();
     $("image-preview").hidden = true;
     $("image-preview").removeAttribute("src");
     $("image-file").value = "";
@@ -1566,6 +1701,7 @@ function clearMaterial(kind) {
     setText($("video-status"), "");
     setText($("video-notes"), "");
     refreshLongDraftPlan();
+    markShelfPick();
   }
   renderMaterialClears();
   renderReadiness();
@@ -1926,6 +2062,7 @@ let historyBatches = [];
 let longDraftHistory = [];
 
 async function loadHistory() {
+  loadShelf();
   try {
     const h = await api("/api/history?limit=15");
     historyBatches = h.batches;
@@ -2173,6 +2310,7 @@ let rememberTimer = null;
   renderExtraImages();
   renderMaterialClears();
   restoreLastInputs();
+  loadCharacters();
   pollStatus();
   loadHistory();
   setInterval(loadHistory, 30000);

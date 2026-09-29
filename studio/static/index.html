@@ -70,11 +70,12 @@
       <h2>作り方</h2>
       <div class="pane-body">
 
-        <label>生成モード</label>
+        <!-- 2026-09-29: the studio is built around a character and a motion.
+             Image Trace and Prompt Cinema left the plan; their workflows stay
+             on disk, untouched, as part of the baseline. -->
+        <label>作るもの</label>
         <div class="seg seg-stack" id="mode-seg">
-          <button data-mode="image_trace" class="on">Image Trace<span class="sub">1枚の画像から動かす</span></button>
-          <button data-mode="motion_trace">Motion Trace<span class="sub">参照動画の動きをまねる</span></button>
-          <button data-mode="prompt_cinema">Prompt Cinema<span class="sub">文章だけから作る</span></button>
+          <button data-mode="motion_trace" class="on">トレース<span class="sub">元動画の動きをキャラに写す</span></button>
         </div>
         <p class="hint" id="mode-hint"></p>
 
@@ -128,6 +129,13 @@
             <img id="image-preview" alt="" hidden>
             <button class="mat-x" id="image-clear" title="外す" hidden>×</button>
           </div>
+          <!-- The character's images come from C_STUDIO, read only. H3 cannot
+               load C_STUDIO's LoRAs, so the images they made are the link. -->
+          <div id="char-pick" hidden>
+            <select id="char-select" aria-label="キャラ"></select>
+            <div id="char-grid" class="pick-grid"></div>
+          </div>
+          <label class="or-file" for="image-file">ファイルから選ぶ</label>
           <input type="file" id="image-file" accept="image/*">
           <div id="image-status" class="hint"></div>
         </div>
@@ -151,6 +159,12 @@
             <video id="video-preview" controls preload="metadata" hidden></video>
             <button class="mat-x" id="video-clear" title="外す" hidden>×</button>
           </div>
+          <!-- 量産候補: every 6-12 s trace that finished, one per clip. -->
+          <div id="shelf" hidden>
+            <p class="hint">量産候補から選ぶ <span id="shelf-count"></span></p>
+            <div id="shelf-grid" class="pick-grid"></div>
+          </div>
+          <label class="or-file" for="video-file">ファイルから選ぶ</label>
           <input type="file" id="video-file" accept="video/mp4,video/quicktime,video/*">
           <div id="video-status" class="hint"></div>
           <div id="video-notes" class="hint warn"></div>

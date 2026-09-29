@@ -6,6 +6,10 @@
    証跡: `results/BASELINE_READY`、タグ `v1-baseline`。
 2. **v2 H3 Studio（進行中）** — baselineを壊さず、Image Trace / Motion Trace /
    Prompt Cinema の3用途を普段使いできるUIに変える。
+3. **キャラ起点（2026-09-29〜・進行中）** — トレース / 量産 / 1分 の3つを軸に組み直す。
+   キャラは C_STUDIO の Character Pack から**読むだけ**（書き込まない）。H3 は C_STUDIO の LoRA を
+   読めないので、LoRA が作った画像でつなぐ。Image Trace / Prompt Cinema は計画から外した
+   （baseline のファイルは残す）。段取りと状態は `docs/V3_CHARACTER_FIRST.md`。
 
 ## 絶対原則
 **baselineが最優先。v2の機能はすべて捨てられる。baselineは捨てられない。**
