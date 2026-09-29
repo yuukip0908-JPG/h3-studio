@@ -14,26 +14,30 @@
      "the GPU is billing" and "something failed" are true on every screen. -->
 <div class="app">
 
-<header class="bar">
+<!-- Roles down a left column (owner, 2026-09-29, after C_STUDIO). The Pod's
+     state lives at the foot of it: the one place it is stated, on every screen. -->
+<aside class="side">
   <h1>H3 STUDIO</h1>
-
   <nav class="nav" id="nav">
-    <button data-nav="studio" class="on">生成<span class="sub">Studio</span></button>
-    <button data-nav="gpu">GPU<span class="sub">GPU</span></button>
-    <button data-nav="settings">設定<span class="sub">Settings</span></button>
+    <button data-nav="studio" class="on"><span>トレース</span><span class="sub">Trace</span></button>
+    <span class="nav-soon"><span>量産</span><span class="pill">準備中</span></span>
+    <span class="nav-soon"><span>1分</span><span class="pill">準備中</span></span>
+    <p class="nav-label">ツール</p>
+    <button data-nav="gpu"><span>GPUサーバー</span><span class="sub">GPU</span></button>
+    <button data-nav="settings"><span>設定</span><span class="sub">Settings</span></button>
   </nav>
+  <div class="side-foot">
+    <div id="gpu-chip" class="chip chip-unknown">GPU: …</div>
+    <div id="cost" class="cost"></div>
+    <div class="side-btns">
+      <button id="btn-gpu-start" class="btn btn-go">START GPU</button>
+      <button id="btn-gpu-stop" class="btn btn-stop">STOP GPU</button>
+    </div>
+    <button id="btn-drawer" class="btn btn-ghost" title="GPU の詳細">GPU の詳細</button>
+  </div>
+</aside>
 
-  <div class="spacer"></div>
-
-  <!-- The one place the Pod's state is stated. It used to appear here, in a
-       panel, and in a footer; three copies of one fact is three chances to
-       show a stale one. -->
-  <div id="gpu-chip" class="chip chip-unknown">GPU: …</div>
-  <div id="cost" class="cost"></div>
-  <button id="btn-gpu-start" class="btn btn-go">START GPU</button>
-  <button id="btn-gpu-stop" class="btn btn-stop">STOP GPU</button>
-  <button id="btn-drawer" class="btn btn-ghost" title="GPU の詳細">詳細</button>
-</header>
+<div class="main">
 
 <!-- Anything that means "something is wrong" stays above the work, on every
      screen. A problem hidden behind navigation is a problem nobody sees. -->
@@ -65,58 +69,39 @@
 
   <div class="studio-top">
 
-    <!-- ── how ─────────────────────────────────────────── -->
-    <section class="panel col" id="panel-how">
-      <h2>作り方</h2>
+    <div class="work">
+    <header class="work-head">
+      <div><b>トレース</b><span class="en">TRACE</span></div>
+      <p class="hint" id="work-sub"></p>
+    </header>
+    <!-- ── the take ────────────────────────────────────── -->
+    <section class="panel col" id="panel-results">
+      <h2>プレビュー
+        <button id="results-clear" class="h2-x" title="プレビューを空にする" hidden>×</button>
+      </h2>
       <div class="pane-body">
+        <p class="hint" id="batch-progress" hidden></p>
+        <div id="results" class="grid"></div>
 
-        <!-- 2026-09-29: the studio is built around a character and a motion.
-             Image Trace and Prompt Cinema left the plan; their workflows stay
-             on disk, untouched, as part of the baseline. -->
-        <label>作るもの</label>
-        <div class="seg seg-stack" id="mode-seg">
-          <button data-mode="motion_trace" class="on">トレース<span class="sub">元動画の動きをキャラに写す</span></button>
+        <!-- Consecutive slices of one clip, not candidates for the same clip:
+             a different thing from the variation grid, so a different block. -->
+        <div id="longdraft-run" class="ld-run" hidden></div>
+
+        <div id="finish" hidden>
+          <h2>選んだ1本を仕上げる</h2>
+          <div id="finish-options" class="opts"></div>
+          <button id="btn-finalize" class="btn btn-primary">この設定で仕上げる</button>
+          <p class="hint">仕上げは選んだ1本だけに実行されます（他の候補にはGPUを使いません）。</p>
         </div>
-        <p class="hint" id="mode-hint"></p>
-
-        <!-- Long Draft is not on this list on purpose: it is not a quality
-             setting but a different way of running Motion Trace, and it lives
-             under the reference video that it cuts. -->
-        <label style="margin-top:12px">プリセット</label>
-        <div class="seg seg-stack" id="preset-seg">
-          <button data-preset="standard" class="on">標準<span class="sub">0.4MP · 12 steps</span></button>
-          <button data-preset="hires">高解像度<span class="sub">1.0MP · 実験（VRAM未検証）</span></button>
-          <button data-preset="final">仕上げ<span class="sub">0.4MP · 30 steps</span></button>
-        </div>
-        <p class="hint" id="quality-hint"></p>
-
-        <!-- Default 1. 46 batches, 42 of them one take: the choice stays for
-             the run where the direction is genuinely unknown. It belongs with
-             the mode and the preset -- all three answer "what kind of run is
-             this", none of them answer "how should it look". -->
-        <label style="margin-top:12px">生成本数</label>
-        <div class="field" id="field-variations">
-          <div class="seg" id="var-seg">
-            <button data-var="1" class="on">1</button>
-            <button data-var="4">4</button>
-            <button data-var="8">8</button>
-          </div>
-        </div>
-
-        <!-- Kept in the DOM, not shown: preset-seg drives the same state, and
-             app.js binds a listener to this element at load. -->
-        <div class="seg" id="quality-seg" hidden>
-          <button data-quality="draft" class="on">下書き</button>
-          <button data-quality="final">仕上げ</button>
-        </div>
-
       </div>
     </section>
+    </div><!-- /work -->
 
-    <!-- ── material ────────────────────────────────────── -->
-    <section class="panel col" id="panel-input">
-      <h2>素材</h2>
+    <!-- ── settings ────────────────────────────────────── -->
+    <section class="panel col" id="panel-settings">
+      <h2>生成の設定 <span class="preset-echo" id="preset-echo"></span></h2>
       <div class="pane-body">
+
 
         <p class="hint" id="upload-pending" hidden>
           GPU がまだ起動していませんが、ファイルはこのMacで預かっています。
@@ -125,15 +110,16 @@
 
         <div class="field" id="field-image">
           <label id="image-label">元画像</label>
-          <div class="mat">
-            <img id="image-preview" alt="" hidden>
-            <button class="mat-x" id="image-clear" title="外す" hidden>×</button>
-          </div>
           <!-- The character's images come from C_STUDIO, read only. H3 cannot
-               load C_STUDIO's LoRAs, so the images they made are the link. -->
+               load C_STUDIO's LoRAs, so the images they made are the link.
+               The character comes first, as it does in C_STUDIO. -->
           <div id="char-pick" hidden>
             <select id="char-select" aria-label="キャラ"></select>
             <div id="char-grid" class="pick-grid"></div>
+          </div>
+          <div class="mat">
+            <img id="image-preview" alt="" hidden>
+            <button class="mat-x" id="image-clear" title="外す" hidden>×</button>
           </div>
           <label class="or-file" for="image-file">ファイルから選ぶ</label>
           <input type="file" id="image-file" accept="image/*">
@@ -187,35 +173,45 @@
           </div>
         </div>
 
-      </div>
-    </section>
 
-    <!-- ── the take ────────────────────────────────────── -->
-    <section class="panel col" id="panel-results">
-      <h2>プレビュー
-        <button id="results-clear" class="h2-x" title="プレビューを空にする" hidden>×</button>
-      </h2>
-      <div class="pane-body">
-        <p class="hint" id="batch-progress" hidden></p>
-        <div id="results" class="grid"></div>
-
-        <!-- Consecutive slices of one clip, not candidates for the same clip:
-             a different thing from the variation grid, so a different block. -->
-        <div id="longdraft-run" class="ld-run" hidden></div>
-
-        <div id="finish" hidden>
-          <h2>選んだ1本を仕上げる</h2>
-          <div id="finish-options" class="opts"></div>
-          <button id="btn-finalize" class="btn btn-primary">この設定で仕上げる</button>
-          <p class="hint">仕上げは選んだ1本だけに実行されます（他の候補にはGPUを使いません）。</p>
+        <!-- 2026-09-29: the studio is built around a character and a motion.
+             Image Trace and Prompt Cinema left the plan; their workflows stay
+             on disk, untouched, as part of the baseline. -->
+        <div class="seg seg-stack" id="mode-seg" hidden>
+          <button data-mode="motion_trace" class="on">トレース<span class="sub">元動画の動きをキャラに写す</span></button>
         </div>
-      </div>
-    </section>
+        <p class="hint" id="mode-hint"></p>
 
-    <!-- ── settings ────────────────────────────────────── -->
-    <section class="panel col" id="panel-settings">
-      <h2>生成設定 <span class="preset-echo" id="preset-echo"></span></h2>
-      <div class="pane-body">
+        <!-- Long Draft is not on this list on purpose: it is not a quality
+             setting but a different way of running Motion Trace, and it lives
+             under the reference video that it cuts. -->
+        <label>プリセット</label>
+        <div class="seg seg-stack" id="preset-seg">
+          <button data-preset="standard" class="on">標準<span class="sub">0.4MP · 12 steps</span></button>
+          <button data-preset="hires">高解像度<span class="sub">1.0MP · 実験（VRAM未検証）</span></button>
+          <button data-preset="final">仕上げ<span class="sub">0.4MP · 30 steps</span></button>
+        </div>
+        <p class="hint" id="quality-hint"></p>
+
+        <!-- Default 1. 46 batches, 42 of them one take: the choice stays for
+             the run where the direction is genuinely unknown. It belongs with
+             the mode and the preset -- all three answer "what kind of run is
+             this", none of them answer "how should it look". -->
+        <label>生成本数</label>
+        <div class="field" id="field-variations">
+          <div class="seg" id="var-seg">
+            <button data-var="1" class="on">1</button>
+            <button data-var="4">4</button>
+            <button data-var="8">8</button>
+          </div>
+        </div>
+
+        <!-- Kept in the DOM, not shown: preset-seg drives the same state, and
+             app.js binds a listener to this element at load. -->
+        <div class="seg" id="quality-seg" hidden>
+          <button data-quality="draft" class="on">下書き</button>
+          <button data-quality="final">仕上げ</button>
+        </div>
 
         <div class="field">
           <label>プロンプト</label>
@@ -333,26 +329,7 @@
 
   </div><!-- /studio-top -->
 
-  <div class="studio-bottom">
 
-    <!-- The shelf is scoped to the reference video in use: this is the work in
-         progress, not the archive. Everything ever made is the History screen. -->
-    <section class="panel col" id="panel-side">
-      <div class="shelf-head">
-        <h2 id="shelf-title">この素材で作ったもの</h2>
-        <div id="stats" class="hint"></div>
-      </div>
-      <div id="history"></div>
-    </section>
-
-    <section class="panel col" id="panel-delivery">
-      <h2>出力・納品</h2>
-      <div class="pane-body" id="delivery-body">
-        <p class="hint">まだ書き出したものがありません。</p>
-      </div>
-    </section>
-
-  </div><!-- /studio-bottom -->
 </section>
 
 <!-- ══════════════════════ 4. GPU ═════════════════════════ -->
@@ -437,6 +414,7 @@
 </section>
 
 </main>
+</div><!-- /main -->
 </div>
 
 <script src="/app.js"></script>

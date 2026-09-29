@@ -533,8 +533,6 @@ async function pollStatus() {
     renderGpu(s.gpu);
     renderGpuScreen(s);
     renderSettingsScreen(s);
-    renderDelivery();
-    renderStats(s.stats);
     /* A reload used to empty the results panel: state.batch only ever got set
        by submitting, so the finished videos vanished even though they were on
        disk and in this very payload. Adopt the newest batch when we have none. */
@@ -851,12 +849,6 @@ function renderReadiness() {
   if (note) note.hidden = !waiting;
 }
 
-function renderStats(s) {
-  if (!s) return;
-  $("stats").textContent =
-    `${s.generations} 本生成 ／ キャッシュ再利用 ${s.cache_hits}・再計算 ${s.cache_misses}` +
-    ` ／ GPU ${Math.round(s.gpu_seconds)} 秒`;
-}
 
 // ---------------------------------------------------------------- results
 function fmtDuration(sec) {
@@ -1145,6 +1137,8 @@ function buildResultCard() {
     + '<button class="btn" data-act="zoom" hidden>大きく見る</button>'
     + '<button class="btn" data-act="select"></button>'
     + '<button class="btn" data-act="export">書き出し</button>'
+    /* Premiere lived only in the 納品 panel, which is gone (2026-09-29). */
+    + '<button class="btn" data-act="premiere">Premiere に送る</button>'
     /* An anchor, not a button: /api/video/<id> already falls back to the
        history row (server.py _video), so this works for a generation this
        process never saw -- which is exactly when 書き出し fails. The action
@@ -1244,6 +1238,7 @@ function renderResults(batch) {
     setClass(pick, "btn-primary", g.selected);
     pick.disabled = g.status !== "done";
     card.querySelector('[data-act="export"]').disabled = g.status !== "done";
+    card.querySelector('[data-act="premiere"]').disabled = g.status !== "done";
     const dl = card.querySelector('[data-act="download"]');
     dl.hidden = g.status !== "done";
     if (!dl.hidden) {
@@ -1277,6 +1272,18 @@ $("results").addEventListener("click", async (e) => {
       });
       const b = await api("/api/batch/" + state.batch.id);
       renderResults(b);
+    } else if (btn.dataset.act === "premiere") {
+      btn.disabled = true;
+      try {
+        const r = await api("/api/premiere/send", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ generation_id: genId }),
+        });
+        notice(r.ok ? "info" : "warn", r.queued
+          ? `予約しました。次に Premiere を開いたときに自動で入ります（待ち ${r.pending} 本）。`
+          : r.ok ? `Premiere に入れました（${r.project || "プロジェクト"} の「H3 Studio」ビン）。`
+          : (r.error || "Premiere に送れませんでした。"));
+      } finally { btn.disabled = false; pollPremiere(); }
     } else {
       const r = await api("/api/export", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -1547,6 +1554,8 @@ async function loadCharacters() {
 
 async function loadCharacterImages(id) {
   if (!id) return;
+  const opt = $("char-select").selectedOptions[0];
+  setText($("work-sub"), opt ? `「${opt.textContent.replace(/（\d+枚）$/, "")}」で作業中` : "");
   try { localStorage.setItem("h3.character", id); } catch (e) { /* private window */ }
   let r;
   try { r = await api("/api/characters/" + encodeURIComponent(id)); }
@@ -1983,54 +1992,6 @@ $("auto-stop").addEventListener("change", async (e) => {
 /* History rows come from SQLite and carry output_path but no output_url; the
    video route now serves from history too, so the URL can be derived. This is
    what makes a finished clip survive a Studio restart, not just a reload. */
-/* /api/poster 404s for anything made before posters existed, so the tile falls
-   back to a label rather than a broken image icon. */
-function thumb(genId, why) {
-  /* "NO PREVIEW" on a cancelled attempt and on a finished take that simply
-     predates posters looked identical, so a shelf of abandoned runs read the
-     same as a shelf of work. Say which it is. */
-  const label = why || "映像なし";
-  if (!genId) return `<div class="h-thumb none">${esc(label)}</div>`;
-  return `<img class="h-thumb" loading="lazy" alt="" src="/api/poster/${genId}"
-    onerror="this.outerHTML='&lt;div class=\'h-thumb none\'&gt;${esc(label)}&lt;/div&gt;'">`;
-}
-
-/* When the shelf was last looked at, so a take finished since then can be
-   marked. Kept per browser: it is a reading aid, not project state. */
-function shelfSeen() {
-  try {
-    const v = localStorage.getItem("h3_shelf_seen");
-    if (v !== null) return Number(v) || 0;
-    /* First run marks everything already made as seen. Opening the Studio and
-       finding a year of work flagged "new" tells the operator nothing; the
-       badge is only worth having if it means "since you last looked". */
-    const now = Date.now();
-    localStorage.setItem("h3_shelf_seen", String(now));
-    return now;
-  } catch (e) { return Date.now(); }
-}
-function markShelfSeen(t) {
-  try {
-    const cur = shelfSeen();
-    if (t > cur) localStorage.setItem("h3_shelf_seen", String(t));
-  } catch (e) { /* private window: badges simply stay on */ }
-}
-/* History stores these as Unix seconds, not as a date string, and Date.parse
-   of a number is NaN -- which silently made every take look equally old and
-   the badge never appear. */
-function toMs(raw) {
-  if (typeof raw === "number") return raw * 1000;
-  return raw ? (Date.parse(raw) || 0) : 0;
-}
-function finishedAt(b) {
-  let t = 0;
-  (b.generations || []).forEach((g) => {
-    if (g.status !== "done") return;
-    const v = toMs(g.finished_at || g.created_at);
-    if (v > t) t = v;
-  });
-  return t;
-}
 
 /* The still that stands for what is being made: the photograph for Image
    Trace, a frame of the reference for Motion Trace, and nothing for Prompt
@@ -2058,74 +2019,12 @@ function historyBatchToView(b) {
   });
 }
 
-let historyBatches = [];
-let longDraftHistory = [];
-
+/* The page no longer shows a shelf of past takes (2026-09-29), so history is
+   read for one thing only: putting the last take back in an empty preview. */
 async function loadHistory() {
   loadShelf();
   try {
-    const h = await api("/api/history?limit=15");
-    historyBatches = h.batches;
-    /* "These three videos were one Long Draft" is a fact that has to survive a
-       Studio restart, so it is read back from history, not from memory. */
-    longDraftHistory = h.long_drafts || [];
-    /* A shelf is looked at, not read. Each tile is one picture and two short
-       lines; the prompt excerpt that used to be the whole entry is the title
-       attribute, for the one time somebody needs it. */
-    const ldRows = longDraftHistory.map((d) => {
-      const segs = d.segments || [];
-      const done = segs.filter((x) => x.status === "done").length;
-      const shot = segs.find((x) => x.status === "done" && x.generation_id);
-      /* A Long Draft is the longest thing this program makes, so it is the
-         one most likely to have finished while nobody was watching. */
-      const ldFin = done ? toMs(d.finished_at || d.created_at) : 0;
-      const ldNew = done > 0 && ldFin > shelfSeen();
-      return `<div class="h-item h-ld${ldNew ? " h-new" : ""}" data-longdraft="${d.id}"
-        data-finished="${ldFin}" title="${esc(d.prompt || "")}">
-        ${ldNew ? '<span class="h-badge">新着</span>' : ""}
-        ${thumb(shot && shot.generation_id, done ? "映像なし" : "中止した")}
-        <div class="h-meta"><b>長尺 · ${JP_MODE[d.mode] || d.mode}</b>
-        <span class="h-sub">${(d.source_duration || 0).toFixed(1)}秒 · ${done}/${segs.length} 本</span></div></div>`;
-    }).join("");
-    /* Decision 4: the shelf is the work in progress, not the archive. Scoped
-       to the reference video being used, so swapping the photograph keeps the
-       takes and swapping the video changes them. Everything ever made is the
-       History screen, which is where "search all of it" belongs. */
-    /* Scoping to nothing is worse than not scoping: with the page limited to
-       15 batches, a run of Image Trace work empties a Motion Trace shelf even
-       though the takes exist. Fall back, and say which list is on screen. */
-    const mine = state.sourceVideo
-      ? h.batches.filter((b) => b.source_video === state.sourceVideo) : [];
-    const scoped = mine.length ? mine : h.batches;
-    setText($("shelf-title"), mine.length ? "この素材で作ったもの" : "最近作ったもの");
-    $("history").innerHTML = ldRows + scoped.map((b) => {
-      const done = b.generations.filter((g) => g.status === "done").length;
-      const sel = b.generations.find((g) => g.selected);
-      const shot = sel || b.generations.find((g) => g.status === "done");
-      /* A batch where everything errored rendered "0/4本" -- identical to one
-         still queued. The rail says which, without reading the numbers. */
-      const running = b.generations.some((g) => ["running", "queued", "submitting"].includes(g.status));
-      const st = running
-        ? "h-run" : b.generations.some((g) => g.status === "error")
-        ? "h-err" : done === 0 ? "h-cancelled" : "";
-      /* The thing the operator came back to look at is the one that finished
-         while they were away, and it used to sit in the row looking exactly
-         like the thirty before it. */
-      const fin = finishedAt(b);
-      const isNew = done > 0 && fin > shelfSeen();
-      const why = running ? "生成中" : b.generations.some((g) => g.status === "error")
-        ? "失敗" : done === 0 ? "中止した" : "映像なし";
-      return `<div class="h-item ${st}${isNew ? " h-new" : ""}" data-batch="${b.id}"
-        data-finished="${fin}" title="${esc(b.prompt || "")}">
-        ${isNew ? '<span class="h-badge">新着</span>' : ""}
-        ${thumb(shot && shot.id, why)}
-        <div class="h-meta"><b>${sel ? "★ " : ""}${JP_MODE[b.mode] || b.mode}</b>
-        <span class="h-sub">${JP_KIND[b.kind] || b.kind} · ${done}/${b.generations.length}本${
-          b.duration ? " · " + b.duration + "秒" : ""}</span></div></div>`;
-    }).join("") || (ldRows ? "" :
-      `<div class='hint'>${state.sourceVideo
-        ? "この参照動画で作ったものはまだありません。" : "まだ履歴はありません。"}</div>`);
-
+    const h = await api("/api/history?limit=1");
     /* Nothing on screen and nothing in this process's memory (a restarted
        Studio): show the most recent batch from history so the work is still
        there. */
@@ -2148,33 +2047,6 @@ $("longdraft-run").addEventListener("click", (e) => {
   state.longDraftDismissed = true;
   state.longDraftWatched = null;
   renderLongDraftRun(null);
-});
-
-$("history").addEventListener("click", (e) => {
-  /* Monotonic: opening the newest clears every badge, opening an older one
-     leaves the newer ones marked. */
-  const t = e.target.closest("[data-finished]");
-  if (t) markShelfSeen(Number(t.dataset.finished || 0));
-}, true);
-
-$("history").addEventListener("click", async (e) => {
-  const ld = e.target.closest("[data-longdraft]");
-  if (ld) {
-    try {
-      const run = await api("/api/long_draft/" + ld.dataset.longdraft);
-      state.longDraftDismissed = false;
-      state.longDraftWatched = run.id;
-      renderLongDraftRun(run);
-      notice("info", "履歴からこの長尺Draftを開きました。");
-    } catch (err) { notice("error", err.message); }
-    return;
-  }
-  const item = e.target.closest("[data-batch]");
-  if (!item) return;
-  const b = historyBatches.find((x) => x.id === item.dataset.batch);
-  if (!b) return;
-  renderResults(historyBatchToView(b));
-  notice("info", "履歴からこのバッチを開きました。");
 });
 
 /* The source video is picked once and the photograph is what changes, so the
@@ -2427,51 +2299,6 @@ $("btn-seed-dice").addEventListener("click", () => {
   renderPresetEcho();
 });
 
-// -------------------------------------------------------------- 出力・納品
-/* What actually came out, and what was done to it afterwards. Every line here
-   is a fact the pipeline recorded -- the audio and the re-encode lines describe
-   what postprocess.deliver() really did, not an option somebody could set. */
-function renderDelivery() {
-  const el = $("delivery-body");
-  if (!el) return;
-  const b = state.batch;
-  const gens = (b && b.generations) || [];
-  const g = gens.find((x) => x.selected && x.status === "done")
-         || gens.slice().reverse().find((x) => x.status === "done");
-  if (!g) {
-    setHtml(el, '<p class="hint">まだ書き出したものがありません。</p>');
-    return;
-  }
-  const pr = paramsOf(g);
-  const rows = [
-    ["解像度", pr.megapixels ? pr.megapixels + " MP" : "—"],
-    ["長さ", pr.duration ? pr.duration + " 秒" : "—"],
-    ["fps", "24（H3 の出力）"],
-    ["Steps", pr.steps != null ? String(pr.steps) : "—"],
-    ["Seed", g.seed != null ? String(g.seed) : "—"],
-    ["解析", g.cache_result === "HIT" ? "なし（キャッシュ再利用）"
-           : g.cache_result === "MISS" ? "あり" : "—"],
-    ["生成時間", g.seconds ? fmtDuration(g.seconds) : "—"],
-  ];
-  const delivered = g.delivered;
-  setHtml(el,
-    `<video class="detail-media" controls preload="metadata" src="/api/video/${g.id}"
-       poster="/api/poster/${g.id}"></video>`
-    + '<dl class="kv">' + rows.map(([k, v]) =>
-        `<div><dt>${k}</dt><dd>${esc(String(v))}</dd></div>`).join("") + "</dl>"
-    + (delivered
-        ? '<p class="hint">納品版を再生しています — 元動画の音声と再生速度を戻し、'
-          + '映像は再エンコードしていません。</p>'
-        : '<p class="hint">生成そのままの出力です（納品版はまだありません）。</p>')
-    + '<div class="detail-acts">'
-    + `<a class="btn" href="/api/video/${g.id}" download>ダウンロード</a>`
-    + `<button class="btn" data-export="${g.id}">書き出し先に保存</button>`
-    + `<button class="btn btn-primary" data-premiere="${g.id}">Premiere に送る</button>`
-    + (premiereOn ? "" : '<p class="hint">Premiere は起動していません。押すと予約され、'
-        + '次に Premiere を開いたときに自動で入ります。</p>')
-    + "</div>");
-}
-
 /* Premiere on its own slow timer, not inside /api/status: the answer is a file
    the bridge panel rewrites every couple of seconds, and it changes only when
    an application is opened or closed. */
@@ -2499,7 +2326,6 @@ async function pollPremiere() {
   if (premiereOn && wasPending > 0 && premierePending === 0) {
     notice("info", `予約していた ${wasPending} 本を Premiere に入れました。`);
   }
-  if (was !== premiereOn) renderDelivery();
 }
 /* Fills the window with the take and nothing else. Escape or a click on the
    backdrop puts it back -- the complaint that prompted this was not only that
@@ -2562,34 +2388,6 @@ $("results").addEventListener("click", (e) => {
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && document.body.classList.contains("zoomed")) setZoom(false);
-});
-
-$("delivery-body").addEventListener("click", async (e) => {
-  const send = e.target.closest("[data-premiere]");
-  if (send) {
-    send.disabled = true;
-    try {
-      const r = await api("/api/premiere/send", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ generation_id: send.dataset.premiere }),
-      });
-      notice(r.ok ? "info" : "warn", r.queued
-        ? `予約しました。次に Premiere を開いたときに自動で入ります（待ち ${r.pending} 本）。`
-        : r.ok ? `Premiere に入れました（${r.project || "プロジェクト"} の「H3 Studio」ビン）。`
-        : (r.error || "Premiere に送れませんでした。"));
-    } catch (err) { notice("error", err.message); }
-    finally { send.disabled = false; pollPremiere(); }
-    return;
-  }
-  const b = e.target.closest("[data-export]");
-  if (!b) return;
-  try {
-    const r = await api("/api/export", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ generation_id: b.dataset.export }),
-    });
-    notice("info", "保存しました: " + r.path);
-  } catch (err) { notice("error", err.message); }
 });
 
 // ----------------------------------------------------------------- 4. GPU

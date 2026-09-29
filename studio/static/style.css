@@ -32,15 +32,12 @@
    page is hidden by a class-bearing element, so this has to win outright. */
 [hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--fg);
-  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif}
+  font:12.5px/1.5 -apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif}
 h2{font-size:11px;letter-spacing:.16em;color:var(--dim);text-transform:uppercase;
   margin:22px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
 h2:first-child{margin-top:0}
 
-.bar{display:flex;align-items:center;gap:12px;padding:11px 16px;
-  background:linear-gradient(180deg,#171C26,#12161E);
-  border-bottom:1px solid var(--line);box-shadow:var(--edge);position:sticky;top:0;z-index:20}
-h1{font-weight:600;font-size:13px;letter-spacing:.2em;
+h1{font-weight:600;font-size:12px;letter-spacing:.2em;
   background:linear-gradient(92deg,var(--fg),#9FB4E8);
   -webkit-background-clip:text;background-clip:text;color:transparent;padding-right:4px}
 .spacer{flex:1}
@@ -66,21 +63,35 @@ h1{font-weight:600;font-size:13px;letter-spacing:.2em;
    strip of thumbnails once pushed STOP GPU off the right of the screen. */
 html,body{height:100%}
 body{overflow:hidden}
-.app{display:grid;grid-template-rows:auto auto minmax(0,1fr);
-  grid-template-columns:minmax(0,1fr);height:100dvh;min-height:0;min-width:0}
-.bar{position:static}
+.app{display:grid;grid-template-columns:208px minmax(0,1fr);
+  height:100dvh;min-height:0;min-width:0}
+.main{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;min-width:0}
 
-/* Navigation is a peer of the logo, not a sidebar: five screens do not earn a
-   permanent 200px column in a tool whose subject is a video. */
-.nav{display:flex;gap:2px;margin-left:6px}
-.nav button{display:flex;flex-direction:column;align-items:center;gap:0;
-  background:transparent;border:1px solid transparent;color:var(--dim);
-  border-radius:var(--r-sm);padding:5px 13px 4px;font:inherit;font-size:12.5px;
-  cursor:pointer;line-height:1.25;transition:background .14s,color .14s,border-color .14s}
-.nav button .sub{font-size:8.5px;letter-spacing:.14em;opacity:.5;text-transform:uppercase}
+/* Roles down a left column (owner, 2026-09-29, after C_STUDIO): each role is a
+   row, its English name set small on the right, and the Pod's state at the foot
+   -- the one place it is stated, on every screen. */
+.side{display:flex;flex-direction:column;min-height:0;overflow-y:auto;
+  background:#0F121A;border-right:1px solid var(--line);padding:14px 10px 12px}
+.side h1{margin:0 6px 16px;font-size:12px}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav button,.nav .nav-soon{display:flex;align-items:center;justify-content:space-between;
+  gap:8px;width:100%;background:transparent;border:1px solid transparent;color:var(--dim);
+  border-radius:var(--r-sm);padding:7px 9px;font:inherit;font-size:12px;text-align:left;
+  line-height:1.25;transition:background .14s,color .14s,border-color .14s}
+.nav button{cursor:pointer}
+.nav .sub{font-size:9px;letter-spacing:.14em;opacity:.55;text-transform:uppercase}
 .nav button:hover:not(.on){color:var(--fg);background:var(--raised)}
 .nav button.on{color:#fff;background:linear-gradient(180deg,#2B3550,#222A40);
   border-color:#3A4666;box-shadow:var(--edge)}
+.nav .nav-soon{color:var(--faint);cursor:default}
+.nav .pill{font-size:9px;padding:1px 7px;border-radius:99px;border:1px solid var(--line);
+  color:var(--faint)}
+.nav-label{font-size:10px;color:var(--faint);letter-spacing:.1em;margin:16px 9px 4px}
+.side-foot{margin-top:auto;padding-top:14px;display:flex;flex-direction:column;gap:7px}
+.side-foot .chip{align-self:flex-start;max-width:100%}
+.side-foot .cost{text-align:left}
+.side-btns{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.side-btns .btn{padding-left:4px;padding-right:4px;font-size:11px}
 
 .alerts{display:flex;flex-direction:column;gap:8px;padding:0 16px;margin-top:12px;
   max-height:34vh;overflow-y:auto;min-width:0}
@@ -110,11 +121,14 @@ main.screens{min-height:0;min-width:0;display:grid}
 /* ---- 1. Studio ---------------------------------------------------------
    Four columns for the decision, two panels under it for the result. The
    video is the widest track because the video is the thing being judged. */
-.studio{display:grid;grid-template-rows:minmax(0,1fr) 208px}
+.studio{display:grid;grid-template-rows:minmax(0,1fr)}
 .studio-top{display:grid;gap:12px;min-height:0;min-width:0;
-  grid-template-columns:212px 274px minmax(320px,1fr) 352px}
-.studio-bottom{display:grid;gap:12px;min-height:0;min-width:0;
-  grid-template-columns:minmax(0,1fr) 344px}
+  grid-template-columns:minmax(0,1fr) 340px}
+.work{display:grid;grid-template-rows:auto minmax(0,1fr);gap:8px;min-height:0;min-width:0}
+.work-head{display:flex;align-items:baseline;gap:14px;padding:2px 4px}
+.work-head b{font-size:13.5px;font-weight:600}
+.work-head .en{font-size:10px;letter-spacing:.16em;color:var(--dim);margin-left:8px}
+.work-head .hint{margin:0}
 #panel-settings{grid-template-rows:auto minmax(0,1fr) auto}
 #panel-results .pane-body{display:flex;flex-direction:column}
 #panel-results #results{flex:0 0 auto}
@@ -150,38 +164,6 @@ details.more[open]>summary{border-bottom:1px solid var(--line-soft);margin-botto
 .fixed-kv{opacity:.72;margin-bottom:6px}
 .preset-echo{font-size:10px;letter-spacing:.04em;text-transform:none;color:var(--warn)}
 
-/* The shelf: a fixed-height strip that scrolls sideways, so it can never eat
-   the work area no matter how many takes exist. */
-.shelf-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
-.shelf-head h2{margin:0;border:none;padding:0}
-.shelf-head .hint{margin:0}
-#panel-side{grid-template-rows:auto minmax(0,1fr)}
-#history{display:flex;gap:8px;overflow-x:auto;overflow-y:hidden;min-width:0;min-height:0;
-  padding:12px 0 6px;overscroll-behavior-x:contain;align-items:flex-start}
-#history .h-item{flex:0 0 auto;width:132px;border:1px solid var(--line);
-  border-radius:12px;overflow:hidden;background:var(--raised);padding:0;cursor:pointer;
-  font-size:11px;color:var(--dim);box-shadow:var(--edge);
-  transition:border-color .14s,transform .14s,box-shadow .14s}
-#history .h-item:hover{border-color:var(--accent);transform:translateY(-2px);
-  box-shadow:var(--edge),0 12px 24px -14px rgba(0,0,0,.95)}
-#history .h-thumb{display:block;width:100%;height:86px;object-fit:cover;background:#080A0E}
-#history .h-thumb.none{display:flex;align-items:center;justify-content:center;
-  font-size:9px;letter-spacing:.16em;color:var(--faint);
-  background:repeating-linear-gradient(45deg,#0E1117,#0E1117 6px,#11151C 6px,#11151C 12px)}
-#history .h-meta{padding:6px 8px 8px;line-height:1.4}
-#history .h-item b{color:var(--fg);font-weight:600;display:block;font-size:11px;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#history .h-sub{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  font-variant-numeric:tabular-nums;color:var(--faint)}
-
-/* ---- 2. History / 3. Assets: filter, grid, inspector ------------------- */
-.hist,.assets{grid-template-columns:222px minmax(0,1fr) 340px;display:grid}
-.hgrid,.agrid{display:grid;gap:10px;
-  grid-template-columns:repeat(auto-fill,minmax(148px,1fr))}
-.tile{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--raised);
-  cursor:pointer;box-shadow:var(--edge);transition:border-color .14s,transform .14s}
-.tile:hover{border-color:var(--accent);transform:translateY(-2px)}
-.tile.on{border-color:var(--sel);box-shadow:var(--edge),0 0 0 1px var(--sel) inset}
 .tile img,.tile .h-thumb{display:block;width:100%;height:104px;object-fit:cover;background:#080A0E}
 .tile .h-thumb.none{display:flex;align-items:center;justify-content:center;font-size:9px;
   letter-spacing:.16em;color:var(--faint);
@@ -227,7 +209,7 @@ details.more[open]>summary{border-bottom:1px solid var(--line-soft);margin-botto
 /* Below this width four columns are a lie. Stop pretending it is an app shell
    and let the page scroll the way a document does. */
 @media (max-width:1360px){
-  .studio-top{grid-template-columns:196px 246px minmax(260px,1fr) 320px}
+  .studio-top{grid-template-columns:minmax(0,1fr) 310px}
   .hist,.assets{grid-template-columns:196px minmax(0,1fr) 300px}
   .gpu,.settings{grid-template-columns:296px minmax(0,1fr) 300px}
 }
@@ -236,14 +218,14 @@ details.more[open]>summary{border-bottom:1px solid var(--line-soft);margin-botto
   .app{display:block;height:auto}
   main.screens{display:block}
   .screen{display:block;padding:12px 14px 20px}
-  .studio,.studio-top,.studio-bottom{display:block}
-  .studio-bottom{height:auto}
+  .app{grid-template-columns:none}
+  .side{border-right:none;border-bottom:1px solid var(--line)}
+  .studio,.studio-top{display:block}
   .panel{margin-bottom:12px}
   .col{overflow:visible;display:block}
   .col>h2:first-child,.col>.shelf-head{margin:0 0 10px;padding:0 0 6px}
   .pane-body{overflow:visible;margin:0;padding:0}
   .go{margin:12px 0 0;padding:0;border:none}
-  .nav{flex-wrap:wrap}
 }
 
 .field{margin-bottom:14px}
@@ -292,7 +274,7 @@ input[type=file]{font-size:12px;color:var(--dim)}
 .btn-stop:hover:not(:disabled){background:linear-gradient(180deg,#E6604F,#C4433A);border-color:#D4574A}
 .btn-ghost{color:var(--dim);background:transparent;box-shadow:none}
 .btn-ghost:hover:not(:disabled){color:var(--fg);background:var(--raised)}
-.btn-big{width:100%;padding:13px;font-size:14px;font-weight:600;letter-spacing:.12em;margin-top:4px}
+.btn-big{width:100%;padding:13px;font-size:12px;font-weight:600;letter-spacing:.12em;margin-top:4px}
 
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
 .card{background:var(--sunk);border:1px solid var(--line);border-radius:12px;overflow:hidden;
@@ -347,7 +329,7 @@ input[type=file]{font-size:12px;color:var(--dim)}
 .grid.solo .card .meta + .meta{grid-row:2;align-self:end;padding:0 16px 12px}
 .grid.solo .card .acts{grid-column:2;grid-row:3;flex-direction:column;padding:0 16px 16px}
 .grid.solo .card .acts .btn{width:100%;padding:9px;font-size:12px}
-.grid.solo .card .who{display:block;font-size:13px;color:var(--fg);letter-spacing:.01em}
+.grid.solo .card .who{display:block;font-size:12px;color:var(--fg);letter-spacing:.01em}
 .grid.solo .card .who .seed{display:block;font-size:11px;color:var(--faint);
   font-variant-numeric:tabular-nums;margin-top:3px;letter-spacing:.02em}
 .grid.solo .card .tagwrap{display:block;margin-top:8px}
@@ -398,14 +380,14 @@ input[type=file]{font-size:12px;color:var(--dim)}
 /* --- GPU panel: the operator should be able to answer "what do I press",
    "what does it cost" and "did it really stop" without reading a log. --- */
 .gpu-card{border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px}
-.gpu-card .state{font-size:15px;font-weight:600;margin-bottom:6px}
+.gpu-card .state{font-size:13.5px;font-weight:600;margin-bottom:6px}
 .gpu-card .state.on{color:var(--go)}
 .gpu-card .state.off{color:var(--dim)}
-.gpu-card .gpu-name{font-size:14px}
-.gpu-card .price{font-size:13px;color:var(--dim);margin:4px 0 10px}
+.gpu-card .gpu-name{font-size:12px}
+.gpu-card .price{font-size:12px;color:var(--dim);margin:4px 0 10px}
 .gpu-card .price b{color:var(--fg);font-weight:600}
 .gpu-card .btn{width:100%}
-.gpu-progress{list-style:none;margin:0 0 10px;padding:0;font-size:13px}
+.gpu-progress{list-style:none;margin:0 0 10px;padding:0;font-size:12px}
 .gpu-progress li{padding:3px 0;color:var(--dim)}
 .gpu-progress li .mark{display:inline-block;width:1.4em}
 .gpu-progress li.done{color:var(--fg)}
@@ -413,21 +395,21 @@ input[type=file]{font-size:12px;color:var(--dim)}
 .gpu-progress li.failed{color:var(--stop)}
 .gpu-progress li .detail{display:block;margin-left:1.4em;font-size:12px;color:var(--dim)}
 .gpu-offer{border:1px solid #7d6430;background:rgba(217,164,65,.12);border-radius:10px;padding:12px;margin-bottom:10px}
-.gpu-offer h3{margin:0 0 6px;font-size:14px}
+.gpu-offer h3{margin:0 0 6px;font-size:12px}
 .gpu-offer .opt{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:6px 0}
-.gpu-offer .opt .p{font-size:13px}
+.gpu-offer .opt .p{font-size:12px}
 .gpu-offer .actions{display:flex;gap:6px;margin-top:8px}
-.gpu-cost{font-size:13px;margin-bottom:10px}
+.gpu-cost{font-size:12px;margin-bottom:10px}
 .gpu-cost div{display:flex;justify-content:space-between;padding:2px 0}
 .gpu-cost .est{color:var(--dim)}
 .gpu-cost .none{color:var(--dim);font-style:italic}
-.check{display:flex;align-items:center;gap:6px;font-size:13px;margin-top:6px}
+.check{display:flex;align-items:center;gap:6px;font-size:12px;margin-top:6px}
 
 /* Motion Trace prompt helper: picking roles is easier than remembering tags. */
 #mt-prompt-helper{margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:8px}
 #mt-prompt-helper .mt-opts{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px;margin-bottom:8px}
 #mt-prompt-helper .mt-opts label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--dim)}
-#mt-prompt-helper .mt-opts select{font-size:13px;padding:5px 8px}
+#mt-prompt-helper .mt-opts select{font-size:12px;padding:5px 8px}
 #mt-prompt-helper input[type=text]{margin-bottom:8px}
 #mt-prompt-helper .btn{width:100%}
 
@@ -454,12 +436,8 @@ input[type=file]{font-size:12px;color:var(--dim)}
 .ld-preview { margin-bottom: 6px; }
 /* A long draft is several takes of one clip. The tile already says 長尺, so the
    rail is a category mark -- not --hit's green, which means "cache reused". */
-#history .h-ld{box-shadow:inset 3px 0 0 var(--accent-2)}
 /* State the shelf could not show at all: a batch where everything failed
    rendered identically to one still queued. */
-#history .h-run{box-shadow:inset 3px 0 0 var(--go)}
-#history .h-err{box-shadow:inset 3px 0 0 var(--stop)}
-#history .h-cancelled{opacity:.6}
 
 /* No step count yet (encode, queueing, a recovered generation): show that it is
    working rather than a percentage nobody measured. */
@@ -489,12 +467,6 @@ input[type=file]{font-size:12px;color:var(--dim)}
    one onto a line that the panel then clipped, so 生成本数 offered 1 and 4. */
 #var-seg button{min-width:0;padding:8px 4px}
 
-/* --- the shelf says which tiles are new, and why the empty ones are empty --- */
-#history .h-item{position:relative}
-#history .h-new{border-color:var(--accent)}
-#history .h-badge{position:absolute;top:4px;left:4px;z-index:2;
-  background:var(--accent);color:#0A0C10;font-size:9px;font-weight:700;
-  letter-spacing:.04em;padding:1px 5px;border-radius:3px}
 
 /* --- the wait shows the material, not a black rectangle ---
 
@@ -530,7 +502,7 @@ input[type=file]{font-size:12px;color:var(--dim)}
    at the same size, so the number changes meaning without changing shape. */
 .card .p-clock{font-size:30px;letter-spacing:0}
 .card .p-state{font-size:19px;line-height:1.15;font-weight:600;color:var(--fg)}
-.card .p-left{font-size:15px;color:var(--fg);font-variant-numeric:tabular-nums}
+.card .p-left{font-size:13.5px;color:var(--fg);font-variant-numeric:tabular-nums}
 .card .p-sub{margin-top:5px;font-size:11.5px;color:var(--dim);
   font-variant-numeric:tabular-nums}
 .card .p-steps{list-style:none;margin:11px 0 0;padding:0;display:grid;gap:3px}
@@ -566,14 +538,14 @@ input[type=file]{font-size:12px;color:var(--dim)}
 .field .mat:has(> [hidden]){display:contents}
 .mat-x{position:absolute;top:5px;right:5px;z-index:2;width:22px;height:22px;
   border:1px solid var(--line);border-radius:5px;background:rgba(6,8,12,.82);
-  color:var(--fg);font-size:13px;line-height:1;cursor:pointer;padding:0}
+  color:var(--fg);font-size:12px;line-height:1;cursor:pointer;padding:0}
 .mat-x:hover{background:var(--stop);border-color:var(--stop)}
 
 /* --- a finished Long Draft can be put away --- */
 .ld-run{position:relative}
 .ld-close{position:absolute;top:8px;right:8px;z-index:3;width:24px;height:24px;
   border:1px solid var(--line);border-radius:6px;background:var(--sunk);
-  color:var(--dim);font-size:15px;line-height:1;cursor:pointer;padding:0}
+  color:var(--dim);font-size:13.5px;line-height:1;cursor:pointer;padding:0}
 .ld-close:hover{color:var(--fg);border-color:var(--accent)}
 
 /* --- filling the window with the take --- */
@@ -590,7 +562,7 @@ body.zoomed{overflow:hidden}
 /* --- emptying a panel that had no way to be emptied --- */
 .h2-x{float:right;width:22px;height:22px;border:1px solid var(--line);
   border-radius:5px;background:transparent;color:var(--faint);
-  font-size:13px;line-height:1;cursor:pointer;padding:0}
+  font-size:12px;line-height:1;cursor:pointer;padding:0}
 .h2-x:hover{color:var(--fg);border-color:var(--accent)}
 
 /* --- the startup receipt folds itself away --- */
@@ -619,3 +591,8 @@ body.zoomed{overflow:hidden}
   font-size:11px;line-height:16px;cursor:pointer;padding:0}
 .pick-grid .thumb-x:hover{background:var(--stop)}
 .or-file{font-size:11px;color:var(--dim);margin-top:2px}
+
+/* In one right-hand column the chosen material is a reminder, not the subject:
+   the take in the middle is. */
+#panel-settings .mat img,#panel-settings .mat video{max-height:150px;width:100%;
+  object-fit:contain;background:#05070A;border-radius:var(--r-sm)}

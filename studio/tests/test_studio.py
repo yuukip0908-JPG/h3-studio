@@ -5262,7 +5262,6 @@ class RenderReuseTests(unittest.TestCase):
         for gone in ("loadHistoryScreen", "renderAssets", '"hist-grid"', '"asset-grid"'):
             self.assertNotIn(gone, js)
         self.assertIn('const SCREENS = ["studio", "gpu", "settings"];', js)
-        self.assertIn('id="history"', html)          # the shelf on the studio page
 
     def test_the_gpu_panel_never_says_stopped_for_unknown(self):
         """The chip already had three states; the detail row under it still
@@ -6128,35 +6127,9 @@ class ShelfReadabilityTests(unittest.TestCase):
         # as written would fail on its own explanation.
         cls.code = re.sub(r"/\*.*?\*/", "", cls.js, flags=re.S)
 
-    def test_an_empty_tile_says_why_it_is_empty(self):
-        """"NO PREVIEW" on a cancelled run and on a finished one read alike."""
-        self.assertNotIn("NO PREVIEW", self.code)
-        for reason in ("中止した", "生成中", "失敗"):
-            self.assertIn(reason, self.code)
-
-    def test_a_timestamp_in_seconds_is_not_parsed_as_a_date(self):
-        """History stores Unix seconds; Date.parse of a number is NaN, and the
-        badge silently never appeared."""
-        self.assertIn("function toMs(", self.code)
-        self.assertIn('if (typeof raw === "number") return raw * 1000;', self.code)
-        # The bug was Date.parse on a number; the guard has to come first.
-        i = self.code.find("function toMs(")
-        body = self.code[i:i + 200]
-        self.assertLess(body.find("typeof raw"), body.find("Date.parse"))
-
-    def test_the_first_run_marks_everything_as_already_seen(self):
-        """A year of work flagged "new" on first open says nothing."""
-        i = self.js.find("function shelfSeen(")
-        self.assertGreater(i, 0)
-        body = self.js[i:i + 700]
-        self.assertIn("localStorage.setItem", body)
-        self.assertIn("Date.now()", body)
-
-    def test_both_kinds_of_row_can_carry_the_badge(self):
-        """A Long Draft is the likeliest to have finished unwatched, and was
-        the one row the badge was not wired into."""
-        self.assertEqual(self.js.count('class="h-badge">新着'), 2)
-        self.assertIn("h-ld${ldNew", self.js)
+    # The shelf of tiles itself (badges, "why is it empty", toMs) went with the
+    # bottom row on 2026-09-29, and its tests with it. What stays is the wait
+    # and the Long Draft panel, which are still on the page.
 
     def test_the_wait_shows_the_material_rather_than_a_black_rectangle(self):
         self.assertIn("function sourcePoster(", self.js)
@@ -6190,8 +6163,7 @@ class ShelfReadabilityTests(unittest.TestCase):
         css = io.open(
             os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                          "static", "style.css"), encoding="utf-8").read()
-        for rule in (".h-badge", ".h-new", ".ph.src"):
-            self.assertIn(rule, css)
+        self.assertIn(".ph.src", css)
 
 
 class GettingBackOutTests(unittest.TestCase):
@@ -7715,3 +7687,54 @@ class CharacterFirstPageTests(unittest.TestCase):
         # shows up as a candidate without a reload.
         body = self.js[self.js.index("async function loadHistory()"):]
         self.assertIn("loadShelf()", body[:body.index("\n}\n")])
+
+
+class SideColumnLayoutTests(unittest.TestCase):
+    """Owner, 2026-09-29, with a C_STUDIO screenshot: roles down a left column,
+    smaller type, and no bottom row (納品 and 最近作ったもの)."""
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = io.open(os.path.join(cls.ROOT, "static", "index.html"), encoding="utf-8").read()
+        cls.js = io.open(os.path.join(cls.ROOT, "static", "app.js"), encoding="utf-8").read()
+        cls.css = io.open(os.path.join(cls.ROOT, "static", "style.css"), encoding="utf-8").read()
+
+    def test_the_roles_run_down_a_left_column(self):
+        side = self.html[self.html.index('<aside class="side">'):self.html.index("</aside>")]
+        for el in ('id="nav"', 'data-nav="studio"', 'data-nav="gpu"', 'data-nav="settings"',
+                   'id="gpu-chip"', 'id="btn-gpu-start"', 'id="btn-gpu-stop"'):
+            self.assertIn(el, side)
+        # The two modes still to come are shown, and cannot be clicked into.
+        self.assertIn("量産", side)
+        self.assertIn("1分", side)
+        self.assertEqual(side.count("準備中"), 2)
+        self.assertNotIn('<header class="bar">', self.html)
+
+    def test_there_is_no_bottom_row(self):
+        for gone in ('class="studio-bottom"', 'id="history"', 'id="delivery-body"',
+                     'id="panel-delivery"', 'id="stats"'):
+            self.assertNotIn(gone, self.html)
+        for gone in ('$("history")', '$("delivery-body")', '$("stats")',
+                     "function renderDelivery", "function renderStats"):
+            self.assertNotIn(gone, self.js)
+
+    def test_settings_are_one_right_hand_column(self):
+        col = self.html[self.html.index('id="panel-settings"'):]
+        col = col[:col.index("<!-- ══════════════════════ 4. GPU")]
+        for el in ('id="char-pick"', 'id="shelf"', 'id="preset-seg"', 'id="prompt"',
+                   'id="btn-generate"'):
+            self.assertIn(el, col)
+        for gone in ('id="panel-how"', 'id="panel-input"'):
+            self.assertNotIn(gone, self.html)
+
+    def test_premiere_moved_onto_the_take(self):
+        """Premiere lived only in the 納品 panel; it is kept, on the card."""
+        self.assertIn('data-act="premiere"', self.js)
+        self.assertIn('"/api/premiere/send"', self.js)
+
+    def test_the_type_is_smaller(self):
+        m = re.search(r"body\{[^}]*font:(\d+(?:\.\d+)?)px", self.css)
+        self.assertIsNotNone(m)
+        self.assertLessEqual(float(m.group(1)), 13.0)
