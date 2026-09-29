@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "h3-studio",
+      "runtimeExecutable": "python3.12",
+      "runtimeArgs": ["-m", "studio.server"],
+      "port": 8020
+    }
+  ]
+}

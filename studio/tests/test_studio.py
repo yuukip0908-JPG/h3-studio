@@ -2151,7 +2151,7 @@ class BillingTests(unittest.TestCase):
     """Real charges are reported as facts; everything else says so."""
 
     def test_today_is_summed_from_real_rows(self):
-        from studio import runpod_ctl, server as srv
+        from studio import config, runpod_ctl, server as srv
         today = time.strftime("%Y-%m-%d", time.gmtime())
         orig = (runpod_ctl.billing_pods, runpod_ctl.billing_volumes)
         try:
@@ -2162,13 +2162,54 @@ class BillingTests(unittest.TestCase):
             ]
             runpod_ctl.billing_volumes = lambda s, e, bucket_size=None: [
                 {"amount": 0.04, "startDate": today + " 00:00:00"}]
-            out = srv._billing_summary()
+            real_list = runpod_ctl.list_pods
+            runpod_ctl.list_pods = lambda: [
+                {"id": "a", "networkVolumeId": config.network_volume_id()},
+                {"id": "b", "networkVolumeId": config.network_volume_id()}]
+            try:
+                out = srv._billing_summary()
+            finally:
+                runpod_ctl.list_pods = real_list
         finally:
             runpod_ctl.billing_pods, runpod_ctl.billing_volumes = orig
         self.assertTrue(out["available"])
         self.assertAlmostEqual(out["pods_today_usd"], 0.35, places=4)
         self.assertAlmostEqual(out["volume_today_usd"], 0.04, places=4)
         self.assertEqual(out["by_pod"]["a"], 10.24)
+
+    def test_other_projects_pods_are_not_billed_as_h3(self):
+        """The account is shared with C_STUDIO. On 2026-09-29 the panel said
+        "今日の GPU 料金 $1.18" while every H3 Pod had been stopped all day:
+        all of it was C_STUDIO's. H3's own figure counts only H3's Pods; the
+        account total is shown beside it, labelled as such."""
+        from studio import config, runpod_ctl, server as srv
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        orig = (runpod_ctl.billing_pods, runpod_ctl.billing_volumes, runpod_ctl.list_pods)
+        try:
+            runpod_ctl.billing_pods = lambda s, e, bucket_size=None, pod_id=None: [
+                {"amount": 0.25, "podId": "h3pod", "time": today + " 00:00:00"},
+                {"amount": 1.18, "podId": "cstudio-x", "time": today + " 00:00:00"},
+            ]
+            runpod_ctl.billing_volumes = lambda s, e, bucket_size=None: []
+            runpod_ctl.list_pods = lambda: [
+                {"id": "h3pod", "networkVolumeId": config.network_volume_id() or "vol"},
+                {"id": "cstudio-x", "name": "cstudio-train"}]
+            saved = os.environ.get("H3_NETWORK_VOLUME")
+            os.environ["H3_NETWORK_VOLUME"] = config.network_volume_id() or "vol"
+            try:
+                out = srv._billing_summary()
+            finally:
+                if saved is None:
+                    os.environ.pop("H3_NETWORK_VOLUME", None)
+                else:
+                    os.environ["H3_NETWORK_VOLUME"] = saved
+        finally:
+            runpod_ctl.billing_pods, runpod_ctl.billing_volumes, runpod_ctl.list_pods = orig
+        self.assertAlmostEqual(out["pods_today_usd"], 0.25, places=4)
+        self.assertAlmostEqual(out["account_pods_today_usd"], 1.43, places=4)
+        js = io.open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                  "static", "app.js"), encoding="utf-8").read()
+        self.assertIn("account_pods_today_usd", js)
 
     def test_an_unreadable_bill_is_reported_not_guessed(self):
         from studio import runpod_ctl, server as srv

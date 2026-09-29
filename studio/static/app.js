@@ -825,6 +825,10 @@ function renderGpuCost(g) {
   }
   if (b.available && b.pods_today_usd != null) {
     rows.push(`<div><span>今日の GPU 料金（実データ）</span><span>${money(b.pods_today_usd)}</span></div>`);
+    /* /billing/pods is the whole RunPod account, which C_STUDIO shares. */
+    if (b.account_pods_today_usd != null && b.account_pods_today_usd - b.pods_today_usd > 0.005) {
+      rows.push(`<div><span>（アカウント全体・C_STUDIO を含む）</span><span>${money(b.account_pods_today_usd)}</span></div>`);
+    }
   } else {
     rows.push('<div><span>今日の GPU 料金</span><span class="none">取得できません</span></div>');
   }

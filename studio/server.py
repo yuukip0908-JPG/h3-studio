@@ -290,9 +290,20 @@ def _billing_summary(days=2):
     today = time.strftime("%Y-%m-%d", time.gmtime())
     try:
         rows = runpod_ctl.billing_pods(start, end)
-        out["pods_today_usd"] = round(sum(r.get("amount") or 0 for r in rows
-                                          if str(r.get("time", "")).startswith(today)), 4)
-        out["pods_window_usd"] = round(sum(r.get("amount") or 0 for r in rows), 4)
+        # The account is shared with C_STUDIO, and /billing/pods is the whole
+        # account. H3's figure counts only Pods on H3's volume (plus the Pod the
+        # Studio points at); the account total is reported beside it.
+        vid = config.network_volume_id()
+        ours = {p.get("id") for p in runpod_ctl.list_pods()
+                if vid and p.get("networkVolumeId") == vid}
+        if config.pod_id():
+            ours.add(config.pod_id())
+        todays = [r for r in rows if str(r.get("time", "")).startswith(today)]
+        out["account_pods_today_usd"] = round(sum(r.get("amount") or 0 for r in todays), 4)
+        out["pods_today_usd"] = round(sum(r.get("amount") or 0 for r in todays
+                                          if r.get("podId") in ours), 4)
+        out["pods_window_usd"] = round(sum(r.get("amount") or 0 for r in rows
+                                           if r.get("podId") in ours), 4)
         by_pod = {}
         for r in rows:
             pid = r.get("podId") or "?"
