@@ -65,12 +65,18 @@ manifest > "$STAGE/before.txt"
 echo "   $(wc -l < "$STAGE/before.txt" | tr -d ' ') files, $(du -sh "$SRC" | cut -f1)"
 
 # ---- SQLite: integrity on the live database, then a consistent copy ---------
-echo "== sqlite integrity (live, read-only) =="
-LIVE_INTEGRITY="$(sqlite3 "file:$DB?mode=ro" 'PRAGMA integrity_check;' 2>&1 | head -5)"
+# Not mode=ro. The database is in WAL mode, and a read-only connection cannot
+# create the -shm file, so whenever no other connection has it open (the Studio
+# stopped, or between its short-lived connections) the open fails with
+# SQLITE_CANTOPEN (14) and set -e ends the backup. That silently stopped every
+# backup after 2026-09-29 07:09. A normal connection only reads here; the
+# -wal/-shm it creates are excluded from the manifest above.
+echo "== sqlite integrity (live) =="
+LIVE_INTEGRITY="$(sqlite3 "$DB" 'PRAGMA integrity_check;' 2>&1 | head -5)"
 echo "   $LIVE_INTEGRITY"
 
 echo "== sqlite online backup =="
-sqlite3 "file:$DB?mode=ro" ".backup '$ROOT/history_snapshot.sqlite3'"
+sqlite3 "$DB" ".backup '$ROOT/history_snapshot.sqlite3'"
 SNAP_INTEGRITY="$(sqlite3 "$ROOT/history_snapshot.sqlite3" 'PRAGMA integrity_check;' 2>&1 | head -5)"
 SNAP_FK="$(sqlite3 "$ROOT/history_snapshot.sqlite3" 'PRAGMA foreign_key_check;' 2>&1 | head -5)"
 echo "   integrity_check     : $SNAP_INTEGRITY"
