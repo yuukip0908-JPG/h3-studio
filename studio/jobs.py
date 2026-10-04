@@ -1264,6 +1264,12 @@ class JobManager:
             gens.append(generation)
             prev = params if idx == 0 else prev
 
+        # Long Draft frees before each segment itself; everything else that
+        # will re-encode frees here, before any row exists, so a refusal
+        # leaves nothing behind.
+        if long_draft_id is None and gens and gens[0].cache_expected == "MISS":
+            self._free_before_miss()
+
         meta = {"prompt": prompt_text, "mode": mode, "quality": quality, "duration": duration,
                 "aspect_ratio": aspect_ratio, "image": image, "image_source": image_source,
                 "reference_strength": reference_strength, "variations": variations,
@@ -1412,6 +1418,31 @@ class JobManager:
             return True
         except comfy_client.ComfyError:
             return False
+
+    # Same settle as LongDraftRun's: an idle worker must act on the unload
+    # before it picks up the prompt about to be submitted.
+    FREE_SETTLE_SECONDS = 2.0
+
+    def _free_before_miss(self):
+        """Unload before a batch that will re-encode. Refuses rather than risk it.
+
+        Mass production means a different character image each time, so every
+        batch is a MISS -- the same shape Long Draft has, and the shape that
+        OOM-killed ComfyUI on the third consecutive MISS (2026-09-07). Long
+        Draft's fix was a /free before each segment; this is that fix for
+        ordinary batches. It only orders correctly when the previous batch has
+        finished, so submit MISS batches one after another, not all at once.
+        """
+        freed = self.release_models()
+        if not freed:
+            time.sleep(1.0)
+            freed = self.release_models()
+        if not freed:
+            raise comfy_client.ComfyError(
+                "ComfyUI のモデル解放（/free）に失敗したため投入しませんでした。"
+                "このまま続けるとメモリ不足で ComfyUI ごと落ちるおそれがあります。")
+        if self.FREE_SETTLE_SECONDS:
+            time.sleep(self.FREE_SETTLE_SECONDS)
 
     def long_draft(self, ld_id):
         with self.lock:

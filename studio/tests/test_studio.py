@@ -103,6 +103,12 @@ class StudioTestCase(unittest.TestCase):
         history._LOCAL = type(history._LOCAL)()
         config.ensure_dirs()
         self.manager = None
+        # The settle orders a real worker's unload before the next prompt; the
+        # mock has no worker, and two seconds on every MISS batch is minutes
+        # across the suite.
+        self._free_settle = jobs.JobManager.FREE_SETTLE_SECONDS
+        jobs.JobManager.FREE_SETTLE_SECONDS = 0.0
+        self.addCleanup(setattr, jobs.JobManager, "FREE_SETTLE_SECONDS", self._free_settle)
 
     def tearDown(self):
         if self.manager:
@@ -654,6 +660,57 @@ class MotionTraceEndToEndTests(StudioTestCase):
         self.wait_batch(c)
         self.assertEqual(c.generations[0].cache_result, "MISS",
                          "duration truncates the reference video, so it re-encodes")
+
+    def test_models_are_unloaded_before_every_miss_batch(self):
+        """Mass production is one MISS after another, like Long Draft.
+
+        A different character image each batch means a re-encode each batch,
+        and three consecutive MISSes OOM-killed ComfyUI on 2026-09-07. Each
+        MISS batch must be preceded by a /free; a HIT batch needs none.
+        """
+        m = self.make_manager()
+        identity, video, meta = self._upload(m)
+        common = dict(mode=graph.MODE_MOTION_TRACE, quality="draft", variations=1,
+                      duration=2.0, aspect_ratio=graph.ASPECT_RATIOS[0],
+                      image=identity, source_video=video)
+        batches = []
+        for prompt in ("first", "second", "third"):
+            b = m.submit_batch(prompt_text=prompt, **common)
+            self.wait_batch(b)
+            self.assertEqual(b.generations[0].cache_result, "MISS")
+            batches.append(b)
+        self.assertEqual(len(mock_comfy.STATE.freed), 3)
+        for b in batches:
+            row = history.get_generation(b.generations[0].id)
+            self.assertTrue(any(f["at"] < row["created_at"] for f in mock_comfy.STATE.freed),
+                            "batch %s was queued with nothing freed first" % b.id)
+        for call in mock_comfy.STATE.freed:
+            self.assertTrue(call["body"].get("unload_models"))
+            self.assertTrue(call["body"].get("free_memory"))
+
+        hit = m.submit_batch(prompt_text="third", **common)
+        self.wait_batch(hit)
+        self.assertEqual(hit.generations[0].cache_result, "HIT")
+        self.assertEqual(len(mock_comfy.STATE.freed), 3, "a HIT batch does not re-encode")
+
+    def test_a_failed_free_refuses_the_miss_batch(self):
+        m = self.make_manager()
+        identity, video, meta = self._upload(m)
+        calls = []
+
+        def refuse(*a, **k):
+            calls.append(1)
+            raise comfy_client.ComfyError("free unavailable")
+
+        m.client.free_models = refuse
+        with self.assertRaises(comfy_client.ComfyError) as cm:
+            m.submit_batch(mode=graph.MODE_MOTION_TRACE, prompt_text="p", quality="draft",
+                           variations=1, duration=2.0, aspect_ratio=graph.ASPECT_RATIOS[0],
+                           image=identity, source_video=video)
+        self.assertIn("/free", str(cm.exception))
+        self.assertEqual(len(calls), 2, "the unload is retried once before refusing")
+        self.assertEqual(len(mock_comfy.STATE.submitted), 0)
+        self.assertEqual(history.list_batches(), [], "a refused batch leaves no row behind")
 
     def test_history_records_the_motion_trace_inputs(self):
         m = self.make_manager()
@@ -3173,8 +3230,14 @@ class LongDraftRunTests(StudioTestCase):
         self.assertEqual(run.status, "done")
         self.assertEqual([s.status for s in run.segments], ["done"] * 3)
 
-    def test_an_ordinary_generation_never_frees(self):
-        """Only Long Draft pays the reload cost; the normal flow is untouched."""
+    def test_an_ordinary_generation_frees_once_never_between_variations(self):
+        """A MISS batch frees once, before it; its HIT variations reuse the load.
+
+        This used to assert no /free at all outside Long Draft. Mass production
+        changed that: every batch is a new character image, so every batch is
+        a MISS, the shape that OOM-killed ComfyUI. The reload cost is still
+        never paid between variations of one batch.
+        """
         m = self.make_manager()
         identity = self._identity(m)
         video, _sub, meta = m.upload_source_video(self.src)
@@ -3183,8 +3246,10 @@ class LongDraftRunTests(StudioTestCase):
                                aspect_ratio=graph.ASPECT_RATIOS[0], image=identity,
                                source_video=video, source_video_meta=meta)
         self.wait_batch(batch)
-        self.assertEqual(mock_comfy.STATE.freed, [],
+        self.assertEqual(len(mock_comfy.STATE.freed), 1,
                          "a normal batch must not unload models between variations")
+        first = history.get_generation(batch.generations[0].id)
+        self.assertLess(mock_comfy.STATE.freed[0]["at"], first["created_at"])
 
     # ---- failure, cancel, resume ----
     def test_a_failing_segment_stops_the_run_instead_of_burning_the_rest(self):
