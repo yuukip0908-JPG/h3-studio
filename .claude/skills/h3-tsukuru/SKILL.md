@@ -79,3 +79,15 @@ POST /api/generate
   ffmpeg でコマを取り出して見て、顔が明らかに崩れたものは先に伝える。良し悪しの最終判断はオーナー
 - 全部終わったら `POST /api/gpu/stop`。`GET /api/billing` の `pods_today_usd` で実際の料金を報告する
 - 会話が途中で切れても、Studio の自動停止（何もしない30分）と見張り役が Pod を止める
+
+## 量産（2026-10-05 オーナー「全体的に量産向けでいいね」）
+
+量産の本線は **Image Trace（元画像を最初のコマにしてプロンプトで動かす）× AI写真ラボのダンスプロンプト（部屋のまま版）**。
+元画像は**全身**を使う（切り抜くと足元と部屋を想像で描き、カメラも引く）。10秒で1本約6〜7分。
+
+```bash
+bash .claude/skills/h3-tsukuru/batch.sh <元画像> 10 results/studio/prompts/aipixlab_0*_room.txt
+```
+
+在庫待ち → 起動 → 1本ずつ生成 → 停止までを1本でやる。GPU を起動するので、**実行前に本数・時間・金額（推定）を出して許可をもらう**。
+run_in_background で走らせ、終わりの通知を待つ。プロンプト集は [prompts.md](prompts.md)。
