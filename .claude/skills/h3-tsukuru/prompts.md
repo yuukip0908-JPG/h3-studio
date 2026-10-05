@@ -101,3 +101,16 @@ Girl crush K-pop mood. Her feet are shoulder-width apart and her knees are soft.
 ```
 Girl crush K-pop mood. Her feet are shoulder-width apart and her knees are soft, her hands resting lightly on the front of her thighs. On the beat, she makes two clear hip accents, left and then right, each about 0.5 seconds, her shoulders moving slightly the opposite way. She repeats the left and right accents once more, a little bigger. At about 00:03 her hands slide up to her waist and she lets her shoulders roll back once, slowly. At about 00:04.5 she tilts her head slightly, lifts her eyes to the lens and gives a confident, slightly teasing smile, bouncing softly in her knees to the groove until the end.
 ```
+
+## AI写真ラボ（@AIPixLab）の H3 ダンスプロンプト・部屋のまま版（2026-10-05 オーナー「いいと思うよ」）
+
+出典: https://x.com/AIPixLab/status/2096613428198859212（2026-09-06 記事「I2V(FL2VA) 実用的ダンスプロンプト全公開」、5本）。
+全文は他人の著作物なのでリポジトリには入れず、`results/studio/prompts/aipixlab_*.txt`（git 管理外）に置く。
+オーナーは背景が切り替わるのを嫌った（「背景が変わるのは微妙」）。元の振り付け・表情・拍の文はそのまま残し、
+ステージ/ランウェイ/飾り/カット/カメラ移動の文だけ消して「部屋はそのまま、カメラ固定、カットなし」を足した版が `*_room.txt`。
+
+実測（10秒・0.4MP・12 steps・RTX 6000 Ada・どちらも MISS）: IDOL SWITCH 442秒、FASHION HEAT 428秒。
+
+- 太ももから上の切り抜きを使うと、カメラが引いた瞬間に足元を想像で描く（白スニーカーが黒ブーツになった）
+- 前に歩き出す振り付け（FASHION HEAT）は「カメラ固定」と書いても全身が入るまで引き、部屋を描き足して顔が小さくなる
+- 次は全身の元画像（`1791164318_master_black_knit_full.webp`）を使う
