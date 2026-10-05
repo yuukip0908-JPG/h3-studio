@@ -62,7 +62,12 @@ POST /api/generate
   `/free` でメモリを空ける。まとめて投げると空ける順番が崩れ、3回続く MISS で ComfyUI が
   落ちる（2026-09-07 実測）
 - 服の指定は `<Picture 1>` 側にする。動画側にすると、動画の人物の顔が出る（2026-09-09 実測）
-- 進み具合: `GET /api/batch/<batch_id>`。待つ間は Monitor などで終わりを待ち、細かく問い合わせない
+- 進み具合: `GET /api/batch/<batch_id>`。待つ間は Monitor などで終わりを待ち、細かく問い合わせない。
+  **応答を `echo "$r"` に通さない**（zsh の echo はプロンプト内の `\n` を改行に変え、JSON が
+  壊れて「終わった」を永遠に判定できない。2026-10-05 にこれで Pod を約14分空回りさせた）。
+  curl を python に直接つなぐ:
+  `curl -s .../api/batch/<id> | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['done_count'],d['total_count'])"`
+  `done_count == total_count` になったら終わり
 - 12秒を超える動きは長尺分割（`/api/long_draft/plan` → `/api/long_draft`）のほうが速い
 
 ## 5. 渡す・止める
