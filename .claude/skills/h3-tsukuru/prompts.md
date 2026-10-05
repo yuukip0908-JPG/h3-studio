@@ -71,3 +71,33 @@ overall_soundscape: quiet room tone, soft fabric rustle.
 
 non_diegetic_music: slow, sultry 95 BPM girl crush K-pop groove with a heavy kick, a warm bass and no vocals.
 ```
+
+## ダンス・シリーズ（E が好評だった。2026-10-05 オーナー「ダンスいいね」）
+
+共通の頭は D/E と同じ（「her hair only moves with her head and hands」）。共通の尻:
+
+```
+Every movement is smooth and flows into the next; nothing stops dead. Her arms open no wider than her shoulders and her hands always stay inside the frame. The camera stays fixed and never zooms in on her body. Her clothing never changes. No walking, no cuts, no zoom, no camera movement, no spinning, hands never cover the face, no props, no extra fingers, no plastic skin.
+
+overall_soundscape: quiet room tone, soft fabric rustle.
+
+non_diegetic_music: slow, sultry 95 BPM girl crush K-pop groove with a heavy kick, a warm bass and no vocals.
+```
+
+### E2. 腰の8の字とウェーブ（E の手直し）
+
+```
+Girl crush K-pop mood. Her feet are shoulder-width apart and her knees are soft. At about 00:00.5 she draws one slow horizontal figure-eight with her hips, her weight shifting from her right leg to her left and back to center, her waist leading and her chest following slightly later, her left hand resting on the side of her hip and her right hand drawing a small arc close to her body, taking about 2.5 seconds. Then, pushing through the floor, a clear body wave rolls upward from her hips through her stomach and chest and out through her shoulders and neck, taking about 1.5 seconds, her hands sliding up along the sides of her body to her waist. At about 00:04.5 she lifts her eyes to the lens and gives a brief, confident, slightly teasing smile, and keeps a gentle sway until the end.
+```
+
+### F. 胸の前で交差した腕をほどく（Zeto の振付モチーフ）
+
+```
+Girl crush K-pop mood. Her feet are shoulder-width apart and her knees are soft. She starts with her arms crossed in front of her chest. At about 00:00.5 her arms unfold in order, shoulders, then elbows, then wrists, opening diagonally downward to the sides of her hips, taking about 1.5 seconds, while her hips flow the opposite way so her whole body draws one long curve. Her weight moves from her left leg to her right. At about 00:02.5 her arms circle back to the front of her chest and she repeats the motif smaller, her hips flowing to the other side. At about 00:04.5 she looks straight into the lens with a calm, strong expression, then a small smile, and her shoulders keep a soft groove until the end.
+```
+
+### G. 左右のヒップアクセントと肩（Zeto の第4フレーズから）
+
+```
+Girl crush K-pop mood. Her feet are shoulder-width apart and her knees are soft, her hands resting lightly on the front of her thighs. On the beat, she makes two clear hip accents, left and then right, each about 0.5 seconds, her shoulders moving slightly the opposite way. She repeats the left and right accents once more, a little bigger. At about 00:03 her hands slide up to her waist and she lets her shoulders roll back once, slowly. At about 00:04.5 she tilts her head slightly, lifts her eyes to the lens and gives a confident, slightly teasing smile, bouncing softly in her knees to the groove until the end.
+```
