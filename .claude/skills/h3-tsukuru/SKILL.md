@@ -35,6 +35,8 @@ curl -s -X POST -H 'Content-Type: application/json' -d '{"wait_seconds": 300}' \
   http://127.0.0.1:8020/api/gpu/start
 ```
 
+- `wait_seconds: 300` で返ってきても、`start.state` が `starting_comfyui` なら失敗ではない。Pod は確保済みで課金中
+  （新しいホストだと ComfyUI の準備に5分を超える）。`/api/status` の `comfy_ready` が true になるのを待って続ける
 - `retryable: true`（no free GPU）は異常ではない。オーナーに伝えて待つ。**探し続けない**
 - `needs_confirmation: true` は高いカードしか無いということ。勝手に `confirm_gpu` を付けない
 - CLAUDE.md の決まり: GPU を起動したら最初に `bash scripts/v2_validate.sh` で証跡を更新する

@@ -44,3 +44,30 @@ She lightly straightens the cuff of her left sleeve with her right hand, then sm
 ```
 Her head is turned to her right, showing her profile, as if listening to someone off-frame. At about 00:01.5 she slowly turns her face back to the lens, taking about 1 second. Her eyes meet the lens and she gives a soft smile. At about 00:04 she raises her right hand to the front of her chest and makes a small finger heart with her thumb and index finger, holding it below her chin so it never covers her face. She keeps smiling at the lens until the end.
 ```
+
+
+## D. 髪をかき上げる（YUKI NAK @HashedAIvideo 2026-09-21 の型。2026-10-05 実測 282秒）
+
+結果: 両手で髪をかき上げ、最後に微笑む。顔はずっと sakura のまま。一瞬だけ手が額にかかる。
+頭の文の最後は「her hair only moves with her head and hands」にする。
+
+```
+She looks at the lens with a calm expression. At about 00:00.8 she raises both hands to her temples and slowly sweeps her hair back over the top of her head, her fingers sliding through the long black hair, taking about 2 seconds. Her chin lifts slightly and her eyes half close. Her hands stay at the sides of her head and never cover her face. She holds her hands in her hair for a moment, then opens her eyes and looks straight into the lens. At about 00:04 she slowly lowers her hands to her sides, her hair falling naturally over her shoulders, and gives a soft closed-lip smile that stays until the end. Every movement is slow and unhurried. Her clothing never changes. No walking, no cuts, no zoom, no camera movement, no spinning, no props, no extra fingers, no plastic skin.
+
+overall_soundscape: quiet room tone, faint street noise outside the window, the soft sound of fingers moving through hair.
+
+non_diegetic_music: N/A
+```
+
+## E. K-POP の腰の8の字とウェーブ（Zeto @ZetoGroovin 2026-09-10 の Girl Crush テンプレ 3.75〜7.5秒の区間から。2026-10-05 実測 274秒）
+
+結果: 腰が左右に流れ、最後に微笑む。ウェーブは弱め。腕を外へ大きく開きすぎ、終盤は手が画面の外へ出る。
+次は「arms open only to shoulder width」と書く。
+
+```
+Girl crush K-pop mood. Her feet are shoulder-width apart and her knees are soft. At about 00:00.5 she draws one slow horizontal figure-eight with her hips, her weight shifting from her right leg to her left and back to center, her waist leading and her chest following slightly later, her left hand resting lightly on the side of her hip and her right hand drawing a small arc beside her body, taking about 2.5 seconds. Then, pushing through the floor, a slow body wave rises from her hips through her stomach and chest to her shoulders, taking about 1.5 seconds, her arms following the wave up to the front of her chest and opening outward. At about 00:04.5 she lifts her eyes to the lens and gives a brief, confident, slightly teasing smile, and keeps a gentle sway until the end. The camera stays fixed and never zooms in on her body. Her clothing never changes. No walking, no cuts, no zoom, no camera movement, no spinning, hands never cover the face, no props, no extra fingers, no plastic skin.
+
+overall_soundscape: quiet room tone, soft fabric rustle.
+
+non_diegetic_music: slow, sultry 95 BPM girl crush K-pop groove with a heavy kick, a warm bass and no vocals.
+```
