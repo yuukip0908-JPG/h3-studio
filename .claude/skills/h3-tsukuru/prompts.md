@@ -114,3 +114,14 @@ Girl crush K-pop mood. Her feet are shoulder-width apart and her knees are soft,
 - 太ももから上の切り抜きを使うと、カメラが引いた瞬間に足元を想像で描く（白スニーカーが黒ブーツになった）
 - 前に歩き出す振り付け（FASHION HEAT）は「カメラ固定」と書いても全身が入るまで引き、部屋を描き足して顔が小さくなる
 - 次は全身の元画像（`1791164318_master_black_knit_full.webp`）を使う
+
+### 残り3本（全身の元画像 `1791164318_master_black_knit_full.webp`、2026-10-05）
+
+部屋の行を「camera is locked off at the framing of <Picture 1>, head to toe, and never zooms, pans or moves」にした。
+実測（10秒・MISS）: BREAK THE FRAME 365秒、PRISM BALLERINA 372秒、ORBIT DIVA 375秒（切り抜きより少し速い）。
+
+- 全身の元画像にしたら、3本とも白い靴下・白スニーカー・部屋・カメラ位置が最後まで保たれた（切り抜きで起きた黒ブーツと引きは出ない）
+- 代わりに顔が小さい（0.4MP の縦長で顔の幅は約40ピクセル）。最後のアップでも細部は甘い
+- BREAK: 床に手をつく低い姿勢まで入る。手足の数は正常。低い姿勢の間は髪で顔が隠れる
+- PRISM: いちばん崩れが少ない。腕の線がきれい
+- ORBIT: 腕を大きく回す途中で、腕が顔の前を一瞬横切る
