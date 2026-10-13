@@ -1,4 +1,26 @@
-# H3_CLOUD_REPRO / H3 STUDIO v2
+# H3 Studio
+
+動画生成 AI（MiniMax H3）をクラウド GPU（RunPod）で動かし、Mac の画面から **GPU の起動・生成・停止までを、料金を見張りながら** 行うための個人開発のスタジオです。
+
+## 30秒で分かる H3 Studio
+
+![H3 Studio の操作画面（生成した動画と人物の写真は、シルエットのイメージに差し替えています）](docs/images/studio_screen.jpg)
+
+左で GPU を起動・停止し、中央で生成結果を確かめ、右で生成の設定をします。Studio 自体は GPU を使わないので、開いているだけでは料金はかかりません。
+
+**工夫した3点**
+
+1. **測ってから書く**：説明や画面の7か所に「数倍遅い」と書いていた設定を実測すると、実際は1.07倍でした。本当の代償は GPU のメモリ（28.8 → 53.2 GiB）だったと書き直しました。（[記録](https://github.com/yuukip0908-JPG/h3-studio/commit/76c15b1)）
+2. **料金を止めるボタンは消さない**：停止ボタンが押せない状態のまま、GPU が23分動き続けたことがあります。それ以来、状態が分からないことを理由に停止ボタンを無効にしない作りにしました。（[記録](https://github.com/yuukip0908-JPG/h3-studio/commit/88d0f00)）
+3. **いつでも戻れるようにする**：道具の版をすべて固定し、確かめた状態に `v1-baseline` と `h3-studio-v2-stable` の印（タグ）を付けています。モデルの保存先を見直して読み込みを4.6倍速にし、1回あたり11.8分短くしました。（[記録](https://github.com/yuukip0908-JPG/h3-studio/commit/acf75c1)）
+
+**分かっている課題**：テストの件数によって、1件だけ失敗することがあります。原因の一部は直しましたが、まだ解決しきれていません。詳しくは [docs/V2_KNOWN_LIMITATIONS.md](docs/V2_KNOWN_LIMITATIONS.md) にまとめています。
+
+**技術**：Python（標準ライブラリの http.server と sqlite3 で Studio を作成）、JavaScript、RunPod、ComfyUI、Premiere Pro への受け渡し
+
+---
+
+## 詳しい説明（H3_CLOUD_REPRO / H3 STUDIO v2）
 
 MiniMax H3 + ComfyUI-MiniMaxH3-CLIPCached をクラウドGPUで再現した baseline (v1) と、
 その上で普段使いするための **H3 Studio v2** を含む。
